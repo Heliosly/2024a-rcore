@@ -3,6 +3,7 @@ use core::arch::asm;
 // pub use command::*;
 use log::warn;
 
+pub mod error;
 use crate::{config::PAGE_SIZE, mm::VirtAddr};
 
 /// 跟踪函数的调用栈

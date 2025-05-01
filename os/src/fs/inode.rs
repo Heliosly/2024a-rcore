@@ -1,167 +1,118 @@
-//! `Arc<Inode>` -> `OSInodeInner`: In order to open files concurrently
-//! we need to wrap `Inode` into `Arc`,but `Mutex` in `Inode` prevents
-//! file systems from being accessed simultaneously
-//!
-//! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
-//! need to wrap `OSInodeInner` into `UPSafeCell`
+/// src/fs/os_inode.rs
 
-use super::File;
-use crate::drivers::BLOCK_DEVICE;
-use crate::mm::UserBuffer;
-use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use bitflags::*;
-use easy_fs::{EasyFileSystem, Inode};
-use lazy_static::*;
-/// inode in memory
-/// A wrapper around a filesystem inode
-/// to implement File trait atop
+use bitflags::bitflags;
+use super::vfs::vfs_ops::VfsNodeOps;
+use super::File;
+use crate::mm::UserBuffer;
+use crate::sync::UPSafeCell;
+use super::ext4::ops::FileWrapper as LwInode;
 
+/// 在 OS 里再包装一层 Inode 以实现 File trait
 pub struct OSInode {
     readable: bool,
     writable: bool,
     inner: UPSafeCell<OSInodeInner>,
-    
 }
-/// The OS inode inner in 'UPSafeCell'
+
 pub struct OSInodeInner {
     offset: usize,
-    inode: Arc<Inode>,
-    
+    inode: Arc<LwInode>,
 }
 
 impl OSInode {
-    /// create a new inode in memory
-    pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
-        Self {
+    pub fn new(readable: bool, writable: bool, inode: Arc<LwInode>) -> Self {
+        OSInode {
             readable,
             writable,
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
-           
         }
     }
-    /// read all data from the inode
+
     pub fn read_all(&self) -> Vec<u8> {
         let mut inner = self.inner.exclusive_access();
-        let mut buffer = [0u8; 512];
-        let mut v: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 512];
+        let mut out = Vec::new();
         loop {
-            let len = inner.inode.read_at(inner.offset, &mut buffer);
-            if len == 0 {
-                break;
-            }
-            inner.offset += len;
-            v.extend_from_slice(&buffer[..len]);
+            let n =inner.inode.read_at(inner.offset as u64, &mut buf).unwrap();
+            if n == 0 { break; }
+            inner.offset += n;
+            out.extend_from_slice(&buf[..n]);
         }
-        v
+        out
     }
 }
 
-lazy_static! {
-    pub static ref ROOT_INODE: Arc<Inode> = {
-        let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
-        Arc::new(EasyFileSystem::root_inode(&efs))
-    };
-    
-}
-
-/// List all apps in the root directory
-pub fn list_apps() {
-    println!("/**** APPS ****");
-    for app in ROOT_INODE.ls() {
-        println!("{}", app);
-    }
-    println!("**************/");
-}
-
+// 定义一份打开文件的标志
 bitflags! {
-    ///  The flags argument to the open() system call is constructed by ORing together zero or more of the following values:
     pub struct OpenFlags: u32 {
-        /// readyonly
-        const RDONLY = 0;
-        /// writeonly
-        const WRONLY = 1 << 0;
-        /// read and write
-        const RDWR = 1 << 1;
-        /// create new file
-        const CREATE = 1 << 9;
-        /// truncate file size to 0
-        const TRUNC = 1 << 10;
+        // reserve 3 bits for the access mode
+        const O_RDONLY      = 0;           // Read only
+        const O_WRONLY      = 1;           // Write only
+        const O_RDWR        = 2;           // Read and write
+        const O_ACCMODE     = 3;           // Mask for file access modes
+        const O_CREATE       = 0o100;       // Create file if it doesn't exist
+        const O_EXCL        = 0o200;       // Exclusive use flag
+        const O_NOCTTY      = 0o400;       // Do not assign controlling terminal
+        const O_TRUNC       = 0o1000;      // Truncate flag
+        const O_APPEND      = 0o2000;      // Set append mode
+        const O_NONBLOCK    = 0o4000;      // Non-blocking mode
+        const O_DSYNC       = 0o10000;     // Write operations complete as defined by POSIX
+        const O_SYNC        = 0o4010000;   // Write operations complete as defined by POSIX
+        const O_RSYNC       = 0o4010000;   // Synchronized read operations
+        const O_DIRECTORY   = 0o200000;    // Must be a directory
+        const O_NOFOLLOW    = 0o400000;    // Do not follow symbolic links
+        const O_CLOEXEC     = 0o2000000;   // Set close-on-exec
+        const O_ASYNC       = 0o20000;     // Signal-driven I/O
+        const O_DIRECT      = 0o40000;     // Direct disk access hints
+        const O_LARGEFILE   = 0o100000;    // Allow files larger than 2GB
+        const O_NOATIME     = 0o1000000;   // Do not update access time
+        const O_PATH        = 0o10000000;  // Obtain a file descriptor for a directory
+        const O_TMPFILE     = 0o20200000;  // Create an unnamed temporary file
+
+        const O_ASK_SYMLINK    = 0o400000000;     //自用，用于识别可访问符号链接本身文件的系统调用
     }
 }
 
 impl OpenFlags {
-    /// Do not check validity for simplicity
-    /// Return (readable, writable)
     pub fn read_write(&self) -> (bool, bool) {
-        if self.is_empty() {
-            (true, false)
-        } else if self.contains(Self::WRONLY) {
-            (false, true)
-        } else {
-            (true, true)
-        }
+        if self.is_empty()       { (true, false) }
+        else if self.contains(Self::O_WRONLY) { (false, true) }
+        else                      { (true, true) }
     }
 }
 
-/// Open a file
-pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
-    let (readable, writable) = flags.read_write();
-    if flags.contains(OpenFlags::CREATE) {
-        if let Some(inode) = ROOT_INODE.find(name) {
-            // clear size
-            inode.clear();
-            Some(Arc::new(OSInode::new(readable, writable, inode)))
-        } else {
-            // create file
-            ROOT_INODE
-                .create(name)
-                .map(|inode| Arc::new(OSInode::new(readable, writable, inode)))
-        }
-    } else {
-        ROOT_INODE.find(name).map(|inode| {
-            if flags.contains(OpenFlags::TRUNC) {
-                inode.clear();
-            }
-            Arc::new(OSInode::new(readable, writable, inode))
-        })
-    }
-}
 
+/// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OSInode {
-   fn clear(&self) {
-       self.inner.exclusive_access().inode.clear();
-   }
-    fn readable(&self) -> bool {
-        self.readable
+    fn clear(&self) {
+        self.inner.exclusive_access().inode.truncate(0);
+        
     }
-    fn writable(&self) -> bool {
-        self.writable
-    }
-    
-    fn read(&self, mut buf: UserBuffer) -> usize {
+    fn readable(&self) -> bool { self.readable }
+    fn writable(&self) -> bool { self.writable }
+
+    fn read(&self, mut ub: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();
-        let mut total_read_size = 0usize;
-        for slice in buf.buffers.iter_mut() {
-            let read_size = inner.inode.read_at(inner.offset, *slice);
-            if read_size == 0 {
-                break;
-            }
-            inner.offset += read_size;
-            total_read_size += read_size;
+        let mut total = 0;
+        for slice in ub.buffers.iter_mut() {
+            let n =inner.inode.read_at(inner.offset as u64, slice).unwrap();
+            if n == 0 { break; }
+            inner.offset += n;
+            total += n;
         }
-        total_read_size
+        total
     }
-    fn write(&self, buf: UserBuffer) -> usize {
+
+    fn write(&self, ub: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();
-        let mut total_write_size = 0usize;
-        for slice in buf.buffers.iter() {
-            let write_size = inner.inode.write_at(inner.offset, *slice);
-            assert_eq!(write_size, slice.len());
-            inner.offset += write_size;
-            total_write_size += write_size;
+        let mut total = 0;
+        for slice in ub.buffers.iter() {
+            let n = inner.inode.write_at(inner.offset as u64, *slice).unwrap();
+            inner.offset += n;
+            total += n;
         }
-        total_write_size
+        total
     }
 }

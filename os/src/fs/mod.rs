@@ -2,8 +2,14 @@
 
 pub(crate) mod inode;
 mod stdio;
-
+mod ext4;
+mod vfs;
+mod stat;
+mod fd;
 use crate::mm::UserBuffer;
+pub use stat::Statfs;
+pub use vfs::vfs_ops::VfsOps;
+
 
 /// trait File for all file types
 pub trait File: Send + Sync {
@@ -50,5 +56,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{ OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};

@@ -8,7 +8,7 @@ pub struct Ino{
     link:u32,
     ino:u64,
 }
-use crate::fs::{open_file, OpenFlags, Stat, StatMode};
+use crate::fs::{ OpenFlags, Stat, StatMode};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 pub static mut UMAP:BTreeMap<usize,String>=BTreeMap::new();
