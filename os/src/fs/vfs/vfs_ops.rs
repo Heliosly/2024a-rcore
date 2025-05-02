@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 use lwext4_rust::{bindings::ext4_direntry, InodeTypes};
 
+use crate::{fs::OpenFlags, utils::error::{SysErrNo, SyscallRet}};
+
 /// Filesystem operations.
 pub trait VfsOps: Send + Sync {
     /// Do something when the filesystem is mounted.
@@ -29,6 +31,10 @@ pub trait VfsOps: Send + Sync {
 
 /// Node (file/directory) operations.
 pub trait VfsNodeOps: Send + Sync {
+     ///
+     fn size(&self) -> usize {
+        unimplemented!()
+    }
     /// Do something when the node is opened.
     fn open(&self) -> Result<usize, i32> {
         Ok(0)
@@ -110,6 +116,39 @@ pub trait VfsNodeOps: Send + Sync {
     /// [1]: core::any::Any
     /// [2]: core::any::Any#method.downcast_ref
     fn as_any(&self) -> &dyn core::any::Any {
+        unimplemented!()
+    }
+
+    fn find(
+        &self,
+        path: &str,
+        flags: OpenFlags,
+        loop_times: usize,
+    ) ->Result<Arc<dyn VfsNodeOps>, SysErrNo> {
+        unimplemented!()
+    }
+    ///获取文件的mode，遇到需要文件访问权限的需要使用，暂时放在这里
+    fn fmode(&self) -> Result<u32, SysErrNo> {
+        unimplemented!();
+    }
+    fn fmode_set(&self, _mode: u32) -> SyscallRet {
+        unimplemented!()
+    }
+     ///
+     fn set_owner(&self, _uid: u32, _gid: u32) -> SyscallRet {
+        unimplemented!()
+    }
+    ///
+    fn set_timestamps(
+        &self,
+        _atime: Option<u32>,
+        _mtime: Option<u32>,
+        _ctime: Option<u32>,
+    ) -> SyscallRet {
+        unimplemented!()
+    }
+    ///
+    fn is_dir(&self) -> bool {
         unimplemented!()
     }
 }

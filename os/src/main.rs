@@ -17,7 +17,7 @@
 //!
 //! We then call [`task::run_tasks()`] and for the first time go to
 //! userspace.
-#![deny(missing_docs)]
+#![allow(missing_docs)]
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]

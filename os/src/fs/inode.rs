@@ -3,11 +3,14 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use lwext4_rust::bindings::{SEEK_CUR, SEEK_END, SEEK_SET};
+
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
-use super::ext4::ops::FileWrapper as LwInode;
+use crate::utils::error::SysErrNo;
+
 
 /// 在 OS 里再包装一层 Inode 以实现 File trait
 pub struct OSInode {
@@ -18,11 +21,11 @@ pub struct OSInode {
 
 pub struct OSInodeInner {
     offset: usize,
-    inode: Arc<LwInode>,
+    inode: Arc<dyn VfsNodeOps>,
 }
 
 impl OSInode {
-    pub fn new(readable: bool, writable: bool, inode: Arc<LwInode>) -> Self {
+    pub fn new(readable: bool, writable: bool, inode: Arc<dyn VfsNodeOps>) -> Self {
         OSInode {
             readable,
             writable,
@@ -77,12 +80,73 @@ bitflags! {
 
 impl OpenFlags {
     pub fn read_write(&self) -> (bool, bool) {
-        if self.is_empty()       { (true, false) }
-        else if self.contains(Self::O_WRONLY) { (false, true) }
-        else                      { (true, true) }
+        if self.is_empty() {
+            (true, false)
+        } else if self.contains(Self::O_WRONLY) {
+            (false, true)
+        } else {
+            (true, true)
+        }
+    }
+
+    pub fn node_type(&self) -> InodeType {
+        if self.contains(OpenFlags::O_DIRECTORY) {
+            InodeType::Dir
+        } else {
+            InodeType::File
+        }
     }
 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InodeType {
+    Unknown = 0o0,
+    /// FIFO (named pipe)
+    Fifo = 0o1,
+    /// Character device
+    CharDevice = 0o2,
+    /// Directory
+    Dir = 0o4,
+    /// Block device
+    BlockDevice = 0o6,
+    /// Regular file
+    File = 0o10,
+    /// Symbolic link
+    SymLink = 0o12,
+    /// Socket
+    Socket = 0o14,
+}
 
+impl InodeType {
+    /// Tests whether this node type represents a regular file.
+    pub const fn is_file(self) -> bool {
+        matches!(self, Self::File)
+    }
+    /// Tests whether this node type represents a directory.
+    pub const fn is_dir(self) -> bool {
+        matches!(self, Self::Dir)
+    }
+    /// Tests whether this node type represents a symbolic link.
+    pub const fn is_symlink(self) -> bool {
+        matches!(self, Self::SymLink)
+    }
+    /// Returns `true` if this node type is a block device.
+    pub const fn is_block_device(self) -> bool {
+        matches!(self, Self::BlockDevice)
+    }
+    /// Returns `true` if this node type is a char device.
+    pub const fn is_char_device(self) -> bool {
+        matches!(self, Self::CharDevice)
+    }
+    /// Returns `true` if this node type is a fifo.
+    pub const fn is_fifo(self) -> bool {
+        matches!(self, Self::Fifo)
+    }
+    /// Returns `true` if this node type is a socket.
+    pub const fn is_socket(self) -> bool {
+        matches!(self, Self::Socket)
+    }
+}
 
 /// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OSInode {
@@ -115,4 +179,28 @@ impl File for OSInode {
         }
         total
     }
-}
+    fn lseek(&self, offset: isize, whence: usize) -> crate::utils::error::SyscallRet {
+        let whence = whence as u32;
+        if whence > 2 {
+            return Err(SysErrNo::EINVAL);
+        }
+        let mut inner = self.inner.exclusive_access();
+        if whence == SEEK_SET {
+            inner.offset = offset as usize;
+        } else if whence == SEEK_CUR {
+            let newoff = inner.offset as isize + offset;
+            if newoff < 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.offset = newoff as usize;
+        } else if whence == SEEK_END {
+            let newoff = inner.inode.size() as isize + offset;
+            if newoff < 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.offset = newoff as usize;
+        }
+        Ok(inner.offset)
+    }
+    }
+

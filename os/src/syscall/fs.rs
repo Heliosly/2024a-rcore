@@ -8,7 +8,7 @@ pub struct Ino{
     link:u32,
     ino:u64,
 }
-use crate::fs::{ OpenFlags, Stat, StatMode};
+use crate::fs::{ open_file, OpenFlags, Stat, StatMode};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 pub static mut UMAP:BTreeMap<usize,String>=BTreeMap::new();
@@ -88,10 +88,10 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
         unsafe { ITOS.remove(&path.clone()) };
         return -1;
     }
-    if let Some(inode) = open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap()) {
+    if let Ok(inode) = open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap(),0o777) {
         let mut inner = task.inner_exclusive_access();
         let fd = inner.alloc_fd();
-        inner.fd_table[fd] = Some(inode);
+        inner.fd_table[fd] = Some(inode.file().unwrap());
         unsafe { UMAP.insert(fd, path.clone()) };
         unsafe { UMAP1.insert(path.clone(),fd) };
         unsafe{

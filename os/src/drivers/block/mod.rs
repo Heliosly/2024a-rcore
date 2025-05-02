@@ -1,6 +1,6 @@
 //! virtio_blk device driver
 
-mod virtio_blk;
+pub(crate) mod virtio_blk;
 pub(crate) mod disk;
 use core::{ ptr::NonNull, sync::atomic::{AtomicUsize, Ordering}};
 

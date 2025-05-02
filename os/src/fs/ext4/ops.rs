@@ -2,12 +2,16 @@
 use core::cell::RefCell;
 use crate::alloc::string::String;
 use crate::drivers::block::disk::Disk;
+use crate::fs::inode::InodeType;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
+use crate::fs::{as_inode_type, OpenFlags};
+use crate::utils::error::{SysErrNo, SyscallRet};
 
+use alloc::ffi::CString;
 use alloc::sync::Arc;
 use log::*;
 use lwext4_rust::bindings::{
-     O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,   SEEK_SET,
+     ext4_atime_set, ext4_ctime_set, ext4_mode_get, ext4_mode_set, ext4_mtime_set, ext4_owner_set, EOK, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SEEK_SET
 };
 use lwext4_rust::{Ext4BlockWrapper, Ext4File, InodeTypes};
 use virtio_drivers::transport::Transport;
@@ -55,7 +59,7 @@ impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
 impl<H:Hal,T:Transport> Ext4FileSystem<H,T>{
     fn ls(&self) {
         self.inner
-            .lwext4_dir_ls()
+            .lwext4_dir_ls_with_vec()
             .into_iter()
             .for_each(|s| println!("{}", s));
     }
@@ -282,7 +286,19 @@ impl VfsNodeOps for FileWrapper {
         let _ = file.file_close();
         r
     }
-
+    fn size(&self) -> usize {
+        let file = &mut self.0.borrow_mut();
+        let types = as_inode_type(file.get_type());
+        if types == InodeType::File {
+            let path = file.get_path();
+            let path = path.to_str().unwrap();
+            file.file_open(path, O_RDONLY);
+            let fsize = file.file_size();
+            fsize as usize
+        } else {
+            0
+        }
+    }
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, i32> {
         debug!("To write_at {}, buf len={}", offset, buf.len());
         let mut file = self.0.borrow_mut();
@@ -315,6 +331,129 @@ impl VfsNodeOps for FileWrapper {
         let mut file = self.0.borrow_mut();
         file.file_rename(src_path, dst_path)
     }
+    fn find(
+        &self,
+        path: &str,
+        flags: OpenFlags,
+        loop_times: usize,
+    ) ->Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
+         //log::info!("[Inode.find] origin path={}", path);
+         let file = &mut self.0.borrow_mut();
+         if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
+             Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)))
+         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
+             if flags.contains(OpenFlags::O_DIRECTORY) {
+                 return Err(SysErrNo::ENOTDIR);
+             }
+             Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_REG_FILE)))
+         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
+            panic!("find symlink");
+            //  if flags.contains(OpenFlags::O_ASK_SYMLINK) {
+            //      return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
+            //  }
+            //  if loop_times >= MAX_LOOPTIMES {
+            //      debug!("error ELOOP!");
+            //      return Err(SysErrNo::ELOOP);
+            //  }
+            //  // 符号链接文件应该返回对应的真实的文件
+            //  let mut file_name = [0u8; 256];
+            //  let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
+            //  file.read_link(&mut file_name, 256)?;
+            //  let end = file_name.iter().position(|v| *v == 0).unwrap();
+            //  let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
+            //  //log::info!("[Inode.find] file_path={}", file_path);
+            //  let (prefix, _) = path.rsplit_once("/").unwrap();
+            //  //log::info!("[Inode.find] prefix={}", prefix);
+            //  let abs_path = format!("{}/{}", prefix, file_path);
+            //  //debug!("[Inode.find] symlink abs_path={}", &abs_path);
+            //  return self.find(&abs_path, flags, loop_times + 1);
+ 
+            //  // Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)))
+         } else {
+             Err(SysErrNo::ENOENT)
+         }
+    }
+  
+    fn is_dir(&self) -> bool {
+        self.0.borrow_mut().get_type() == InodeTypes::EXT4_DE_DIR
+    }
+fn set_owner(&self, uid: u32, gid: u32) -> SyscallRet {
+    let file = self.0.borrow_mut();
+    let c_path = file.get_path();
+    let c_path = c_path.into_raw();
+
+    let r = unsafe { ext4_owner_set(c_path, uid, gid) };
+
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    if r != EOK as i32 {
+        error!("ext4_owner_set: rc = {}", r);
+        return Err(r.into());
+    }
+    Ok(EOK as usize)
+}
+
+fn set_timestamps(
+    &self,
+    atime: Option<u32>,
+    mtime: Option<u32>,
+    ctime: Option<u32>,
+) -> SyscallRet {
+    let file = self.0.borrow_mut();
+    let c_path = file.get_path();
+    let c_path = c_path.into_raw();
+    let mut r = 0;
+    if let Some(atime) = atime {
+        r = unsafe { ext4_atime_set(c_path, atime) }
+    }
+    if let Some(mtime) = mtime {
+        r = unsafe { ext4_mtime_set(c_path, mtime) }
+    }
+    if let Some(ctime) = ctime {
+        r = unsafe { ext4_ctime_set(c_path, ctime) }
+    }
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    if r != EOK as i32 {
+        error!("ext4_time_set: rc = {}", r);
+        return Err(r.into());
+    }
+    Ok(EOK as usize)
+}
+
+fn fmode(&self) -> Result<u32, SysErrNo> {
+    let file = self.0.borrow_mut();
+    let c_path = file.get_path();
+    let mut mode: u32 = 0o777;
+    let c_path = c_path.into_raw();
+    let r = unsafe { ext4_mode_get(c_path, &mut mode) };
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    if r != EOK as i32 {
+        error!("ext4_mode_get: rc = {}", r);
+        return Err(r.into());
+    }
+    Ok(mode)
+}
+
+fn fmode_set(&self, mode: u32) -> SyscallRet {
+    let file = self.0.borrow_mut();
+    let c_path = file.get_path();
+    let c_path = c_path.into_raw();
+    let r = unsafe { ext4_mode_set(c_path, mode) };
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    if r != EOK as i32 {
+        error!("ext4_mode_set: rc = {}", r);
+        return Err(r.into());
+    }
+    Ok(EOK as usize)
+}
+
 }
 
 impl Drop for FileWrapper {

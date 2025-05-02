@@ -67,8 +67,8 @@ pub fn sys_exec(path: *const u8) -> isize {
 
     let token = current_user_token();
     let path = translated_str(token, path);
-    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY) {
-        let all_data = app_inode.read_all();
+    if let Ok(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY,0o777) {
+        let all_data = app_inode.file().unwrap().read_all();
         let task = current_task().unwrap();
         
         task.exec(all_data.as_slice());
@@ -259,8 +259,8 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     let token =current_user_token();
     let path = translated_str(token, _path);
     let elf;
-    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY) {
-       elf = app_inode.read_all();
+    if let Ok(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY,0o777) {
+       elf = app_inode.file().unwrap().read_all();
        let tcb=Arc::new(TaskControlBlock::new(elf.as_slice()));
        let mut inner=tcb.inner_exclusive_access();
        let mut pin=current_task.inner_exclusive_access();
