@@ -95,7 +95,6 @@ pub fn rust_main() -> ! {
     timer::set_next_trigger();
 
     task::init(|| Box::pin(user_task_top()));
-    fs::list_apps();
 
     task::add_initproc();
     extern  "C" {
