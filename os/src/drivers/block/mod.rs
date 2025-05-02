@@ -2,7 +2,7 @@
 
 pub(crate) mod virtio_blk;
 pub(crate) mod disk;
-use core::{ ptr::NonNull, sync::atomic::{AtomicUsize, Ordering}};
+use core:: ptr::NonNull;
 
 use disk::Disk;
 use lazy_static::*;
@@ -10,18 +10,18 @@ use virtio_blk:: VirtioHal;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
 use spin::mutex::Mutex;
 use virtio_drivers::device::blk::VirtIOBlk;
-use crate::config;
+
+use crate::config::{KERNEL_DIRECT_OFFSET, MMIO};
 pub struct SafeMmioTransport(MmioTransport);
 unsafe impl Send for SafeMmioTransport {}
 unsafe impl Sync for SafeMmioTransport {}
 unsafe impl Sync for Disk<VirtioHal,  SafeMmioTransport>{}
 
 unsafe impl Send for Disk<VirtioHal,  SafeMmioTransport>{}
-const DMA_PADDR: AtomicUsize = AtomicUsize::new(0x1000_1000 + config::KERNEL_DIRECT_OFFSET);
 impl SafeMmioTransport{
 
     pub fn new()->Self{
-         let header_ptr: usize = DMA_PADDR.load(Ordering::SeqCst);
+         let header_ptr: usize = MMIO[0].0+KERNEL_DIRECT_OFFSET;
      let header = NonNull::new(header_ptr as *mut VirtIOHeader).expect("virtio header null");
    SafeMmioTransport(  unsafe { MmioTransport::new(header).expect("failed to init MMIO transport") } 
      )

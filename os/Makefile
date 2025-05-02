@@ -37,7 +37,7 @@ BASE ?= 1
 # Disassembly
 DISASM ?= -x
 
-build: env $(KERNEL_BIN) fs-img
+build: env $(KERNEL_BIN) 
 
 env:
 ifeq ($(OFFLINE),)
@@ -49,14 +49,7 @@ endif
 
 $(KERNEL_BIN): kernel
 	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
-
-fs-img: $(APPS)
-	@make -C ../user build TEST=$(TEST) CHAPTER=$(CHAPTER) BASE=$(BASE)
-	@rm -f $(FS_IMG)
-	@cd ../easy-fs-fuse && cargo run --release -- -s ../user/build/app/ -t ../user/target/riscv64gc-unknown-none-elf/release/
-
 kernel:
-	@make -C ../user build TEST=$(TEST) CHAPTER=$(CHAPTER) BASE=$(BASE)
 	@echo Platform: $(BOARD)
 	@cargo build $(MODE_ARG)
 

@@ -96,6 +96,7 @@ pub fn rust_main() -> ! {
 
     task::init(|| Box::pin(user_task_top()));
 
+    fs::list_app();
     task::add_initproc();
     extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
@@ -104,4 +105,17 @@ pub fn rust_main() -> ! {
     unsafe {
         trampoline(0, false, false);
     }
+}
+
+
+#[no_mangle]
+pub static mut __stack_chk_guard: usize = 0xdead_beef_dead_beef;
+
+// 栈溢出检测失败时调用的函数
+#[no_mangle]
+pub extern "C" fn __stack_chk_fail() {
+   
+  
+  panic!("stack overflow detected");
+   
 }

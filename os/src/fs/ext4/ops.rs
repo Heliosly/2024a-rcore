@@ -55,14 +55,16 @@ impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
         //let root_dir = unsafe { (*self.root.get()).as_ref().unwrap() };
         Arc::clone(&self.root)
     }
-}
-impl<H:Hal,T:Transport> Ext4FileSystem<H,T>{
-    fn ls(&self) {
+
+
+    fn ls(&self){
         self.inner
             .lwext4_dir_ls_with_vec()
             .into_iter()
             .for_each(|s| println!("{}", s));
     }
+    
+   
 }
 
 pub struct FileWrapper(RefCell<Ext4File>);
@@ -109,6 +111,7 @@ impl FileWrapper {
 /// The [`VfsNodeOps`] trait provides operations on a file or a directory.
 impl VfsNodeOps for FileWrapper {
 
+   
     /*
     fn get_attr(&self) -> Result<usize, i32> {
         let mut file = self.0.lock();

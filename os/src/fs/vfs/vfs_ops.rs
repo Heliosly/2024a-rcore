@@ -27,6 +27,10 @@ pub trait VfsOps: Send + Sync {
 
     /// Get the root directory of the filesystem.
     fn root_dir(&self) -> Arc<dyn VfsNodeOps>;
+    
+    fn ls(&self)  {
+        unimplemented!()
+    }
 }
 
 /// Node (file/directory) operations.

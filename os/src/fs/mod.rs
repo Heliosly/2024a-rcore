@@ -80,6 +80,9 @@ pub use inode::{ OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};
 
 
+pub fn list_app(){
+     EXT4FS.ls();
+}
 fn root_inode() -> Arc<dyn VfsNodeOps > {
    
     let root = EXT4FS.root_dir();
