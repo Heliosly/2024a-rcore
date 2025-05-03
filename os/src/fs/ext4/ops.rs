@@ -4,7 +4,7 @@ use crate::alloc::string::String;
 use crate::drivers::block::disk::Disk;
 use crate::fs::inode::InodeType;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
-use crate::fs::{as_inode_type, OpenFlags};
+use crate::fs::{as_inode_type, fix_path, OpenFlags};
 use crate::utils::error::{SysErrNo, SyscallRet};
 
 use alloc::ffi::CString;
@@ -341,6 +341,7 @@ impl VfsNodeOps for FileWrapper {
         loop_times: usize,
     ) ->Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
          //log::info!("[Inode.find] origin path={}", path);
+        let  path = &fix_path(path);
          let file = &mut self.0.borrow_mut();
          if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
              Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)))

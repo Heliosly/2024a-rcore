@@ -9,7 +9,7 @@ mod fd;
 use core::panic;
 
 use crate::{mm::UserBuffer, timer::get_time_ms, utils::error::{SysErrNo, SyscallRet}};
-use alloc::{string::{String, ToString}, sync::Arc};
+use alloc::{format, string::{String, ToString}, sync::Arc};
 use ext4::EXT4FS;
 use fd::FileClass;
 use hashbrown::HashMap;
@@ -88,7 +88,17 @@ fn root_inode() -> Arc<dyn VfsNodeOps > {
     let root = EXT4FS.root_dir();
     root
 }
-
+pub fn fix_path(path: &str) -> String {
+    let mut path = path.to_string();
+    if !path.starts_with("/") {
+        path = format!("/{}", path);
+    }
+    
+    if path.ends_with("/") {
+        path = path[0..path.len() - 1].to_string();
+    }
+    path
+}
 fn as_ext4_de_type(types: InodeType) -> InodeTypes {
     match types {
         InodeType::BlockDevice => InodeTypes::EXT4_DE_BLKDEV,
