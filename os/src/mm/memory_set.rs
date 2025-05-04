@@ -402,13 +402,13 @@ impl MemorySet {
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
         let satp = self.page_table.token();
-        trace!("activate new page table token:{:#x}",satp);
+        // trace!("activate new page table token:{:#x}",satp);
         unsafe {
             satp::write(satp);
             asm!("sfence.vma");
         }
-        
-        trace!("activated");
+        // 
+        // trace!("activated");
     }
     /// Translate a virtual page number to a page table entry
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
@@ -496,7 +496,7 @@ impl MapArea {
            
             MapType::Framed => {
                 let frame = frame_alloc().unwrap();
-                ppn = frame.ppn;
+                ppn = frame.ppn();
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Direct => {

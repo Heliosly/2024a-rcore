@@ -29,9 +29,9 @@ unsafe impl Hal for VirtioHal {
         frames.push(frame);
     }
     // 确保它们连续
-    let base_ppn = frames[0].ppn;
+    let base_ppn = frames[0].ppn();
     for (i, f) in frames.iter().enumerate() {
-        assert_eq!(f.ppn.0, base_ppn.0 + i);
+        assert_eq!(f.ppn().0, base_ppn.0 + i);
     }
    
     let paddr = PhysAddr::from(base_ppn);
@@ -51,6 +51,7 @@ unsafe impl Hal for VirtioHal {
             ppn.step();
         }
         trace!("dma_dealloc: phys={:#x}, pages={}", paddr, pages);
+        
         0
     }
 

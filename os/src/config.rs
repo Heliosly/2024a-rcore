@@ -5,7 +5,7 @@
 /// user app's stack size
 pub const USER_STACK_SIZE: usize = 1024 * 16;
 /// kernel stack size
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16;
+pub const KERNEL_STACK_SIZE: usize = 4096 * 32;
 /// kernel heap size
 pub const KERNEL_HEAP_SIZE: usize = 0x100_0000;
 ///于allocuserres中于分配页数

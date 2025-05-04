@@ -17,8 +17,8 @@ pub static mut UMAP2:BTreeMap<String,String>=BTreeMap::new();
 pub static mut ITOS:BTreeMap<String,Ino>=BTreeMap::new();
 
 pub static mut IDX:u64=1;
-pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
-    trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
+pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
+    trace!("kernel:pid[{}] sys_write,fd:{}", current_task().unwrap().pid.0,fd);
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -26,20 +26,20 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         return -1;
     }
     if let Some(file) = &inner.fd_table[fd] {
-        if !file.writable() {
+        if !file.writable().await.unwrap() {
             return -1;
         }
         let file = file.clone();
         // release current task TCB manually to avoid multi-borrow
         drop(inner);
-        file.write(UserBuffer::new(translated_byte_buffer(token, buf, len))) as isize
+        file.write(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize
     } else {
         -1
     }
 }
 
-pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
-    trace!("kernel:pid[{}] sys_read", current_task().unwrap().pid.0);
+pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
+    trace!("kernel:pid[{}] sys_read,fd:{}", current_task().unwrap().pid.0,fd);
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -48,13 +48,15 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
     }
     if let Some(file) = &inner.fd_table[fd] {
         let file = file.clone();
-        if !file.readable() {
+        if !file.readable().await.unwrap() {
             return -1;
         }
         // release current task TCB manually to avoid multi-borrow
         drop(inner);
-        trace!("kernel: sys_read .. file.read");
-        file.read(UserBuffer::new(translated_byte_buffer(token, buf, len))) as isize
+        // trace!("kernel: sys_read .. file.read");
+       let res= file.read(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize;
+
+       res
     } else {
         -1
     }

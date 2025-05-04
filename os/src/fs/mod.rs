@@ -6,9 +6,10 @@ mod ext4;
 mod vfs;
 mod stat;
 mod fd;
+// mod pipe;
 use core::panic;
 
-use crate::{mm::UserBuffer, timer::get_time_ms, utils::error::{SysErrNo, SyscallRet}};
+use crate::{mm::UserBuffer, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
 use alloc::{format, string::{String, ToString}, sync::Arc};
 use ext4::EXT4FS;
 use fd::FileClass;
@@ -24,15 +25,24 @@ pub use vfs::vfs_ops::VfsOps;
 
 /// trait File for all file types
 pub trait File: Send + Sync {
-    /// the file readable?
-    fn readable(&self) -> bool;
-    /// the file writable?
-    fn writable(&self) -> bool;
-    /// read from the file to buf, return the number of bytes read
-    fn read(&self, buf: UserBuffer) -> usize;
-    /// write to the file from buf, return the number of bytes written
-    fn write(&self, buf: UserBuffer) -> usize;
-    ///d
+    
+    fn read<'a>(&'a self, buf: UserBuffer) -> ASyscallRet<'a>{
+        unimplemented!();
+    }
+    /// For default file, data must be written to page cache first.
+    fn write<'a>(&'a self, buf: UserBuffer) -> ASyscallRet<'a>{
+         unimplemented!();
+    }
+     /// whether the file is readable
+     fn readable<'a>(&'a self) -> ASyncRet<'a,bool> {
+        unimplemented!();
+    }
+
+    /// whether the file is writable
+    fn writable<'a>(&'a self) -> ASyncRet<'a,bool> {
+      unimplemented!();
+    }
+
     fn clear(&self){
         panic!("d");
     }
@@ -148,8 +158,10 @@ pub fn is_dynamic_link_file(path: &str) -> bool {
 }
 ///open file
 pub fn open_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    // log::info!("[open] abs_path={}", abs_path);
    
+    let abs_path = &fix_path(abs_path);
+
+    log::debug!("[open] abs_path={}", abs_path);
     // 如果是动态链接文件,转换路径
     if is_dynamic_link_file(abs_path) {
      

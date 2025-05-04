@@ -87,21 +87,21 @@ impl PageTable {
         let level_1_index = kernel_start_vpn.indexes()[0];
         
         //截断高地址页表以访问
-        frame.ppn.get_pte_array()[level_1_index..]
+        frame.ppn().get_pte_array()[level_1_index..]
             .copy_from_slice(&global_root_ppn.get_pte_array()[level_1_index..]);
 
         // the new pagetable only owns the ownership of its own root ppn
         PageTable {
-            root_ppn: frame.ppn,
+            root_ppn: frame.ppn(),
             frames: vec![frame],
         }
     }
     /// Create a new page table
     pub fn new() -> Self {
         let frame = frame_alloc().unwrap();
-        debug!("frame: {:#x}",frame.ppn.0);
+        debug!("frame: {:#x}",frame.ppn().0);
         PageTable {
-            root_ppn: frame.ppn,
+            root_ppn: frame.ppn(),
             frames: vec![frame],
         }
     }
@@ -125,7 +125,7 @@ impl PageTable {
             }
             if !pte.is_valid() {
                 let frame = frame_alloc().unwrap();
-                *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
+                *pte = PageTableEntry::new(frame.ppn(), PTEFlags::V);
                 self.frames.push(frame);
             }
             ppn = pte.ppn();

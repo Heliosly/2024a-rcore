@@ -52,7 +52,7 @@ pub struct PidHandle(pub usize);
 
 impl Drop for PidHandle {
     fn drop(&mut self) {
-        println!("drop pid {}", self.0);
+        // println!("drop pid {}", self.0);
         PID_ALLOCATOR.exclusive_access().dealloc(self.0);
     }
 }

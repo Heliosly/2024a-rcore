@@ -1,3 +1,5 @@
+/// This file encapsulates the lwext4_rust interface and adapts it to the VFS.
+
 
 use core::cell::RefCell;
 use crate::alloc::string::String;
@@ -341,7 +343,6 @@ impl VfsNodeOps for FileWrapper {
         loop_times: usize,
     ) ->Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
          //log::info!("[Inode.find] origin path={}", path);
-        let  path = &fix_path(path);
          let file = &mut self.0.borrow_mut();
          if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
              Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)))

@@ -220,7 +220,7 @@ unsafe {
 }
 let result = syscall(syscall_id, args).await;
 
-// trace!("sys_call end");
+trace!("sys_call end");
 
     let tf = current_task_trapctx_ptr();
            unsafe {
