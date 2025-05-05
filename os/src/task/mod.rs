@@ -151,16 +151,19 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     }
     
     println!("exit pid {},exit code:{}",task.pid.0,exit_code);
-    if task.pid.0 ==3 {
-        let inner = task . inner_exclusive_access();
-        for area in inner.memory_set.areas.iter(){
-            for ppn in area.data_frames.iter(){
-                println!("ppn:{:#x}",(ppn.1).ppn().0);
-            }
+    // if task.pid.0 ==3 {
+    //     let inner = task . inner_exclusive_access();
+    //     for area in inner.memory_set.areas.iter(){
+    //         for ppn in area.data_frames.iter(){
+    //             println!("before exit ppn:{:#x},frametracker:{:#x}"
+    //             ,(ppn.1).ppn().0
+    //              ,ppn.1 as *const _ as usize
+    //         );
+    //         }
 
-        }
+    //     }
 
-    }
+    // }
     // if pid == IDLE_PID {
     //     println!(
     //         "[kernel] Idle process exit with exit_code {} ...",

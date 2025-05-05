@@ -4,7 +4,7 @@ use core::arch::asm;
 use log::warn;
 
 pub mod error;
-use crate::{config::PAGE_SIZE, mm::VirtAddr};
+use crate::{config::PAGE_SIZE, mm::{FrameTracker, VirtAddr}};
 
 /// 跟踪函数的调用栈
 pub fn backtrace() {
@@ -39,7 +39,8 @@ pub fn bpoint()->i32{
     _a +=1;
     return _a;
 }
-pub fn bpoint1(){
-    let mut _a : i32=1;
-    _a+=1;
+pub fn bpoint1(_a: *const FrameTracker) {
+    println!("123\n");
+    // 这里可以直接操作 *a
+   
 }

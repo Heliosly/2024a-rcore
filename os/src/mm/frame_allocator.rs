@@ -8,6 +8,7 @@ use crate::sync::UPSafeCell;
 use crate::task::current_task;
 use crate::utils::bpoint;
 use alloc::vec::Vec;
+use spin::mutex::Mutex;
 use core::fmt::{self, Debug, Formatter};
 use core::panic;
 use lazy_static::*;
@@ -23,6 +24,7 @@ impl FrameTracker {
     pub fn ppn(&self) -> PhysPageNum {
         self.ppn
     }
+    
     /// Create a new FrameTracker
      fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
@@ -47,12 +49,12 @@ impl Debug for FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
-        if self.ppn.0==0x81901{
+        // if self.ppn.0==0x81901{
             
-            println!("\ndrop pid:{}\n",current_task().unwrap().pid.0);
-            bpoint();
+        //     println!("\ndrop pid:{}\n",current_task().unwrap().pid.0);
+        //     bpoint();
 
-        }
+        // }
         frame_dealloc(self.ppn);
     }
 }
@@ -89,7 +91,7 @@ impl FrameAllocator for StackFrameAllocator {
         }
     }
     fn alloc(&mut self) -> Option<PhysPageNum> {
-      let ret: Option<PhysPageNum>= if let Some(ppn) = self.recycled.pop() {
+      if let Some(ppn) = self.recycled.pop() {
             if ppn >= self.current {
              
                 panic!("Frame alloc wrong ppn={:#x} !", ppn);
@@ -100,12 +102,11 @@ impl FrameAllocator for StackFrameAllocator {
         } else {
             self.current += 1;
             Some((self.current - 1).into())
-        };
-        if ret.unwrap().0 ==0x81901{
-            print!("\nalloc pid:{}\n",current_task().unwrap().pid.0);
-            bpoint();
         }
-        ret
+        // if ret.unwrap().0 ==0x81901{
+        //     print!("\nalloc pid:{}\n",current_task().unwrap().pid.0);
+        //     bpoint();
+        // }
         
         
     }
@@ -114,8 +115,6 @@ impl FrameAllocator for StackFrameAllocator {
         let ppn = ppn.0;
         // validity check
         if ppn >= self.current || self.recycled.iter().any(|&v| v == ppn) {
-            return ;
-            //很玄学无能为例了
         
             panic!("Frame ppn={:#x} has not been allocated!,current:{:#x}", ppn,self.current);
         }
@@ -129,8 +128,8 @@ type FrameAllocatorImpl = StackFrameAllocator;
 
 lazy_static! {
     /// frame allocator instance through lazy_static!
-    pub static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
-        unsafe { UPSafeCell::new(FrameAllocatorImpl::new()) };
+    pub static ref FRAME_ALLOCATOR: Mutex<FrameAllocatorImpl> =
+         Mutex::new(FrameAllocatorImpl::new()) ;
 }
 /// initiate the frame allocator using `ekernel` and `MEMORY_END`
 pub fn init_frame_allocator() {
@@ -140,7 +139,7 @@ pub fn init_frame_allocator() {
     let l= PhysAddr::from(KernelAddr::from(ekernel as usize)).ceil();
     let r =
         PhysAddr::from(KernelAddr::from(MEMORY_END)).floor();
-    FRAME_ALLOCATOR.exclusive_access().init(
+    FRAME_ALLOCATOR.lock().init(
         l,
         r,
 
@@ -153,7 +152,7 @@ pub fn init_frame_allocator() {
 /// Allocate a physical page frame in FrameTracker style
 pub fn frame_alloc() -> Option<FrameTracker> {
     FRAME_ALLOCATOR
-        .exclusive_access()
+        .lock()
         .alloc()
         .map(FrameTracker::new)
 }
@@ -165,7 +164,7 @@ pub fn frame_dealloc(ppn: PhysPageNum) {
    if ppn.0 > 0x100000000{
      panic!("Frame ppn={:#x} has not been allocated!", ppn.0);
    }
-    FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
+    FRAME_ALLOCATOR.lock().dealloc(ppn);
 }
 
 #[allow(unused)]

@@ -363,10 +363,10 @@ impl MemorySet {
             ),
             None,
         );
- println!("sbrk ppn :");
-        for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
-            println!("ppn:{:#x}",frame.ppn().0);
-        }
+//  println!("sbrk ppn :");
+        // for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
+        //     println!("ppn:{:#x}",frame.ppn().0);
+        // }
        
        
     
@@ -423,7 +423,8 @@ impl MemorySet {
 
     ///Remove all `MapArea`
     pub fn recycle_data_pages(&mut self) {
-        self.areas=Vec::new();
+        self.page_table.clear();
+        self.areas.clear();
     }
 
     /// shrink the area to new_end

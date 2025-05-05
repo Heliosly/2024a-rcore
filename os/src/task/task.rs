@@ -80,8 +80,7 @@ impl TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
-    ///tasktate
-    /// The physical page number of the frame where the trap context is placed
+    /// The  trapcontext
     pub trap_cx: UnsafeCell<TrapContext>,
     ///trap上下文的bottom
     ///用户栈顶
@@ -325,12 +324,13 @@ impl TaskControlBlock {
             let (memory_set, _user_sp, entry_point) = MemorySet::from_elf(elf_data);
             
         
-        unsafe { *self.fut.get() = UTRAP_HANDLER() };
+        // unsafe { *self.fut.get() = UTRAP_HANDLER() };
             // **** access current TCB exclusively
             let mut inner = self.inner_exclusive_access();
+
             // substitute memory_set
-let old_memory_set = replace(&mut inner.memory_set, memory_set);
-drop(old_memory_set); // 安
+            let old_memory_set = replace(&mut inner.memory_set, memory_set);
+            drop(old_memory_set); // 安
             inner.alloc_user_res();
             inner.memory_set.activate();
             // update trap_cx ppn

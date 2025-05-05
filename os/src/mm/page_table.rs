@@ -76,6 +76,10 @@ pub struct PageTable {
 
 /// Assume that it won't oom when creating/mapping.
 impl PageTable {
+    ///clear frame 
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
     ///Create new PageTable from global kernel space
     pub fn new_from_kernel() -> Self {
         let frame = frame_alloc().unwrap();

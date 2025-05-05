@@ -2,11 +2,12 @@
 //!
 
 use alloc::sync::Arc;
+use riscv::addr::Frame;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags}, mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr}, task::{
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags}, mm::{translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapPermission, VirtAddr}, task::{
         add_task, current_task, current_user_token, exit_current_and_run_next, set_priority, yield_now, TaskControlBlock, TaskStatus
-    }, timer::get_time_us
+    }, timer::get_time_us, utils::{bpoint, bpoint1}
 };
 
 #[repr(C)]
@@ -52,24 +53,27 @@ pub fn sys_fork() -> isize {
     let new_task = current_task.fork();
 
     let new_pid = new_task.pid.0;
-    debug!("new_pid:{}",new_pid);
+    // debug!("new_pid:{}",new_pid);
   
     // modify trap context of new_task, because it returns immediately after switching
     // we do not have to move to next instruction since we have done it before
     // for child process, fork returns 0
     // add new task to scheduler
-    let inner = new_task.inner_exclusive_access();
-    for area in inner.memory_set.areas.iter(){
-        for (_,ppn) in area.data_frames.iter(){
-            if ppn.ppn().0==0x81901 {
-                print!("\nfork in pid{}\n",new_pid);
-            }
-            if new_task.pid.0==3 {
-                println!("in fork pid =3 ,ppn={:#x}",ppn.ppn().0);
-            }
-        }
-    }
-    drop(inner);
+    // let inner = new_task.inner_exclusive_access();
+    // for area in inner.memory_set.areas.iter(){
+    //     for (_,ppn) in area.data_frames.iter(){
+    //         if ppn.ppn().0==0x81901 {
+    //             print!("\nfork in pid{}\n",new_pid);
+    //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
+    //             ppn.ppn().0,ppn as *const _ as usize);
+    //         }
+    //         if new_task.pid.0==3 {
+    //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
+    //             ppn.ppn().0,ppn as *const _ as usize);
+    //         }
+    //     }
+    // }
+    // drop(inner);
     add_task(new_task);
    
     new_pid as isize
@@ -87,19 +91,32 @@ pub fn sys_exec(path: *const u8) -> isize {
         
         drop(inner); 
         task.exec(all_data.as_slice());
-        let inner= task.inner_exclusive_access();
-for area in inner.memory_set.areas.iter(){
-            for (_,ppn) in area.data_frames.iter(){
-                if ppn.ppn().0==0x81901 {
-                    print!("\nexec in pid{}\n",task.pid.0);
-                }
-                if task.pid.0==3 {
-                    println!("in exec pid =3 ,ppn={:#x}",ppn.ppn().0);
-                }
-            }
-        }
-         inner.memory_set.activate();       
-         drop(inner);
+//         let inner= task.inner_exclusive_access();
+// for area in inner.memory_set.areas.iter(){
+//             for (_,ppn) in area.data_frames.iter(){
+//                 if ppn.ppn().0==0x81901 {
+//                     print!("\nexec in pid{}\n",task.pid.0);
+
+//                 }
+//                 if task.pid.0==3 {
+
+//                     println!("in exec pid =3 ,ppn={:#x},FrameTracker_ptr:{:#x}",
+//                     ppn.ppn().0,
+//                     ppn as *const _ as usize
+                    
+                
+//                 );
+//                 if ppn as *const _ as usize==0xffffffc0812c0560{
+//                     bpoint1(ppn as *const FrameTracker);
+//                 }
+
+//                 }
+//             }
+//         }
+//          inner.memory_set.activate();       
+         
+//          drop(inner);
+//          bpoint();
          0
     } else {
         -1

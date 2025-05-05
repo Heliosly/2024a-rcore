@@ -3,7 +3,7 @@ use spin::mutex::SpinMutex;
 use core::{alloc::Layout,  ptr:: NonNull};
 use lazy_init::LazyInit;
 
-use crate::{config, mm::VirtAddr};
+use crate::{config::{self, PAGE_SIZE}, mm::VirtAddr};
 
 pub struct TaskStack {
     ptr: NonNull<u8>,
@@ -27,22 +27,29 @@ impl TaskStack {
         
     // }
 
-    pub fn alloc(size: usize) -> Self {
-        let layout = Layout::from_size_align(size, 16).unwrap();
-        Self {
-            ptr: NonNull::new(unsafe { alloc::alloc::alloc(layout) }).unwrap(),
-            layout,
-            is_init: false,
+   
+        pub fn alloc(size: usize) -> Self {
+            // 向上对齐到整页
+            let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            let layout = Layout::from_size_align(aligned_size, PAGE_SIZE).unwrap();
+    
+            let ptr = unsafe { alloc::alloc::alloc(layout) };
+            let ptr = NonNull::new(ptr).expect("Failed to allocate TaskStack");
+    
+            Self {
+                ptr,
+                layout,
+                is_init: false,
+            }
         }
-    }
-
-    pub const fn top(&self) -> VirtAddr {
-        unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
-    }
-
-    pub const fn down(&self) -> VirtAddr {
-        unsafe { core::mem::transmute(self.ptr.as_ptr()) }
-    }
+    
+        pub fn top(&self) -> VirtAddr {
+            unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
+        }
+    
+        pub fn down(&self) -> VirtAddr {
+            unsafe { core::mem::transmute(self.ptr.as_ptr()) }
+        }
 }
 
 impl Drop for TaskStack {
