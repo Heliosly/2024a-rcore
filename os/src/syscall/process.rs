@@ -29,6 +29,7 @@ pub struct TaskInfo {
 
 pub fn sys_exit(exit_code: i32)->isize  {
     trace!("kernel:pid[{}] sys_exit", current_task().unwrap().pid.0);
+
     exit_current_and_run_next(exit_code);
     exit_code as isize
 }
@@ -57,6 +58,18 @@ pub fn sys_fork() -> isize {
     // we do not have to move to next instruction since we have done it before
     // for child process, fork returns 0
     // add new task to scheduler
+    let inner = new_task.inner_exclusive_access();
+    for area in inner.memory_set.areas.iter(){
+        for (_,ppn) in area.data_frames.iter(){
+            if ppn.ppn().0==0x81901 {
+                print!("\nfork in pid{}\n",new_pid);
+            }
+            if new_task.pid.0==3 {
+                println!("in fork pid =3 ,ppn={:#x}",ppn.ppn().0);
+            }
+        }
+    }
+    drop(inner);
     add_task(new_task);
    
     new_pid as isize
@@ -70,9 +83,24 @@ pub fn sys_exec(path: *const u8) -> isize {
     if let Ok(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY,0o777) {
         let all_data = app_inode.file().unwrap().read_all();
         let task = current_task().unwrap();
+        let inner = task.inner_exclusive_access();
         
+        drop(inner); 
         task.exec(all_data.as_slice());
-        task.inner_exclusive_access().memory_set.activate();        0
+        let inner= task.inner_exclusive_access();
+for area in inner.memory_set.areas.iter(){
+            for (_,ppn) in area.data_frames.iter(){
+                if ppn.ppn().0==0x81901 {
+                    print!("\nexec in pid{}\n",task.pid.0);
+                }
+                if task.pid.0==3 {
+                    println!("in exec pid =3 ,ppn={:#x}",ppn.ppn().0);
+                }
+            }
+        }
+         inner.memory_set.activate();       
+         drop(inner);
+         0
     } else {
         -1
     }
@@ -89,17 +117,17 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- access current PCB exclusively
     let mut inner = task.inner_exclusive_access();
 
-    for i in inner.children.iter(){
-        print!(" {}",{i.pid.0}); 
-    }
+    // for i in inner.children.iter(){
+    //     print!(" {}",{i.pid.0}); 
+    // }
 
-        println!(" ");
+        // println!(" ");
     if !inner
         .children
         .iter()
         .any(|p| pid == -1 || pid as usize == p.getpid())
     {
-        println!("cant find pid:{} in parent pid:{},and children count = : {} ",
+        debug!("cant find pid:{} in parent pid:{},and children count = : {} ",
         pid,task.pid.0,inner.children.len());
         return -1;
         // ---- release current PCB
@@ -110,7 +138,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // ++++ release child PCB
     });
     if let Some((idx, _)) = pair {
-        println!("chiled idx is removed");
+        debug!("chiled idx is removed");
         let child = inner.children.remove(idx);
         // confirm that child will be deallocated after being removed from children list
         let found_pid = child.getpid();

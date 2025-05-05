@@ -75,7 +75,7 @@ fn set_trap_entry(){
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
     unsafe {
-        sie::set_stimer();
+        // sie::set_stimer();
     }
 }
 /// disable timer interrupt in supervisor mode

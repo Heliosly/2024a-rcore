@@ -28,3 +28,5 @@ opt-level = 0
 [profile.dev]
 debug = true
 opt-level = 0
+[env]
+RUST_LOG = "debug,lwext4_rust=off"

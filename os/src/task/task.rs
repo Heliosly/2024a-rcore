@@ -14,7 +14,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::{RefMut, UnsafeCell};
 use core::future::Future;
-use core::mem::ManuallyDrop;
+use core::mem::{replace, ManuallyDrop};
 use core::pin::Pin;
 use core::task::Waker;
 use spin::Mutex;
@@ -187,7 +187,9 @@ impl TaskControlBlockInner {
        
        
         self.user_stack_top = ustack_top;
+        assert!(self.memory_set.translate(crate::mm::VirtPageNum::from(VirtAddr::from(ustack_bottom))).unwrap().is_valid());
 
+        trace!("user_stack_top:{:#x},bottom:{:#x}",ustack_top,ustack_bottom);
         let user_stack_range = VPNRange::new(
             VirtAddr::from(ustack_bottom).floor(),
             VirtAddr::from(ustack_top).floor(),
@@ -327,7 +329,8 @@ impl TaskControlBlock {
             // **** access current TCB exclusively
             let mut inner = self.inner_exclusive_access();
             // substitute memory_set
-            inner.memory_set = memory_set;
+let old_memory_set = replace(&mut inner.memory_set, memory_set);
+drop(old_memory_set); // 安
             inner.alloc_user_res();
             inner.memory_set.activate();
             // update trap_cx ppn

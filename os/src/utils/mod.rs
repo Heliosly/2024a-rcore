@@ -32,3 +32,14 @@ pub fn page_round_up(v: usize) -> usize {
         v - (v % PAGE_SIZE) + PAGE_SIZE
     }
 }
+
+
+pub fn bpoint()->i32{
+    let mut _a=1;
+    _a +=1;
+    return _a;
+}
+pub fn bpoint1(){
+    let mut _a : i32=1;
+    _a+=1;
+}

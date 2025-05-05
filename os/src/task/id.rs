@@ -62,60 +62,60 @@ pub fn pid_alloc() -> PidHandle {
     PidHandle(PID_ALLOCATOR.exclusive_access().alloc())
 }
 
-/// Return (bottom, top) of a kernel stack in kernel space.
-pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    let top = KSTACK_TOP - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
-    let bottom = top - KERNEL_STACK_SIZE;
-    (bottom, top)
-}
+// /// Return (bottom, top) of a kernel stack in kernel space.
+// pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
+//     let top = KSTACK_TOP - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
+//     let bottom = top - KERNEL_STACK_SIZE;
+//     (bottom, top)
+// }
 
-/// Kernel stack for a process(task)
-pub struct KernelStack(pub usize);
+// /// Kernel stack for a process(task)
+// pub struct KernelStack(pub usize);
 
-/// allocate a new kernel stack
-pub fn kstack_alloc() -> KernelStack {
-    let kstack_id = KSTACK_ALLOCATOR.exclusive_access().alloc();
-    let (kstack_bottom, kstack_top) = kernel_stack_position(kstack_id);
-    KERNEL_SPACE.exclusive_access().insert_framed_area(
-        kstack_bottom.into(),
-        kstack_top.into(),
-        MapPermission::R | MapPermission::W,
+// /// allocate a new kernel stack
+// pub fn kstack_alloc() -> KernelStack {
+//     let kstack_id = KSTACK_ALLOCATOR.exclusive_access().alloc();
+//     let (kstack_bottom, kstack_top) = kernel_stack_position(kstack_id);
+//     KERNEL_SPACE.exclusive_access().insert_framed_area(
+//         kstack_bottom.into(),
+//         kstack_top.into(),
+//         MapPermission::R | MapPermission::W,
         
-        crate::mm::MapAreaType::Stack,
-    );
-    trace!("kernel stack alloc start:{:#x} ,end:{:#x}",kstack_bottom,
-        kstack_top);
-    KernelStack(kstack_id)
-}
+//         crate::mm::MapAreaType::Stack,
+//     );
+//     trace!("kernel stack alloc start:{:#x} ,end:{:#x}",kstack_bottom,
+//         kstack_top);
+//     KernelStack(kstack_id)
+// }
 
-impl Drop for KernelStack {
-    fn drop(&mut self) {
-        let (kernel_stack_bottom, _) = kernel_stack_position(self.0);
-        let kernel_stack_bottom_va: VirtAddr = kernel_stack_bottom.into();
-        KERNEL_SPACE
-            .exclusive_access()
-            .remove_area_with_start_vpn(kernel_stack_bottom_va.into());
-        KSTACK_ALLOCATOR.exclusive_access().dealloc(self.0);
-    }
-}
+// impl Drop for KernelStack {
+//     fn drop(&mut self) {
+//         let (kernel_stack_bottom, _) = kernel_stack_position(self.0);
+//         let kernel_stack_bottom_va: VirtAddr = kernel_stack_bottom.into();
+//         KERNEL_SPACE
+//             .exclusive_access()
+//             .remove_area_with_start_vpn(kernel_stack_bottom_va.into());
+//         KSTACK_ALLOCATOR.exclusive_access().dealloc(self.0);
+//     }
+// }
 
-impl KernelStack {
-    /// Push a variable of type T into the top of the KernelStack and return its raw pointer
-    #[allow(unused)]
-    pub fn push_on_top<T>(&self, value: T) -> *mut T
-    where
-        T: Sized,
-    {
-        let kernel_stack_top = self.get_top();
-        let ptr_mut = (kernel_stack_top - core::mem::size_of::<T>()) as *mut T;
-        unsafe {
-            *ptr_mut = value;
-        }
-        ptr_mut
-    }
-    /// Get the top of the KernelStack
-    pub fn get_top(&self) -> usize {
-        let (_, kernel_stack_top) = kernel_stack_position(self.0);
-        kernel_stack_top
-    }
-}
+// impl KernelStack {
+//     /// Push a variable of type T into the top of the KernelStack and return its raw pointer
+//     #[allow(unused)]
+//     pub fn push_on_top<T>(&self, value: T) -> *mut T
+//     where
+//         T: Sized,
+//     {
+//         let kernel_stack_top = self.get_top();
+//         let ptr_mut = (kernel_stack_top - core::mem::size_of::<T>()) as *mut T;
+//         unsafe {
+//             *ptr_mut = value;
+//         }
+//         ptr_mut
+//     }
+//     /// Get the top of the KernelStack
+//     pub fn get_top(&self) -> usize {
+//         let (_, kernel_stack_top) = kernel_stack_position(self.0);
+//         kernel_stack_top
+//     }
+// }

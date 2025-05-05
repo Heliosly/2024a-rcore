@@ -29,12 +29,13 @@ pub use processor::run_task2;
 pub use kstack::TaskStack;
 use processor::PROCESSOR;
 use crate::fs::{open_file, OpenFlags};
+use crate::utils::{bpoint, bpoint1};
 use alloc::sync::Arc;
 use lazy_static::*;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
 pub use task::{TaskControlBlock, TaskStatus};
 pub use id::RecycleAllocator;
-pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
+pub use id::{ pid_alloc,  PidHandle};
 // pub use manager::add_task;
 pub use processor::{
     current_task, current_user_token, run_tasks,  take_current_task,
@@ -145,8 +146,21 @@ pub const IDLE_PID: usize = 0;
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
     let task = current_task().unwrap();
-
+    if task.pid.0==14{
+        bpoint();
+    }
+    
     println!("exit pid {},exit code:{}",task.pid.0,exit_code);
+    if task.pid.0 ==3 {
+        let inner = task . inner_exclusive_access();
+        for area in inner.memory_set.areas.iter(){
+            for ppn in area.data_frames.iter(){
+                println!("ppn:{:#x}",(ppn.1).ppn().0);
+            }
+
+        }
+
+    }
     // if pid == IDLE_PID {
     //     println!(
     //         "[kernel] Idle process exit with exit_code {} ...",
@@ -206,4 +220,4 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
     trace!("addInITPROC ok");
-}
+    }

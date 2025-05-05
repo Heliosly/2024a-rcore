@@ -3,7 +3,7 @@
 
 use super:: PageTableEntry;
 use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS,KERNEL_DIRECT_OFFSET};
-use core::{fmt::{self, Debug, Formatter}, ops::{Add, Sub}};
+use core::{fmt::{self, Debug, Formatter}, ops::{Add, Sub}, panic};
 
 const PA_WIDTH_SV39: usize = 56;
 const VA_WIDTH_SV39: usize = 39;
@@ -191,9 +191,7 @@ impl VirtAddr {
 impl From<VirtAddr> for VirtPageNum {
     fn from(v: VirtAddr) -> Self {
         if v.page_offset()!=0{
-            loop{
-
-            }
+           panic!("virtual address is not aligned by page size!");
         }
         assert_eq!(v.page_offset(), 0);
         v.floor()

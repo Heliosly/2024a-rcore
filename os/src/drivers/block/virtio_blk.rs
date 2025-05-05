@@ -1,4 +1,4 @@
-use core::ptr::NonNull;
+use core::{panic, ptr::NonNull};
 
 use crate::{mm::{frame_alloc, frame_dealloc, kernel_token, FrameTracker, KernelAddr, PageTable, PhysAddr, PhysPageNum, StepByOne, VirtAddr 
 }, sync::UPSafeCell};
@@ -23,29 +23,31 @@ unsafe impl Hal for VirtioHal {
     /// 分配 `pages` 页 DMA 内存，返回 (物理地址, 内核可访问的虚拟指针)
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (DMAPhysAddr, NonNull<u8>) {
          // 1) 分配真正的、连续的物理页
-    let mut frames = Vec::new();
-    for _ in 0..pages {
-        let frame = frame_alloc().unwrap();
-        frames.push(frame);
-    }
-    // 确保它们连续
-    let base_ppn = frames[0].ppn();
-    for (i, f) in frames.iter().enumerate() {
-        assert_eq!(f.ppn().0, base_ppn.0 + i);
-    }
+         info!("dma_alloc");
+         let mut ppn_base = PhysPageNum(0);
+        for i in 0..pages {
+            let frame = frame_alloc().unwrap();
+            if i == 0 {
+                ppn_base = frame.ppn();
+            }
+            assert_eq!(frame.ppn().0, ppn_base.0 + i);
+            QUEUE_FRAMES.exclusive_access().push(frame);
+        }
+    
    
-    let paddr = PhysAddr::from(base_ppn);
+   
+    let paddr = PhysAddr::from(ppn_base);
     // 3) 计算虚拟地址，假设 direct-map
     let vaddr_usize = KernelAddr::from(paddr).0;
     let vaddr = NonNull::new(vaddr_usize as *mut u8).unwrap();
     // 4) 记录 frames，等 dealloc 时释放
-    QUEUE_FRAMES.exclusive_access().extend(frames.into_iter());
     (paddr.0, vaddr)
     }
 
     /// 释放之前分配的 DMA 内存
     unsafe fn dma_dealloc(paddr: DMAPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
         let mut ppn: PhysPageNum = paddr.into();
+        panic!("s");
         for _ in 0..pages {
             frame_dealloc(ppn);
             ppn.step();

@@ -279,7 +279,7 @@ impl VfsNodeOps for FileWrapper {
     */
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
-        debug!("To read_at {}, buf len={}", offset, buf.len());
+        // debug!("To read_at {}, buf len={}", offset, buf.len());
         let mut file = self.0.borrow_mut();
         let path = file.get_path();
         let path = path.to_str().unwrap();

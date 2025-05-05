@@ -66,7 +66,6 @@ fn clear_bss() {
             .fill(0);
     }
 
-    print!("stext:{:x}",sbss as usize);
 }
 
 #[no_mangle]
@@ -90,7 +89,7 @@ pub fn rust_main() -> ! {
     mm::init();
     mm::remap_test();
     mm::heap_allocator::heap_test();
-    // mm::frame_allocator::frame_allocator_test();
+    mm::frame_allocator::frame_allocator_test();
     trap::init();
     trap::enable_irqs();
     timer::set_next_trigger();

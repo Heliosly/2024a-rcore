@@ -3,7 +3,10 @@
 use super::{PhysAddr, PhysPageNum};
 use crate::config::MEMORY_END;
 use crate::mm::address::KernelAddr;
+use crate::sbi::console_getchar;
 use crate::sync::UPSafeCell;
+use crate::task::current_task;
+use crate::utils::bpoint;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use core::panic;
@@ -21,7 +24,7 @@ impl FrameTracker {
         self.ppn
     }
     /// Create a new FrameTracker
-    pub fn new(ppn: PhysPageNum) -> Self {
+     fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
         let bytes_array = ppn.get_bytes_array();
         // if  ppn.0< 0x0812d2 ||ppn.0 >0x13FFFF  {
@@ -44,6 +47,12 @@ impl Debug for FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
+        if self.ppn.0==0x81901{
+            
+            println!("\ndrop pid:{}\n",current_task().unwrap().pid.0);
+            bpoint();
+
+        }
         frame_dealloc(self.ppn);
     }
 }
@@ -64,16 +73,11 @@ impl StackFrameAllocator {
         assert!(self.recycled.is_empty());
         self.current = l.0;
         self.end = r.0;
-        println!(
-            "start frame={:#x},end frame={:#x},last {:#x} Physical Frames.",
-            self.current,
-            self.end,
-            self.end - self.current
-        );
+       
         // trace!("last {} Physical Frames.", self.end - self.current);
-        for i in self.recycled.iter() {
-                  println!("{}",i);  
-                }
+        // for i in self.recycled.iter() {
+        //           println!("{}",i);  
+        //         }
     }
 }
 impl FrameAllocator for StackFrameAllocator {
@@ -85,13 +89,11 @@ impl FrameAllocator for StackFrameAllocator {
         }
     }
     fn alloc(&mut self) -> Option<PhysPageNum> {
-       let res: Option<PhysPageNum>= if let Some(ppn) = self.recycled.pop() {
-            // if ppn >= self.current {
-            //     for i in self.recycled.iter() {
-            //       println!("{}",i);  
-            //     }
-            //     panic!("Frame ppn={:#x} has not been allocated!", ppn);
-            // }
+      let ret: Option<PhysPageNum>= if let Some(ppn) = self.recycled.pop() {
+            if ppn >= self.current {
+             
+                panic!("Frame alloc wrong ppn={:#x} !", ppn);
+            }
             Some(ppn.into())
         } else if self.current == self.end {
             None
@@ -99,32 +101,27 @@ impl FrameAllocator for StackFrameAllocator {
             self.current += 1;
             Some((self.current - 1).into())
         };
-        if res.unwrap().0>0x13ffff
-        {
-         if self.current == self.end {
-            panic!("Frame is not enough!");//我草这里太玄学了无能为力也
-                None
-            } else {
-
-                println!("[kernel] current ppn:{:#x}",self.current);
-                self.current += 1;
-                Some((self.current - 1).into())
-            }
+        if ret.unwrap().0 ==0x81901{
+            print!("\nalloc pid:{}\n",current_task().unwrap().pid.0);
+            bpoint();
         }
-        else
-       { 
-        res
-       } 
+        ret
+        
         
     }
     fn dealloc(&mut self, ppn: PhysPageNum) {
+        
         let ppn = ppn.0;
         // validity check
         if ppn >= self.current || self.recycled.iter().any(|&v| v == ppn) {
-            panic!("Frame ppn={:#x} has not been allocated!", ppn);
+            return ;
+            //很玄学无能为例了
+        
+            panic!("Frame ppn={:#x} has not been allocated!,current:{:#x}", ppn,self.current);
         }
        
         self.recycled.push(ppn);
+        // println!("PPN:{:#x}",ppn );
     }
 }
 
@@ -150,7 +147,7 @@ pub fn init_frame_allocator() {
         
     );
   
-    info!("Frame_allocator l:{:#?},r:{:#?}",l,r);
+    println!("Frame_allocator l:{:#x},r:{:#x}",l.0,r.0);
 }
 
 /// Allocate a physical page frame in FrameTracker style
@@ -177,13 +174,13 @@ pub fn frame_allocator_test() {
     let mut v: Vec<FrameTracker> = Vec::new();
     for i in 0..5 {
         let frame = frame_alloc().unwrap();
-        println!("{:?}", frame);
+        println!("{:#?}", frame);
         v.push(frame);
     }
     v.clear();
     for i in 0..5 {
         let frame = frame_alloc().unwrap();
-        println!("{:?}", frame);
+        println!("{:#?}", frame);
         v.push(frame);
     }
     drop(v);

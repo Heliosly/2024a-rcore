@@ -1,6 +1,7 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 
 use crate::config::{ KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
+use crate::utils::bpoint;
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{/*PhysAddr,*/ PhysPageNum, VirtAddr, VirtPageNum};
@@ -334,7 +335,7 @@ impl MemorySet {
                     map_perm |= MapPermission::X;
                 }
 
-                trace!("start_va::{:#x}, end_va::{:#x}",start_va.0,end_va.0);
+                trace!("elfmemery start_va::{:#x}, end_va::{:#x}",start_va.0,end_va.0);
                 let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm,MapAreaType::Elf);
                 max_end_vpn = map_area.vpn_range.get_end();
                 
@@ -348,7 +349,7 @@ impl MemorySet {
         let max_end_va: VirtAddr = max_end_vpn.into();
         let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
-        user_stack_bottom += PAGE_SIZE;
+        user_stack_bottom += 2*PAGE_SIZE;
         let user_stack_top = user_stack_bottom ;
 
     // used in sbrk
@@ -362,15 +363,19 @@ impl MemorySet {
             ),
             None,
         );
+ println!("sbrk ppn :");
+        for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
+            println!("ppn:{:#x}",frame.ppn().0);
+        }
+       
        
     
 
-                trace!("sp,start_va::{:#x}, sp,end_va::{:#x}",user_stack_bottom,user_stack_top);
-  
+                trace!("user_stack_sp,start_va::{:#x}, sp,end_va::{:#x}",user_stack_bottom,user_stack_top);
+                trace!("app_entry:{:#x}",elf.header.pt2.entry_point() as usize);
  
 
        
-        trace!("from_elf push ok");
         (
             memory_set,
             user_stack_top,
@@ -418,7 +423,7 @@ impl MemorySet {
 
     ///Remove all `MapArea`
     pub fn recycle_data_pages(&mut self) {
-        self.areas.clear();
+        self.areas=Vec::new();
     }
 
     /// shrink the area to new_end
@@ -455,7 +460,7 @@ impl MemorySet {
 pub struct MapArea {
     ///从start到end的vpn
     pub vpn_range: VPNRange,
-    data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    pub data_frames: BTreeMap<VirtPageNum, FrameTracker>,
     map_type: MapType,
     map_perm: MapPermission,
     area_type: MapAreaType,
@@ -497,6 +502,7 @@ impl MapArea {
             MapType::Framed => {
                 let frame = frame_alloc().unwrap();
                 ppn = frame.ppn();
+               
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Direct => {
