@@ -13,7 +13,9 @@ use crate::sync::UPSafeCell;
 use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo};
 use core::pin::Pin;
 use core::future::Future;
-
+pub const DEFAULT_FILE_MODE: u32 = 0o666;
+pub const DEFAULT_DIR_MODE: u32 = 0o777;
+pub const NONE_MODE: u32 = 0;
 // 定义一份打开文件的标志
 bitflags! {
     pub struct OpenFlags: u32 {

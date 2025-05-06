@@ -21,7 +21,9 @@ use stat::Kstat;
 pub use stat::Statfs;
 use vfs::vfs_ops::VfsNodeOps;
 pub use vfs::vfs_ops::VfsOps;
-
+pub const DEFAULT_FILE_MODE: u32 = 0o666;
+pub const DEFAULT_DIR_MODE: u32 = 0o777;
+pub const NONE_MODE: u32 = 0;
 
 /// trait File for all file types
 pub trait File: Send + Sync {
@@ -234,4 +236,8 @@ pub fn remove_inode_idx(path: &str) {
 
 pub fn print_inner() {
     println!("{:#?}", FD2NODE.read().keys());
+}
+pub fn map_dynamic_link_file(path: &str) -> &str {
+    unimplemented!(); 
+    path
 }

@@ -73,7 +73,13 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_FORK => sys_fork(),
-        SYSCALL_EXEC => sys_exec(args[0] as *const u8),
+        SYSCALL_EXEC => sys_execve(args[0] as *const u8,
+        
+            args[1] as *const usize,
+            args[2] as *const usize
+        
+        
+        ),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
         SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),

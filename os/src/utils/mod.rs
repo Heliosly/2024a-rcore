@@ -3,6 +3,7 @@ use core::arch::asm;
 // pub use command::*;
 use log::warn;
 
+pub mod string;
 pub mod error;
 use crate::{config::PAGE_SIZE, mm::{FrameTracker, VirtAddr}};
 

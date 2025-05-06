@@ -2,13 +2,15 @@
 use super::{ pid_alloc, PidHandle};
 use crate::config:: { PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{ MapPermission, MemorySet, PageTable, PageTableEntry,  VPNRange, VirtAddr,MapAreaType};
+use crate::mm::{ put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, PageTable, PageTableEntry, VPNRange, VirtAddr};
 use crate::sync::UPSafeCell;
+use crate::task::aux::{self, Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::trap::{    TrapContext, TrapStatus};
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -90,7 +92,8 @@ pub struct TaskControlBlockInner {
     /// Application data can only appear in areas
     /// where the application address space is lower than base_size
     pub base_size: usize,
-
+    /// current work p
+    pub cwd: String,
 
     /// Maintain the execution status of the current process
     pub task_status: Mutex<TaskStatus>,
@@ -178,12 +181,11 @@ impl TaskControlBlockInner {
     ///分配用户资源
     pub fn alloc_user_res(&mut self) {
         let (ustack_bottom, ustack_top) = self.insert_framed_area_with_hint(
-            USER_STACK_TOP,
+        USER_STACK_TOP,
             USER_STACK_SIZE,
             MapPermission::R | MapPermission::W | MapPermission::U,
             MapAreaType::Stack,
         );
-       
        
         self.user_stack_top = ustack_top;
         assert!(self.memory_set.translate(crate::mm::VirtPageNum::from(VirtAddr::from(ustack_bottom))).unwrap().is_valid());
@@ -261,13 +263,13 @@ impl TaskControlBlock {
     /// Create a new process
     ///
     /// At present, it is only used for the creation of initproc
-    pub fn new(elf_data: &[u8]) -> Self {
+    pub fn new(elf_data: &[u8],cwd:String) -> Self {
 
     // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_sp, entry_point,_) = MemorySet::from_elf(elf_data);
         // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
         
@@ -285,6 +287,7 @@ impl TaskControlBlock {
                     base_size: user_sp,
                     task_status: Mutex::new(TaskStatus::Runable),
                     memory_set,
+                    cwd,
                     is_init:true,
                     parent: None,
                     children: Vec::new(),
@@ -319,33 +322,129 @@ impl TaskControlBlock {
     }
 
     /// Load a new elf to replace the original application address space and start execution
-        pub fn exec(&self, elf_data: &[u8]) {
-            // memory_set with elf program headers/trampoline/trap context/user stack
-            let (memory_set, _user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        pub fn exec(&self, elf_data: &[u8], argv: &Vec<String>, env: &mut Vec<String>) {
+            //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
+        // memory_set with elf program headers/trampoline/trap context/user stack
+            let (memory_set, user_heap_base, entry_point,mut auxv) = MemorySet::from_elf(elf_data);
             
         
-        // unsafe { *self.fut.get() = UTRAP_HANDLER() };
             // **** access current TCB exclusively
             let mut inner = self.inner_exclusive_access();
 
             // substitute memory_set
             let old_memory_set = replace(&mut inner.memory_set, memory_set);
-            drop(old_memory_set); // 安
+            drop(old_memory_set); 
             inner.alloc_user_res();
-            inner.memory_set.activate();
-            // update trap_cx ppn
 
+
+            let mut user_sp = inner.user_stack_top;
+             //环境变量内容入栈
+            let mut envp = Vec::new();
+            let token =inner.memory_set.token();
+        for env in env.iter() {
+            user_sp -= env.len() + 1;
+            envp.push(user_sp);
+            // println!("{:#X}:{}", user_sp, env);
+            for (j, c) in env.as_bytes().iter().enumerate() {
+                *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+            }
+            *translated_refmut(token, (user_sp + env.len()) as *mut u8) = 0;
+        }
+        envp.push(0);
+        user_sp -= user_sp % size_of::<usize>();
+
+        //存放字符串首址的数组
+        let mut argvp = Vec::new();
+        for arg in argv.iter() {
+            // 计算字符串在栈上的地址
+            user_sp -= arg.len() + 1;
+            argvp.push(user_sp);
+            // println!("{:#X}:{}", user_sp, arg);
+            for (j, c) in arg.as_bytes().iter().enumerate() {
+                *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+            }
+            // 添加字符串末尾的 null 字符
+            *translated_refmut(token, (user_sp + arg.len()) as *mut u8) = 0;
+        }
+        user_sp -= user_sp % size_of::<usize>(); //以8字节对齐
+        argvp.push(0);
+
+        //需放16个字节
+        user_sp -= 16;
+        auxv.push(Aux::new(AuxType::RANDOM, user_sp));
+        for i in 0..0xf {
+            *translated_refmut(token, (user_sp + i) as *mut u8) = i as u8;
+        }
+        user_sp -= user_sp % 16;
+
+        // println!("aux:");
+        //将auxv放入栈中
+        auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
+        auxv.push(Aux::new(AuxType::NULL, 0));
+        for aux in auxv.iter().rev() {
+            // println!("{:?}", aux);
+            user_sp -= size_of::<Aux>();
+            *translated_refmut(token, user_sp as *mut usize) = aux.aux_type as usize;
+            *translated_refmut(token, (user_sp + size_of::<usize>()) as *mut usize) = aux.value;
+        }
+
+        //将环境变量指针数组放入栈中
+        // println!("env pointers:");
+        user_sp -= envp.len() * size_of::<usize>();
+        let envp_base = user_sp;
+        for i in 0..envp.len() {
+            put_data(
+                token,
+                (user_sp + i * size_of::<usize>()) as *mut usize,
+                envp[i],
+            );
+        }
+
+        // println!("arg pointers:");
+        user_sp -= argvp.len() * size_of::<usize>();
+        let argv_base = user_sp;
+        //将参数指针数组放入栈中
+        for i in 0..argvp.len() {
+            put_data(
+                token,
+                (user_sp + i * size_of::<usize>()) as *mut usize,
+                argvp[i],
+            );
+        }
+
+        //将argc放入栈中
+        user_sp -= size_of::<usize>();
+        *translated_refmut(token, user_sp as *mut usize) = argv.len();
+
+        //以8字节对齐
+        user_sp -= user_sp % size_of::<usize>();
+        //println!("user_sp:{:#X}", user_sp);
+
+
+        //将设置了O_CLOEXEC位的文件描述符关闭 todo(heliosly)
+            // update trap_cx ppn
+            
+           
+
+
+
+
+
+
+            info!("exec entry_point:{:#x}", entry_point);
            let trap_cx= inner.get_trap_cx() ;
             * trap_cx = TrapContext::app_init_context(
                 entry_point,
-                inner.user_stack_top,
+                user_sp,
             );
             trap_cx.kernel_sp = current_stack_top();
             trap_cx.trap_status = TrapStatus::Done;
-
+            trap_cx.regs.a0 = argv.len();
+            trap_cx.regs.a1 = argv_base;
+            trap_cx.regs.a2 = envp_base;
             trace!("exec:sp:{:#x}",trap_cx.kernel_sp);
-            inner.heap_bottom=_user_sp;
-            inner.program_brk=_user_sp;
+            inner.heap_bottom=user_heap_base;
+            inner.program_brk=user_heap_base;
             
 
             // **** release current PCB
@@ -381,6 +480,7 @@ impl TaskControlBlock {
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
                     trap_cx:TrapContext::new().into(),
+                    cwd:parent_inner.cwd.clone(),
                     is_init:false,
                     wait_wakers:Default::default(),
                     base_size: parent_inner.base_size,

@@ -1,13 +1,13 @@
 //! Process management syscalls
 //!
 
-use alloc::sync::Arc;
+use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
 use riscv::addr::Frame;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags}, mm::{translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapPermission, VirtAddr}, task::{
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags, NONE_MODE}, mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str, FrameTracker, MapPermission, VirtAddr}, task::{
         add_task, current_task, current_user_token, exit_current_and_run_next, set_priority, yield_now, TaskControlBlock, TaskStatus
-    }, timer::get_time_us, utils::{bpoint, bpoint1}
+    }, timer::get_time_us, utils::{bpoint, bpoint1, error::SyscallRet, string::get_abs_path}
 };
 
 #[repr(C)]
@@ -79,48 +79,106 @@ pub fn sys_fork() -> isize {
     new_pid as isize
 }
 
-pub fn sys_exec(path: *const u8) -> isize {
+/// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
+pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> isize{
     trace!("kernel:pid[{}] sys_exec", current_task().unwrap().pid.0);
+    let task = current_task().unwrap();
+    let task_inner = task.inner_exclusive_access();
 
-    let token = current_user_token();
-    let path = translated_str(token, path);
-    if let Ok(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY,0o777) {
-        let all_data = app_inode.file().unwrap().read_all();
-        let task = current_task().unwrap();
-        let inner = task.inner_exclusive_access();
-        
-        drop(inner); 
-        task.exec(all_data.as_slice());
-//         let inner= task.inner_exclusive_access();
-// for area in inner.memory_set.areas.iter(){
-//             for (_,ppn) in area.data_frames.iter(){
-//                 if ppn.ppn().0==0x81901 {
-//                     print!("\nexec in pid{}\n",task.pid.0);
+    let token =task_inner.memory_set.token();
+    let mut path = translated_str(token, path);
+    // path = remove_ansi_escape_sequences(&path);
+    // path = strip_color(path, "\u{1b}[0;0m", "\u{1b}[m");
+    // if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
+    //     //去除颜色
+    //     path = strip_color(path, "ltp/testcases/bin/\u{1b}[1;32m", "\u{1b}[m");
+    // }
+    //log::info!("[sys_execve] path={}", path);
 
-//                 }
-//                 if task.pid.0==3 {
-
-//                     println!("in exec pid =3 ,ppn={:#x},FrameTracker_ptr:{:#x}",
-//                     ppn.ppn().0,
-//                     ppn as *const _ as usize
-                    
-                
-//                 );
-//                 if ppn as *const _ as usize==0xffffffc0812c0560{
-//                     bpoint1(ppn as *const FrameTracker);
-//                 }
-
-//                 }
-//             }
-//         }
-//          inner.memory_set.activate();       
-         
-//          drop(inner);
-//          bpoint();
-         0
-    } else {
-        -1
+    //处理argv参数
+    let mut argv_vec = Vec::<String>::new();
+    // if !argv.is_null() {
+    //     let argv_ptr = *translated_ref(token, argv);
+    //     if argv_ptr != 0 {
+    //         argv_vec.push(path.clone());
+    //         unsafe {
+    //             argv = argv.add(1);
+    //         }
+    //     }
+    // }
+    loop {
+        if argv.is_null() {
+            break;
+        }
+        let argv_ptr = *translated_ref(token, argv);
+        if argv_ptr == 0 {
+            break;
+        }
+        argv_vec.push(translated_str(token, argv_ptr as *const u8));
+        unsafe {
+            argv = argv.add(1);
+        }
     }
+    if path.ends_with(".sh") {
+        //.sh文件不是可执行文件，需要用busybox的sh来启动
+        argv_vec.insert(0, String::from("sh"));
+        argv_vec.insert(0, String::from("busybox"));
+        path = String::from("/busybox");
+    }
+
+    // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
+    //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
+    //     argv_vec.insert(0, String::from("busybox"));
+    //     path = String::from("/busybox");
+    // }
+
+    debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
+    let mut env = Vec::<String>::new();
+    loop {
+        if envp.is_null() {
+            break;
+        }
+        let envp_ptr = *translated_ref(token, envp);
+        if envp_ptr == 0 {
+            break;
+        }
+        env.push(translated_str(token, envp_ptr as *const u8));
+        unsafe {
+            envp = envp.add(1);
+        }
+    }
+    let env_path = "PATH=/:/bin:".to_string();
+    if !env.contains(&env_path) {
+        env.push(env_path);
+    }
+
+    let env_ld_library_path = "LD_LIBRARY_PATH=/lib:/lib/glibc:/lib/musl:".to_string();
+    if !env.contains(&env_ld_library_path) {
+        env.push(env_ld_library_path);
+    }
+
+    let env_enough = "ENOUGH=100000".to_string();
+    if !env.contains(&env_enough) {
+        //设置系统最大负载
+        env.push(env_enough);
+    }
+
+    debug!("[sys_execve] env is {:?}", env);
+
+    let cwd = if !path.starts_with('/') {
+        task_inner.cwd.as_str()
+    } else {
+        "/"
+    };
+    let abs_path = get_abs_path(&cwd, &path);
+    let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE).unwrap().file().unwrap();
+    let elf_data = app_inode.read_all();
+    drop(task_inner);
+    task.exec(&elf_data, &argv_vec, &mut env);
+    task.inner_exclusive_access().memory_set.activate();
+    0
+
+
 }
 
 /// If there is not a child process whose pid is same as given, return -1.
@@ -144,9 +202,10 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         .iter()
         .any(|p| pid == -1 || pid as usize == p.getpid())
     {
+
         debug!("cant find pid:{} in parent pid:{},and children count = : {} ",
         pid,task.pid.0,inner.children.len());
-        return -1;
+        return -1;  
         // ---- release current PCB
     }
     let pair = inner.children.iter().enumerate().find(|(_, p)| {
@@ -306,7 +365,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     let elf;
     if let Ok(app_inode) = open_file(path.as_str(), OpenFlags::O_RDONLY,0o777) {
        elf = app_inode.file().unwrap().read_all();
-       let tcb=Arc::new(TaskControlBlock::new(elf.as_slice()));
+       let tcb=Arc::new(TaskControlBlock::new(elf.as_slice(),path));
        let mut inner=tcb.inner_exclusive_access();
        let mut pin=current_task.inner_exclusive_access();
        inner.parent=Some(Arc::downgrade(&current_task));

@@ -2,6 +2,9 @@
 
 #[allow(unused)]
 
+/// user app's heap size 4mb
+pub const USER_HEAP_SIZE: usize = 0x40000;
+
 /// user app's stack size
 pub const USER_STACK_SIZE: usize = 4096 * 16;
 /// kernel stack size
@@ -28,8 +31,8 @@ pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_ffc0_0000_0000;
 /// When directly map: vpn = ppn + kernel direct offset
 pub const KERNEL_PGNUM_OFFSET: usize = KERNEL_DIRECT_OFFSET >> PAGE_SIZE_BITS;
-/// 定义用户堆的大小，  4MB
-pub const USER_HEAP_SIZE: usize = 0x400_0000;
+
+
 /// 定义协程堆栈的大小，  40MB
 pub const TASK_STACK_SIZE: usize=0x400000;
 /// 定义用户空间的总大小，48GB
@@ -55,3 +58,6 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data
 pub const IS_ASYNC: usize = 0x5f5f5f5f;
+
+/// Dynamic linked interpreter address range in user space
+pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;

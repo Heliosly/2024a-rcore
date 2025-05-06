@@ -148,6 +148,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
+                info!("pte is invalid:vpn:{:x}",vpn.0);
                 return None;
             }
             ppn = pte.ppn();
@@ -326,5 +327,26 @@ pub fn _get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
         unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) }
     } else {
         *translated_ref(token, ptr)
+    }
+}
+
+
+/// 将数据 `data` 写入 `token` 地址空间 `ptr` 处，
+/// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页
+pub fn put_data<T: 'static>(token: usize, ptr: *mut T, data: T) {
+    let page_table = PageTable::from_token(token);
+    let mut va = VirtAddr::from(ptr as usize);
+    let pa = page_table.translate_va(va).unwrap();
+    let size = core::mem::size_of::<T>();
+    // 若数据跨页，则转换成字节数据写入
+    if (pa + size - 1).floor() != pa.floor() {
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&data as *const _ as usize as *const u8, size) };
+        for i in 0..size {
+            *(page_table.translate_va(va).unwrap().get_mut()) = bytes[i];
+            va = va + 1;
+        }
+    } else {
+        *translated_refmut(token, ptr) = data;
     }
 }

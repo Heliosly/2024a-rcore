@@ -12,6 +12,7 @@ pub mod heap_allocator;
 mod memory_set;
 mod page_table;
 
+pub use page_table::put_data;
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,KernelAddr,VPNRange};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
 pub use memory_set::remap_test;

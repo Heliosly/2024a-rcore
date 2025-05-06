@@ -1,7 +1,8 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 
-use crate::config::{ KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
-use crate::utils::bpoint;
+use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET, USER_HEAP_SIZE};
+use crate::fs::{map_dynamic_link_file, open_file, OpenFlags, NONE_MODE};
+use crate::task::aux::{Aux, AuxType};
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{/*PhysAddr,*/ PhysPageNum, VirtAddr, VirtPageNum};
@@ -9,8 +10,10 @@ use super::{StepByOne, VPNRange};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use xmas_elf::ElfFile;
 use core::arch::asm;
 use lazy_static::*;
 use riscv::register::satp;
@@ -186,13 +189,22 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
+
+    ///有页内偏移的push
+    fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>)  {
+        map_area.map(&mut self.page_table);
+        if let Some(data) = data {
+            map_area.copy_data(&mut self.page_table, data, offset);
+        }
+        self.areas.push(map_area);
+    }
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
-            map_area.copy_data(&mut self.page_table, data);
+            map_area.copy_data(&mut self.page_table, data,0);
         }
         self.areas.push(map_area);
     }
@@ -305,24 +317,24 @@ impl MemorySet {
         }
         memory_set
     }
-    /// Include sections in elf and trampoline and TrapContext and user stack,
-    /// also returns user_sp_base and entry point.
-    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
-        let mut memory_set = Self::new_from_kernel();
-        // map trampoline
-        // memory_set.map_trampoline();
-        // map program headers of elf, with U flag
-        let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
+    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> (VirtPageNum, VirtAddr) {
         let elf_header = elf.header;
-        let magic = elf_header.pt1.magic;
-        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
         let ph_count = elf_header.pt2.ph_count();
-        let mut max_end_vpn = VirtPageNum(0);
+
+        let mut max_end_vpn = offset.floor();
+        let mut header_va = 0;
+        let mut has_found_header_va = false;
+
         for i in 0..ph_count {
             let ph = elf.program_header(i).unwrap();
             if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
-                let start_va: VirtAddr = (ph.virtual_addr() as usize).into();
-                let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+                let start_va: VirtAddr = (ph.virtual_addr() as usize + offset.0).into();
+                let end_va: VirtAddr =
+                    ((ph.virtual_addr() + ph.mem_size()) as usize + offset.0).into();
+                if !has_found_header_va {
+                    header_va = start_va.0;
+                    has_found_header_va = true;
+                }
                 let mut map_perm = MapPermission::U;
                 let ph_flags = ph.flags();
                 if ph_flags.is_read() {
@@ -334,29 +346,117 @@ impl MemorySet {
                 if ph_flags.is_execute() {
                     map_perm |= MapPermission::X;
                 }
-
-                trace!("elfmemery start_va::{:#x}, end_va::{:#x}",start_va.0,end_va.0);
-                let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm,MapAreaType::Elf);
+                let map_area = MapArea::new(
+                    start_va,
+                    end_va,
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                let data_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
                 max_end_vpn = map_area.vpn_range.get_end();
-                
-                memory_set.push(
+                self.push_with_offset(
                     map_area,
+                    data_offset,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
                 );
             }
         }
-        // map user stack with U flags
+        (max_end_vpn, header_va.into())
+    }
+    /// Include sections in elf and trampoline and TrapContext and user stack,
+    /// also returns user_sp_base and entry point.
+    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize,Vec<Aux>) {
+        let mut auxv = Vec::new();
+        let mut memory_set = Self::new_from_kernel();
+        // map trampoline
+        // memory_set.map_trampoline();
+        // map program headers of elf, with U flag
+        
+        let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
+        let elf_header = elf.header;
+        let magic = elf_header.pt1.magic;
+        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
+        let ph_count = elf_header.pt2.ph_count();
+        let mut entry_point = elf_header.pt2.entry_point() as usize;
+        auxv.push(Aux::new(
+            AuxType::PHENT,
+            elf.header.pt2.ph_entry_size() as usize,
+        )); // ELF64 header 64bytes
+        auxv.push(Aux::new(AuxType::PHNUM, ph_count as usize));
+        auxv.push(Aux::new(AuxType::PAGESZ, PAGE_SIZE as usize));
+        let mut is_dl = false;
+        for i in 0..ph_count {
+            let ph = elf.program_header(i).unwrap();
+            if ph.get_type().unwrap() == xmas_elf::program::Type::Interp {
+                is_dl = true;
+                break;
+            }
+        }
+        // 设置动态链接
+        if is_dl  {
+
+            debug!("[load_dl] encounter a dl elf");
+            let section = elf.find_section_by_name(".interp").unwrap();
+            let mut interp = String::from_utf8(section.raw_data(&elf).to_vec()).unwrap();
+            interp = interp.strip_suffix("\0").unwrap_or(&interp).to_string();
+            debug!("[load_dl] interp {}", interp);
+
+            let interp = map_dynamic_link_file(&interp);
+
+            // log::info!("interp {}", interp);
+
+            let interp_inode = open_file(&interp, OpenFlags::O_RDONLY, NONE_MODE)
+                .unwrap()
+                .file()
+                .ok();
+            let interp_file = interp_inode.unwrap();
+            let interp_elf_data = interp_file.read_all();
+            let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).unwrap();
+            memory_set.map_elf(&interp_elf, DL_INTERP_OFFSET.into());
+
+            let interp_entry_point = interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET;
+
+
+
+            auxv.push(Aux::new(AuxType::BASE, DL_INTERP_OFFSET));
+            entry_point = interp_entry_point;
+        } else {
+            auxv.push(Aux::new(AuxType::BASE, 0));
+        }
+        auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
+        auxv.push(Aux::new(
+            AuxType::ENTRY,
+            elf.header.pt2.entry_point() as usize,
+        ));
+        auxv.push(Aux::new(AuxType::UID, 0 as usize));
+        auxv.push(Aux::new(AuxType::EUID, 0 as usize));
+        auxv.push(Aux::new(AuxType::GID, 0 as usize));
+        auxv.push(Aux::new(AuxType::EGID, 0 as usize));
+        auxv.push(Aux::new(AuxType::PLATFORM, 0 as usize));
+        auxv.push(Aux::new(AuxType::HWCAP, 0 as usize));
+        auxv.push(Aux::new(AuxType::CLKTCK, 100 as usize));
+        auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
+        auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
+        let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0));
+         // Get ph_head addr for auxv
+         let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
+         auxv.push(Aux {
+             aux_type: AuxType::PHDR,
+             value: ph_head_addr as usize,
+         });
+        // map user stack with U flags  
         let max_end_va: VirtAddr = max_end_vpn.into();
-        let mut user_stack_bottom: usize = max_end_va.into();
+        let mut user_heap_bottom: usize = max_end_va.into();
         // guard page
-        user_stack_bottom += 2*PAGE_SIZE;
-        let user_stack_top = user_stack_bottom ;
+        user_heap_bottom += PAGE_SIZE;
+        let user_heap_top = user_heap_bottom;
 
     // used in sbrk
         memory_set.push(
             MapArea::new(
-                user_stack_bottom.into(),
-                user_stack_top.into(),
+                user_heap_bottom.into(),
+                user_heap_top.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W | MapPermission::U,
                 MapAreaType::Brk,
@@ -371,15 +471,16 @@ impl MemorySet {
        
     
 
-                trace!("user_stack_sp,start_va::{:#x}, sp,end_va::{:#x}",user_stack_bottom,user_stack_top);
-                trace!("app_entry:{:#x}",elf.header.pt2.entry_point() as usize);
+                trace!("user_heap_sp,start_va::{:#x}, sp,end_va::{:#x}",user_heap_bottom,user_heap_top);
+                trace!("app_entry:{:#x}",entry_point);
  
 
        
         (
             memory_set,
-            user_stack_top,
-            elf.header.pt2.entry_point() as usize,
+            user_heap_bottom,
+           entry_point,
+           auxv,
         )
     }
     /// Create a new address space by copy code&data from a exited process's address space.
@@ -545,20 +646,26 @@ impl MapArea {
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
-    pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8]) {
+    pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8], offset: usize) {
         assert_eq!(self.map_type, MapType::Framed);
+        assert!(offset<PAGE_SIZE);
         let mut start: usize = 0;
         let mut current_vpn = self.vpn_range.get_start();
         let len = data.len();
+        
+        let mut page_offset = offset;
         loop {
-            let src = &data[start..len.min(start + PAGE_SIZE)];
+            let src = &data[start..len.min(start + PAGE_SIZE - page_offset)];
             let dst = &mut page_table
                 .translate(current_vpn)
                 .unwrap()
                 .ppn()
-                .get_bytes_array()[..src.len()];
+                .get_bytes_array()[page_offset..(page_offset + src.len())];
             dst.copy_from_slice(src);
-            start += PAGE_SIZE;
+
+            start += PAGE_SIZE - page_offset;
+
+            page_offset = 0;
             if start >= len {
                 break;
             }

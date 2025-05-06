@@ -15,6 +15,7 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
+pub mod aux;
 mod id;
 mod processor;
 mod waker;
@@ -24,6 +25,7 @@ mod schedule;
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
 mod yieldfut;
+use alloc::string::ToString;
 // pub use manager::get_task_count;
 pub use processor::run_task2;
 pub use kstack::TaskStack;
@@ -206,16 +208,16 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     drop(task);
 
 }
-
+static  INITPROC_STR: &str="ch6b_usertest";
 lazy_static! {
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
     /// but we have user_shell, so we don't need to change it.
     pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new({
-        let inode = open_file("ch6b_usertest", OpenFlags::O_RDONLY,0o777).unwrap();
+        let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
-        TaskControlBlock::new(v.as_slice())
+        TaskControlBlock::new(v.as_slice(),"/".to_string())
     });
 }
 
