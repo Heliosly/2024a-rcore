@@ -37,6 +37,16 @@ SECTIONS
     }
 
     . = ALIGN(4K);
+    spercpu = .;
+    .percpu : {
+       _percpu_load_start = .;
+        *(.percpu .percpu.*)
+        _percpu_load_end = .;
+        . = ALIGN(64);
+    }
+  
+    epercpu = .;
+    . = ALIGN(4K);
     edata = .;
     sbss_with_stack = .;
     .bss : {

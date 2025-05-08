@@ -15,6 +15,7 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
+mod current;
 pub mod aux;
 mod id;
 mod processor;
@@ -25,13 +26,18 @@ mod schedule;
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
 mod yieldfut;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::string::ToString;
+pub use current::current_task;
 // pub use manager::get_task_count;
 pub use processor::run_task2;
 pub use kstack::TaskStack;
-use processor::PROCESSOR;
+pub use current::current_task_may_uninit;
+pub use current::CurrentTask;
+use schedule::CFSTask;
+use schedule::TaskRef;
+use spin::mutex::Mutex;
 use crate::fs::{open_file, OpenFlags};
-use crate::utils::{bpoint, bpoint1};
 use alloc::sync::Arc;
 use lazy_static::*;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
@@ -40,86 +46,15 @@ pub use id::RecycleAllocator;
 pub use id::{ pid_alloc,  PidHandle};
 // pub use manager::add_task;
 pub use processor::{
-    current_task, current_user_token, run_tasks,  take_current_task,
+     run_tasks,
     Processor,
 };
 pub use core::mem::ManuallyDrop;
 pub use processor::init;
 pub use yieldfut::yield_now;
-pub use processor::current_task_trapctx_ptr;
 pub use schedule::{add_task,pick_next_task,put_prev_task,task_tick,set_priority};
-use core::task::Waker;
-use core::ops::Deref;
-pub struct CurrentTask(ManuallyDrop<Arc<TaskControlBlock>>);
-impl CurrentTask {
-    pub unsafe fn init_current(init_task:Arc<TaskControlBlock> ) {
-        init_task.set_state(TaskStatus::Running);
-        PROCESSOR.exclusive_access().set_current(init_task);
 
-    }
-    /// get a new waker of the CurrentTask;
-    pub fn waker(&self) -> Waker {
-        if let Some(task_arc) = current_task() {
-            let raw: *const TaskControlBlock = Arc::as_ptr(&task_arc);
-            // raw 现在就是指向 TaskControlBlock 的裸指针
-            // 此时不影响 Arc 的引用计数
-
-        waker::waker_from_task(raw as _)
-        }
-        else{
-            panic!("current task is uninitialized");
-        }
-    }
-    // pub fn try_get() -> Option<Self> {
-    //     let ptr: *const super::Task = current_task_ptr();
-    //     if !ptr.is_null() {
-    //         Some(Self(unsafe { ManuallyDrop::new(TaskRef::from_raw(ptr)) }))
-    //     } else {
-    //         None
-    //     }
-    // }
-
-    pub fn from(task: Arc<TaskControlBlock>) -> Self {
-        CurrentTask(ManuallyDrop::new(task))
-    }
-    pub fn get() -> Self {
-       CurrentTask(ManuallyDrop::new(
-            current_task().expect("current task is uninitialized")
-        ))
-    }
-    /// Converts [`CurrentTask`] to [`TaskRef`].
-    pub fn as_task_ref(&self) -> &Arc<TaskControlBlock> {
-        &self.0
-    }
-    pub fn clean_current_without_drop() -> Option<Arc<TaskControlBlock>> {
-        take_current_task()
-    }
-
-    pub fn clone(&self) -> Arc<TaskControlBlock> {
-        self.0.deref().clone()
-    }
-
-    pub fn ptr_eq(&self, other:  &Arc<TaskControlBlock>) -> bool {
-        Arc::ptr_eq(&self.0, other)
-    }
-    pub fn clean_current(&mut self) {
-        take_current_task();
-       
-        self.drop();
-    }
-    pub fn drop(&mut self) {
-        unsafe {
-            ManuallyDrop::drop(&mut self.0);
-        }
-    }
-}
-
-impl Deref for CurrentTask {
-    type Target = TaskControlBlock;
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
+pub static  PID2PC: Mutex<BTreeMap<usize, TaskRef>> = Mutex::new(BTreeMap::new());
 
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
@@ -147,10 +82,8 @@ pub const IDLE_PID: usize = 0;
 /// Exit the current 'Running' task and run the next task in task list.
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
-    let task = current_task().unwrap();
-    if task.pid.0==14{
-        bpoint();
-    }
+    let task = current_task();
+   
     
     println!("exit pid {},exit code:{}",task.pid.0,exit_code);
     // if task.pid.0 ==3 {
@@ -186,7 +119,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     {
         let mut initproc_inner = INITPROC.inner_exclusive_access();
         for child in inner.children.iter() {
-            child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
+            child.inner_exclusive_access().parent .replace(INITPROC.pid.0);
             initproc_inner.children.push(child.clone());
         }
     }
@@ -201,7 +134,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     inner.memory_set.recycle_data_pages();
     // drop file descriptors
     inner.fd_table.clear();
-    inner.set_state(TaskStatus::Zombie);
+    task.set_state(TaskStatus::Zombie);
     drop(inner);
     // **** release current PCB
     // drop task manually to maintain rc correctly
@@ -214,11 +147,11 @@ lazy_static! {
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
     /// but we have user_shell, so we don't need to change it.
-    pub static ref INITPROC: Arc<TaskControlBlock> = Arc::new({
+    pub static ref INITPROC: TaskRef = Arc::new(CFSTask::new({
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
         TaskControlBlock::new(v.as_slice(),"/".to_string())
-    });
+    }));
 }
 
 ///Add init process to the manager

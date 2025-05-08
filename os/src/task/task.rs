@@ -1,4 +1,5 @@
 //! Types related to task management & Functions for completely changing TCB
+use super::schedule::TaskRef;
 use super::{ pid_alloc, PidHandle};
 use crate::config:: { PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{File, Stdin, Stdout};
@@ -7,6 +8,8 @@ use crate::sync::UPSafeCell;
 use crate::task::aux::{self, Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
+use crate::task::schedule::CFSTask;
+use crate::task::PID2PC;
 use crate::trap::{    TrapContext, TrapStatus};
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
@@ -27,6 +30,8 @@ unsafe impl Send for TaskControlBlock {}
 ///
 /// Directly save the contents that will not change during running
 pub struct TaskControlBlock {
+ /// The  trapcontext
+    pub trap_cx: UnsafeCell<Option<Box<TrapContext>>>,
     // Immutable
     /// Process identifier
     pub pid: PidHandle,
@@ -35,9 +40,16 @@ pub struct TaskControlBlock {
     fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     /// Mutable
     inner: UPSafeCell<TaskControlBlockInner>,
+/// Maintain the execution status of the current process
+    pub task_status: Mutex<TaskStatus>,
+
+
 }
 
 impl TaskControlBlock {
+pub fn is_zombie(&self) -> bool {
+       *self.state_lock().lock() == TaskStatus::Zombie
+    }
  /// 获取到任务的 Future
     pub fn get_fut(&self) -> &mut Pin<Box<dyn Future<Output = i32> + 'static>> {
         unsafe { &mut *self.fut.get() }
@@ -51,10 +63,7 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
     }
-    pub fn set_state(&self, state: TaskStatus) {
-        let inner = self.inner_exclusive_access();
-        *inner.state_lock().lock() = state;
-    }
+  
     pub fn set_exit_code(&self, code: i32) {
         let mut inner = self.inner_exclusive_access();
         inner.exit_code = code;
@@ -70,8 +79,8 @@ impl TaskControlBlock {
         inner.is_init
     }
     pub fn is_exited(&self) -> bool {
-        let inner = self.inner_exclusive_access();
-        let a= *(inner.task_status.lock()) ;
+      
+        let a= *(self.task_status.lock()) ;
         a== TaskStatus::Zombie
 
     }
@@ -79,11 +88,28 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.exit_code
     }
+ pub fn state_lock(&self) -> &Mutex<TaskStatus> {
+        &self.task_status
+    }
+ #[inline]
+    /// temp
+    /// TODO LOCK
+    pub fn state_lock_manual(&self) -> ManuallyDrop<spin::MutexGuard<'_, TaskStatus>> {
+                ManuallyDrop::new(self.task_status.lock())
+    }
+ pub fn set_state(&self, state: TaskStatus) {
+        let mut task_status = self.task_status.lock();
+        *task_status = state;
+    }
+  pub fn get_trap_cx(&self) ->Option<&mut TrapContext >{
+        unsafe { &mut *self.trap_cx.get() }
+        .as_mut()
+        .map(|tf| tf.as_mut())
+}
 }
 
 pub struct TaskControlBlockInner {
-    /// The  trapcontext
-    pub trap_cx: UnsafeCell<TrapContext>,
+   
     ///trap上下文的bottom
     ///用户栈顶
     pub user_stack_top:usize,
@@ -95,18 +121,15 @@ pub struct TaskControlBlockInner {
     /// current work p
     pub cwd: String,
 
-    /// Maintain the execution status of the current process
-    pub task_status: Mutex<TaskStatus>,
-
-    /// Application address space
+        /// Application address space
     pub memory_set: MemorySet,
 
     /// Parent process of the current process.
     /// Weak will not affect the reference count of the parent
-    pub parent: Option<Weak<TaskControlBlock>>,
+    pub parent: Option<usize>,
 
     /// A vector containing TCBs of all child processes of the current process
-    pub children: Vec<Arc<TaskControlBlock>>,
+    pub children: Vec<TaskRef>,
 
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
@@ -122,10 +145,7 @@ pub struct TaskControlBlockInner {
 }
 
 impl TaskControlBlockInner {
-    pub fn set_state(&self, state: TaskStatus) {
-        let mut task_status = self.task_status.lock();
-        *task_status = state;
-    }
+   
     pub fn wake_all_waiters(&self){
         let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
         while let Some(waker) = wait_wakers.pop_front() {
@@ -134,14 +154,7 @@ impl TaskControlBlockInner {
     }
    
  
-    #[inline]
-    /// temp
-    /// TODO LOCK
-    pub fn state_lock_manual(&self) -> ManuallyDrop<spin::MutexGuard<'_, TaskStatus>> {
-                ManuallyDrop::new(self.task_status.lock())
-    }
-
-    ///插入一个framed_area
+       ///插入一个framed_area
     pub fn insert_framed_area(&mut self,
             start_va: VirtAddr,
             end_va: VirtAddr,
@@ -221,22 +234,14 @@ impl TaskControlBlockInner {
         );
       
     }
-    pub fn get_trap_cx(&self) -> &mut TrapContext {
-        unsafe { &mut *self.trap_cx.get() }
-       
-        
-    }
+  
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
     
     
-    pub fn state_lock(&self) -> &Mutex<TaskStatus> {
-        &self.task_status
-    }
-    pub fn is_zombie(&self) -> bool {
-       *self.state_lock().lock() == TaskStatus::Zombie
-    }
+   
+    
     pub fn alloc_fd(&mut self) -> usize {
         if let Some(fd) = (0..self.fd_table.len()).find(|fd| self.fd_table[*fd].is_none()) {
             fd
@@ -280,12 +285,14 @@ impl TaskControlBlock {
         let task_control_block = Self {
             pid: pid_handle,
 
+                    task_status: Mutex::new(TaskStatus::Runable),
             fut: UnsafeCell::new(fut),
+   trap_cx:UnsafeCell::new(Some(Box::new(TrapContext::new()))),
+
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
-                    trap_cx:TrapContext::new().into(),
+                 
                     base_size: user_sp,
-                    task_status: Mutex::new(TaskStatus::Runable),
                     memory_set,
                     cwd,
                     is_init:true,
@@ -310,7 +317,7 @@ impl TaskControlBlock {
         let mut task_inner = task_control_block.inner_exclusive_access();
         task_inner.alloc_user_res();
         // prepare TrapContext in user space
-       let trap_cx=task_inner.get_trap_cx() ;
+       let trap_cx=task_control_block.get_trap_cx().unwrap() ;
        *trap_cx=
             TrapContext::app_init_context(entry_point, task_inner.user_stack_top, 
            );
@@ -432,7 +439,7 @@ impl TaskControlBlock {
 
 
             info!("exec entry_point:{:#x}", entry_point);
-           let trap_cx= inner.get_trap_cx() ;
+           let trap_cx= self.get_trap_cx().unwrap() ;
             * trap_cx = TrapContext::app_init_context(
                 entry_point,
                 user_sp,
@@ -452,7 +459,7 @@ impl TaskControlBlock {
         }
 
         /// parent process fork the child process
-    pub fn fork(self: &Arc<TaskControlBlock>) -> Arc<TaskControlBlock> {
+    pub fn fork(&self) -> TaskRef {
         // ---- hold parent PCB lock
  // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
@@ -473,20 +480,23 @@ impl TaskControlBlock {
                 new_fd_table.push(None);
             }
         }
-        let task_control_block = Arc::new(TaskControlBlock {
+        let task_control_block = Arc::new(CFSTask::new(TaskControlBlock {
             pid: pid_handle,
 
+                    task_status: Mutex::new(TaskStatus::Runable),
                     fut: UnsafeCell::new(UTRAP_HANDLER()),
+
+                    trap_cx:UnsafeCell::new(Some(Box::new(TrapContext::new()))),
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
-                    trap_cx:TrapContext::new().into(),
+                    
+
                     cwd:parent_inner.cwd.clone(),
                     is_init:false,
                     wait_wakers:Default::default(),
                     base_size: parent_inner.base_size,
-                    task_status: Mutex::new(TaskStatus::Runable),
                     memory_set,
-                    parent: Some(Arc::downgrade(self)),
+                    parent: Some(self.pid.0),
                     children: Vec::new(),
                     exit_code: 0,
                     fd_table: new_fd_table,
@@ -495,7 +505,7 @@ impl TaskControlBlock {
                     user_stack_top:0,
                 })
             },
-        });
+        }));
         // add child
         // modify kernel_sp in trap_cx
         // **** access child PCB exclusively
@@ -503,13 +513,15 @@ impl TaskControlBlock {
 
         let mut task_inner= task_control_block.inner_exclusive_access();
         task_inner.clone_user_res(&parent_inner);
-        let  trap_cx: &mut TrapContext = task_inner.get_trap_cx();
-        *trap_cx = parent_inner.get_trap_cx().clone();
+        let  trap_cx: &mut TrapContext = task_control_block.get_trap_cx().unwrap();
+        *trap_cx = self.get_trap_cx().unwrap().clone();
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
         trap_cx.regs.a0=0;
         
+
         parent_inner.children.push(task_control_block.clone());
+        PID2PC.lock().insert(task_control_block.pid.0, task_control_block.clone());
         // return
         // **** release child PCB
         // ---- release parent PCB

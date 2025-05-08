@@ -17,10 +17,9 @@
 mod context;
 use crate::syscall:: syscall;
 use crate::task::{
-    current_task, current_task_trapctx_ptr, exit_current_and_run_next, pick_next_task, run_task2, task_tick, CurrentTask
+    current_task, current_task_may_uninit, exit_current_and_run_next, pick_next_task, run_task2, task_tick, CurrentTask
 };
 pub use context::user_return;
-use alloc::sync::Arc;
 pub use context::TrapStatus;
 use crate::utils::backtrace;
 use crate::timer::set_next_trigger;
@@ -156,23 +155,20 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
         } else {
             // debug!("into trampoline from taskcount:{},task",get_task_count());
             // 用户态发生了 Trap 或者需要调度
-            if let Some(curr) = current_task().or_else(|| {
+            if let Some(curr) = CurrentTask::try_get().or_else(|| {
                 if let Some(task) = pick_next_task() {
                     unsafe {
-                        CurrentTask::init_current(task.clone());
-                         
-                        //  debug!("get and init next task");
-
+                        CurrentTask::init_current(task);
                     }
-                    Some(task)
+                    Some(CurrentTask::get())
                 } else {
                     None
                 }
             }) {
- debug!("run_task pid:{},Arc count:{}",curr.pid.0,
+//  debug!("run_task pid:{},Arc count:{}",curr.pid.0,
                   
-                   Arc::strong_count(&curr)
-                       );
+//                    Arc::strong_count(&curr)
+//                        );
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
@@ -190,12 +186,10 @@ pub async fn user_task_top() -> i32 {
     loop {
 
         // debug!("into user_task_top");
-        let curr = current_task().unwrap();
-        let inner = curr.inner_exclusive_access();
-        let  tf =  inner.trap_cx.get();
-        drop(inner);
+        let curr = current_task();
+        let  tf =  curr.get_trap_cx().unwrap();
         // debug!("trap_status:{:?}",tf.trap_status);
-        if (unsafe { (*tf) .trap_status })== TrapStatus::Blocked {
+        if tf.trap_status == TrapStatus::Blocked {
             let scause = scause::read();
     let stval = stval::read();
     let sepc = sepc::read();
@@ -207,29 +201,25 @@ pub async fn user_task_top() -> i32 {
         satp::read().bits()
     );
     match scause.cause() {
+        
         Trap::Exception(Exception::UserEnvCall) => {
             enable_irqs();
-            let syscall_id;
-            let args;
-unsafe {
-             syscall_id = (*tf).regs.a7;
- args = [(*tf).regs.a0, (*tf).regs.a1, (*tf).regs.a2, (*tf).regs.a3];
+           
+let syscall_id = tf.regs.a7;
+let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3];
 
-(*tf).sepc += 4;
-
-}
+tf.sepc += 4;
 let result = syscall(syscall_id, args).await;
 
 trace!("sys_call end");
 
-    let tf = current_task_trapctx_ptr();
-           unsafe {
-               (*tf).regs.a0 = result as usize;
-           } 
+   
+         
+               tf.regs.a0 = result as usize;
+            
 
 // trace!("sys_call end1");
  // 判断任务是否退出
- let curr = current_task().unwrap();
  if curr.is_exited() {
     // 任务结束，需要切换至其他任务，关中断
     disable_irqs();
@@ -249,7 +239,7 @@ disable_irqs();
                 "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                 scause.cause(),
                 stval,
-                unsafe { (*tf).sepc },
+                tf.sepc ,
             );
            
             // page fault exit code
@@ -264,8 +254,8 @@ disable_irqs();
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
             
-            unsafe {(*tf).trap_status=TrapStatus::Done};
-            task_tick(current_task().unwrap());
+           tf.trap_status=TrapStatus::Done;
+            on_timer_tick();
         }
         _ => {
             panic!(
@@ -276,31 +266,28 @@ disable_irqs();
         }
     }
            
-           let tf=current_task_trapctx_ptr();
 
-            unsafe { (*tf).trap_status = TrapStatus::Done };
+          tf.trap_status = TrapStatus::Done ;
             // trace!("sys_call end3");
             // 判断任务是否退出
-            let curr= current_task().unwrap();
-            let inner =curr.inner_exclusive_access();
+            
+         
 
             // trace!("sys_call end4");
-            if inner.is_zombie() {
+            if curr.is_zombie() {
                 // 任务结束，需要切换至其他任务，关中断
                 disable_irqs();
                 // info!("return ready");
-                return inner.exit_code ;
+                return curr.get_exit_code();
             }
             disable_irqs();
-            drop(inner);
         }
 
             // trace!("sys_call end5");
         
-           let tf=current_task_trapctx_ptr();
         //偶数次poll时会从重新运行这个函数开始
         poll_fn(|_cx| {
-            if (unsafe { (*tf) .trap_status })== TrapStatus::Done {
+            if tf .trap_status == TrapStatus::Done {
                 Poll::Pending
             } else {
 
@@ -310,5 +297,12 @@ disable_irqs();
         })
         .await ;
   
+    }
+}
+pub fn on_timer_tick() {
+    if let Some(curr) = current_task_may_uninit() {
+        if task_tick(curr.as_task_ref()) {
+         
+        }
     }
 }

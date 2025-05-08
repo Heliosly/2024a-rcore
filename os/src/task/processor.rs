@@ -10,13 +10,13 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use spin::mutex::Mutex;
 use schedule::CFScheduler;
-use super::{CurrentTask,   schedule};
-use super:: TaskStatus;
+use super::current::CurrentTask;
+use super::{schedule,  TaskStatus};
 use super:: TaskControlBlock;
 use crate::sync::UPSafeCell;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::put_prev_task;
-use crate::trap::{ disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus}  ;
+use crate::trap::{ disable_irqs, enable_irqs, user_return,  TrapStatus}  ;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use lazy_init::LazyInit;
@@ -27,7 +27,6 @@ pub struct Processor {
     current: Option<Arc<TaskControlBlock>>,
 
 }
-
 impl Processor {
     pub fn set_current(&mut self, task: Arc<TaskControlBlock>) {
         self.current = Some(task);
@@ -60,7 +59,7 @@ impl Processor {
 lazy_static! {
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
-pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<Arc<TaskControlBlock>>>>> = LazyInit::new();
+pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<TaskControlBlock>>>> = LazyInit::new();
 pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>> =
     LazyInit::new();
 ///The main part of process execution and scheduling
@@ -94,57 +93,53 @@ pub fn run_task2(mut curr:CurrentTask){
             curr.wake_all_waiters();
             if curr.is_init() {
                 assert!(
-                    Arc::strong_count(curr.as_task_ref()) == 3,
+                    Arc::strong_count(curr.as_task_ref()) <= 3,
                     "count {}",
                     Arc::strong_count(curr.as_task_ref())
                 );
                 panic!("shotdown");
             }
-            curr.clean_current();
+            CurrentTask::clean_current();
             // trace!("current task is cleared1");
         }
         Poll::Pending => {
-            let  inner= curr.inner_exclusive_access();
-            let mut state= inner.state_lock_manual();
+            let mut state= curr.state_lock_manual();
 
     trace!("res is pending and Taskstatus:{}",**state as usize);
             match **state {
                 // await 主动让权，将任务的状态修改为就绪后，放入就绪队列中
                 TaskStatus::Running => {
-                     let tf = inner.trap_cx.get();
-               unsafe {
-                        if (*tf).trap_status == TrapStatus::Done {
+                    if let Some(tf) = curr.get_trap_cx(){
+                        if tf.trap_status == TrapStatus::Done {
                             
-                            (*tf).kernel_sp = kstack::current_stack_top();
-                            (*tf).scause = 0;
+                            tf.kernel_sp = kstack::current_stack_top();
+                            tf.scause = 0;
                             // 这里不能打开中断
                             disable_irqs();
                             drop(core::mem::ManuallyDrop::into_inner(state));
                             
-                            trace!("user return return val: {} sepc:{:#x}",(*tf).regs.a0,(*tf).sepc);
-                            drop(inner);
-                            curr.drop();
+                            trace!("user return return val: {} sepc:{:#x}",tf.regs.a0,tf.sepc);
                             
                             enable_irqs();
                             user_return(tf);  
-
-                        }
-                        else{
+                            
+                        }      
+                    }
+                       
                             **state = TaskStatus::Runable;
-                            drop(core::mem::ManuallyDrop::into_inner(state));
-                            drop(inner);
-}
-                    put_prev_task(curr.clone(),true);
-                    trace!("current task is cleared ,and put curr Arc count:{}",Arc::strong_count(curr.as_task_ref()));
-                           curr.clean_current();
-                            return ;
+                            put_prev_task(curr.clone());
+                            CurrentTask::clean_current();
+
+                            
+                  
+                           
                     }
                     
                    
                     
 
             
-                }
+                
                 // 处于 Runable 状态的任务一定处于就绪队列中，不可能在 CPU 上运行
                 TaskStatus::Runable => panic!("Runable ? cannot be peding"),
                 // 等待 Mutex 等进入到 Blocking 状态，但还在这个 CPU 上运行，
@@ -153,11 +148,8 @@ pub fn run_task2(mut curr:CurrentTask){
                 TaskStatus::Blocking => {
                     
             trace!("current task is clean without drop");
-                    **state = TaskStatus::Blocked;
-                    drop(core::mem::ManuallyDrop::into_inner(state));
-                    drop(inner);
-                    CurrentTask::clean_current_without_drop();
-                    return ;
+            **state = TaskStatus    ::Blocked;
+            CurrentTask::clean_current_without_drop();
                 }
                 // 由于等待 Mutex 等，导致进入到了 Blocking 状态，但在这里还没有修改状态为 Blocked 时
                 // 已经被其他 CPU 上运行的任务唤醒了，因此这里直接返回，让当前的任务继续执行
@@ -171,38 +163,9 @@ pub fn run_task2(mut curr:CurrentTask){
             }
             // 在这里释放锁，中间的过程不会发生中断
             drop(core::mem::ManuallyDrop::into_inner(state));
-            drop(inner);
         }
     }
 }
-/// Get current task through take, leaving a None in its place
-pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    PROCESSOR.exclusive_access().take_current()
-}
-
-/// Get a copy of the current task
-pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    PROCESSOR.exclusive_access().current()
-}
-
-#[allow(dead_code)]
-pub fn current_task_ref()->Option<&'static Arc<TaskControlBlock>>{
-    PROCESSOR.exclusive_access().current_ref().map(|arc| unsafe { &*(arc as *const _) })
-}
-
-/// Get the current user token(addr of page table)
-pub fn current_user_token() -> usize {
-    let task = current_task().unwrap();
-    task.get_user_token()
-}
-
-#[allow(dead_code)]
-pub fn current_task_trapctx_ptr()->*mut TrapContext{
-    let task = current_task().unwrap();
-   let x = task.inner_exclusive_access().trap_cx.get(); x
-}
-
-
 ///Return to idle control flow for new scheduling
 // pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 //     let mut processor = PROCESSOR.exclusive_access();

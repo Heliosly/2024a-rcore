@@ -9,7 +9,7 @@ mod fd;
 mod pipe;
 use core::panic;
 
-use crate::{mm::UserBuffer, task::current_task, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
+use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
 use alloc::{format, string::{String, ToString}, sync::Arc};
 use ext4::EXT4FS;
 use fd::FileClass;
@@ -160,7 +160,7 @@ pub fn is_dynamic_link_file(path: &str) -> bool {
 }
 ///open file
 pub fn open_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    println!("open_file abs_path={},pid:{}", abs_path, current_task().map_or_else(|| 0, |f| f.pid.0));
+    println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.pid.0));
     let abs_path = &fix_path(abs_path);
 
     log::debug!("[open] abs_path={}", abs_path);

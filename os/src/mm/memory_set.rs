@@ -28,6 +28,8 @@ extern "C" {
     fn sbss_with_stack();
     fn ebss();
     fn ekernel();
+    // fn spercpu();
+    // fn epercpu();
     // fn strampoline();
 }
 

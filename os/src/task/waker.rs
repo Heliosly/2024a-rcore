@@ -18,7 +18,7 @@ use alloc::sync::Arc;
 
 use crate::task::add_task;
 
-use super::{  TaskControlBlock, TaskStatus};
+use super::{schedule::Task,   TaskStatus};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake, drop);
 
@@ -29,7 +29,7 @@ unsafe fn clone(p: *const ()) -> RawWaker {
 
 /// 根据 Waker 内部的无类型指针，得到 Task 的指针，唤醒任务
 unsafe fn wake(p: *const ()) {
-    wakeup_task(p as *const TaskControlBlock)
+    wakeup_task(p as *const Task)
 }
 
 /// 创建 waker 时没有增加引用计数，因此不需要实现 Drop
@@ -37,16 +37,15 @@ unsafe fn drop(_p: *const ()) {}
 
 /// 只有在运行的任务才需要 waker，
 /// 只需要从 CurrentTask 中获取任务的原始指针
-pub fn waker_from_task(task_ptr: *const TaskControlBlock) -> Waker {
+pub fn waker_from_task(task_ptr: *const Task) -> Waker {
     unsafe { Waker::from_raw(RawWaker::new(task_ptr as _, &VTABLE)) }
 }
 // 这里不对任务的状态进行修改，在调用 waker.wake() 之前对任务状态进行修改
 /// 这里直接使用 Arc，会存在问题，导致任务的引用计数减一，从而直接被释放掉
 /// 因此使用任务的原始指针，只在确实需要唤醒时，才会拿到任务的 Arc 指针
-pub fn wakeup_task(task_ptr: *const TaskControlBlock) {
+pub fn wakeup_task(task_ptr: *const Task) {
     let task = unsafe { &*task_ptr };
-    let binding = task.inner_exclusive_access();
-    let mut state = binding.state_lock_manual();
+    let mut state=task.state_lock_manual();
     match **state {
         // 任务正在运行，且没有让权，不必唤醒
         // 可能不止一个其他的任务在唤醒这个任务，因此被唤醒的任务可能是处于 Running 状态的
