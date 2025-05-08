@@ -41,7 +41,7 @@ use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
 use lazy_static::*;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{ProcessControlBlock, TaskStatus};
 pub use id::RecycleAllocator;
 pub use id::{ pid_alloc,  PidHandle};
 // pub use manager::add_task;
@@ -150,7 +150,7 @@ lazy_static! {
     pub static ref INITPROC: TaskRef = Arc::new(CFSTask::new({
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
-        TaskControlBlock::new(v.as_slice(),"/".to_string())
+        ProcessControlBlock::new(v.as_slice(),"/".to_string())
     }));
 }
 

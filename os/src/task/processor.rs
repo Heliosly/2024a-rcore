@@ -12,7 +12,7 @@ use spin::mutex::Mutex;
 use schedule::CFScheduler;
 use super::current::CurrentTask;
 use super::{schedule,  TaskStatus};
-use super:: TaskControlBlock;
+use super:: ProcessControlBlock;
 use crate::sync::UPSafeCell;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::put_prev_task;
@@ -24,11 +24,11 @@ use lazy_static::*;
 /// Processor management structure
 pub struct Processor {
     ///The task currently executing on the current processor
-    current: Option<Arc<TaskControlBlock>>,
+    current: Option<Arc<ProcessControlBlock>>,
 
 }
 impl Processor {
-    pub fn set_current(&mut self, task: Arc<TaskControlBlock>) {
+    pub fn set_current(&mut self, task: Arc<ProcessControlBlock>) {
         self.current = Some(task);
     }
     ///Create an empty Processor
@@ -42,16 +42,16 @@ impl Processor {
     
 
     ///Get current task in moving semanteme
-    pub fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
+    pub fn take_current(&mut self) -> Option<Arc<ProcessControlBlock>> {
         self.current.take()
     }
 
     ///Get current task in cloning semanteme
-    pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
+    pub fn current(&self) -> Option<Arc<ProcessControlBlock>> {
         self.current.as_ref().map(Arc::clone)
     }
     ///Get current task ref
-    pub fn current_ref(&self) -> Option<&Arc<TaskControlBlock>> {
+    pub fn current_ref(&self) -> Option<&Arc<ProcessControlBlock>> {
             self.current.as_ref()
         }
 }
@@ -59,7 +59,7 @@ impl Processor {
 lazy_static! {
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
-pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<TaskControlBlock>>>> = LazyInit::new();
+pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<ProcessControlBlock>>>> = LazyInit::new();
 pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>> =
     LazyInit::new();
 ///The main part of process execution and scheduling

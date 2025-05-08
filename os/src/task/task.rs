@@ -23,13 +23,13 @@ use core::mem::{replace, ManuallyDrop};
 use core::pin::Pin;
 use core::task::Waker;
 use spin::Mutex;
-unsafe impl Sync for TaskControlBlock{}
-unsafe impl Send for TaskControlBlock {}
+unsafe impl Sync for ProcessControlBlock{}
+unsafe impl Send for ProcessControlBlock {}
 
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
-pub struct TaskControlBlock {
+pub struct ProcessControlBlock {
  /// The  trapcontext
     pub trap_cx: UnsafeCell<Option<Box<TrapContext>>>,
     // Immutable
@@ -39,14 +39,14 @@ pub struct TaskControlBlock {
 
     fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     /// Mutable
-    inner: UPSafeCell<TaskControlBlockInner>,
+    inner: UPSafeCell<TaskControlBlock>,
 /// Maintain the execution status of the current process
     pub task_status: Mutex<TaskStatus>,
 
 
 }
 
-impl TaskControlBlock {
+impl ProcessControlBlock {
 pub fn is_zombie(&self) -> bool {
        *self.state_lock().lock() == TaskStatus::Zombie
     }
@@ -55,7 +55,7 @@ pub fn is_zombie(&self) -> bool {
         unsafe { &mut *self.fut.get() }
     }
     /// Get the mutable reference of the inner TCB
-    pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlockInner> {
+    pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlock> {
         self.inner.exclusive_access()
     }
     /// Get the address of app's page table
@@ -108,7 +108,7 @@ pub fn is_zombie(&self) -> bool {
 }
 }
 
-pub struct TaskControlBlockInner {
+pub struct TaskControlBlock {
    
     ///trap上下文的bottom
     ///用户栈顶
@@ -144,7 +144,7 @@ pub struct TaskControlBlockInner {
     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
 }
 
-impl TaskControlBlockInner {
+impl TaskControlBlock {
    
     pub fn wake_all_waiters(&self){
         let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
@@ -226,7 +226,7 @@ impl TaskControlBlockInner {
         }
     }
     ///fork
-    pub fn clone_user_res(&mut self, another: &TaskControlBlockInner) {
+    pub fn clone_user_res(&mut self, another: &TaskControlBlock) {
         self.alloc_user_res();
         self.memory_set.clone_area(
             VirtAddr::from(self.user_stack_top - USER_STACK_SIZE).floor(),
@@ -252,7 +252,7 @@ impl TaskControlBlockInner {
     }
 }
 
-impl TaskControlBlock {
+impl ProcessControlBlock {
     ///通过递归调整提示地址，从高到低寻找足够大的未占用虚拟地址空间，确保新分配区域不与现有区域重叠。
     #[inline(always)]
     pub fn insert_framed_area_with_hint(
@@ -290,7 +290,7 @@ impl TaskControlBlock {
    trap_cx:UnsafeCell::new(Some(Box::new(TrapContext::new()))),
 
             inner: unsafe {
-                UPSafeCell::new(TaskControlBlockInner {
+                UPSafeCell::new(TaskControlBlock {
                  
                     base_size: user_sp,
                     memory_set,
@@ -480,7 +480,7 @@ impl TaskControlBlock {
                 new_fd_table.push(None);
             }
         }
-        let task_control_block = Arc::new(CFSTask::new(TaskControlBlock {
+        let task_control_block = Arc::new(CFSTask::new(ProcessControlBlock {
             pid: pid_handle,
 
                     task_status: Mutex::new(TaskStatus::Runable),
@@ -488,7 +488,7 @@ impl TaskControlBlock {
 
                     trap_cx:UnsafeCell::new(Some(Box::new(TrapContext::new()))),
             inner: unsafe {
-                UPSafeCell::new(TaskControlBlockInner {
+                UPSafeCell::new(TaskControlBlock {
                     
 
                     cwd:parent_inner.cwd.clone(),

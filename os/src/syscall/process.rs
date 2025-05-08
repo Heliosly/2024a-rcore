@@ -5,7 +5,7 @@ use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
 
 use crate::{
     config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags, NONE_MODE}, mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str, FrameTracker, MapPermission, VirtAddr}, task::{
-        add_task, current_task, exit_current_and_run_next, set_priority, yield_now, TaskControlBlock, TaskStatus, PID2PC
+        add_task, current_task, exit_current_and_run_next, set_priority, yield_now, ProcessControlBlock, TaskStatus, PID2PC
     }, timer::get_time_us, utils::string::get_abs_path
 };
 
