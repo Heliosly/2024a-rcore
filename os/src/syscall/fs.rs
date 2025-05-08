@@ -10,7 +10,7 @@ pub struct Ino{
 }
 use crate::fs::{ open_file, OpenFlags, Stat, StatMode};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
-use crate::task::current_task;
+use crate::task::{current_process, current_task, current_token};
 pub static mut UMAP:BTreeMap<usize,String>=BTreeMap::new();
 pub static mut UMAP1:BTreeMap<String,usize>=BTreeMap::new();
 pub static mut UMAP2:BTreeMap<String,String>=BTreeMap::new();
@@ -18,10 +18,10 @@ pub static mut ITOS:BTreeMap<String,Ino>=BTreeMap::new();
 
 pub static mut IDX:u64=1;
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
-    trace!("kernel:pid[{}] sys_write,fd:{}", current_task().pid.0,fd);
-    let token = current_task().get_user_token();
-    let task = current_task();
-    let inner = task.inner_exclusive_access();
+    trace!("kernel:pid[{}] sys_write,fd:{}", current_task().get_pid(),fd);
+    let token = current_token();
+    let proc = current_process();
+    let inner = proc.inner_exclusive_access();
     if fd >= inner.fd_table.len() {
         return -1;
     }
@@ -39,10 +39,10 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
 }
 
 pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
-    trace!("kernel:pid[{}] sys_read,fd:{}", current_task().pid.0,fd);
-    let token = current_task().get_user_token();
-    let task = current_task();
-    let inner = task.inner_exclusive_access();
+    trace!("kernel:pid[{}] sys_read,fd:{}", current_task().get_pid(),fd);
+    let token = current_token();
+    let proc = current_process();
+    let inner = proc.inner_exclusive_access();
     if fd >= inner.fd_table.len() {
         return -1;
     }
@@ -63,9 +63,9 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
 }
 
 pub fn sys_open(path: *const u8, flags: u32) -> isize {
-    trace!("kernel:pid[{}] sys_open", current_task().pid.0);
-    let task = current_task();
-    let token = current_task().get_user_token();
+    trace!("kernel:pid[{}] sys_open", current_task().get_pid());
+    let proc = current_process();
+    let token = current_token();
     let path1 = translated_str(token, path);
     let path;
     if unsafe {
@@ -92,7 +92,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     }
     match open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap(), 0o777) {
         Ok(inode) => {
-            let mut inner = task.inner_exclusive_access();
+            let mut inner = proc.inner_exclusive_access();
             let fd = inner.alloc_fd();
             inner.fd_table[fd] = Some(inode.file().unwrap());
     
@@ -119,9 +119,9 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 }
 
 pub fn sys_close(fd: usize) -> isize {
-    trace!("kernel:pid[{}] sys_close", current_task().pid.0);
-    let task = current_task();
-    let mut inner = task.inner_exclusive_access();
+    trace!("kernel:pid[{}] sys_close", current_task().get_pid());
+    let proc = current_process();
+    let mut inner = proc.inner_exclusive_access();
     if fd >= inner.fd_table.len() {
         return -1;
     }
@@ -138,9 +138,9 @@ pub fn sys_close(fd: usize) -> isize {
 
 /// YOUR JOB: Implement fstat.
 pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!("kernel:pid[{}] sys_fstat NOT IMPLEMENTED", current_task().pid.0);
-    let task = current_task();
-    let inner = task.inner_exclusive_access();
+    trace!("kernel:pid[{}] sys_fstat NOT IMPLEMENTED", current_task().get_pid());
+    let proc = current_process();
+    let inner = proc.inner_exclusive_access();
     if _fd >= inner.fd_table.len() {
         return -1;
     }
@@ -163,7 +163,7 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
   };
     
       let atm = unsafe { core::slice::from_raw_parts(&stat as *const _ as *const u8, mem::size_of::<Stat>()) };
-      let token=current_task().get_user_token();
+      let token=current_token();
       let bufs=translated_byte_buffer(token, _st as *mut u8, mem::size_of::<Stat>());
       let mut i=0;
       for buf in bufs{
@@ -182,8 +182,8 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
 
 /// YOUR JOB: Implement linkat.
 pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_linkat NOT IMPLEMENTED", current_task().pid.0);
-    let token = current_task().get_user_token();
+    trace!("kernel:pid[{}] sys_linkat NOT IMPLEMENTED", current_task().get_pid());
+    let token = current_token();
     let op=translated_str(token, _old_name);
     let np=translated_str(token, _new_name);
     if op==np{
@@ -210,8 +210,8 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
 
 /// YOUR JOB: Implement unlinkat.
 pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED", current_task().pid.0);
-    let token = current_task().get_user_token();
+    trace!("kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED", current_task().get_pid());
+    let token = current_token();
     let name=translated_str(token, _name);
     //println!("suc1");
     //println!("unlink:np=?{}",name);
@@ -229,7 +229,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
                }
                else {
                 let fd= UMAP1.get(&op).unwrap() ;
-             let bind=current_task();
+             let bind=current_process();
              let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
              inner.clear();
                }
@@ -248,7 +248,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
            }
            else{
              let fd=unsafe { UMAP1.get(&name).unwrap() };
-             let bind=current_task();
+             let bind=current_process();
              let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
              inner.clear();
 

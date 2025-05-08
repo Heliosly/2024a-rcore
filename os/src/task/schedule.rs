@@ -3,10 +3,10 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicIsize, Ordering};
 
 use super::processor::KERNEL_SCHEDULER;
-use super::ProcessControlBlock;
+use super::task::TaskControlBlock;
 
 pub type TaskRef  = Arc<Task>;
-pub type Task = CFSTask<ProcessControlBlock>;
+pub type Task = CFSTask<TaskControlBlock>;
 /// task for CFS
 pub struct CFSTask<T> {
     inner: T,
@@ -195,26 +195,26 @@ impl<T> CFScheduler<T> {
     }
 }
 
-pub fn put_prev_task(prev: SchedItem<ProcessControlBlock>) {
+pub fn put_prev_task(prev: SchedItem<TaskControlBlock>) {
     KERNEL_SCHEDULER.lock().put_prev_task(prev, false);
 }
 
-pub fn add_task(task: SchedItem<ProcessControlBlock>) {
+pub fn add_task(task: SchedItem<TaskControlBlock>) {
     KERNEL_SCHEDULER.lock().add_task(task);
 }
 
-pub fn remove_task(task: &SchedItem<ProcessControlBlock>) -> Option<SchedItem<ProcessControlBlock>> {
+pub fn remove_task(task: &SchedItem<TaskControlBlock>) -> Option<SchedItem<TaskControlBlock>> {
     KERNEL_SCHEDULER.lock().remove_task(task)
 }
 
-pub fn pick_next_task() -> Option<SchedItem<ProcessControlBlock>> {
+pub fn pick_next_task() -> Option<SchedItem<TaskControlBlock>> {
     KERNEL_SCHEDULER.lock().pick_next_task()
 }
 
-pub fn task_tick(current: &SchedItem<ProcessControlBlock>) -> bool {
+pub fn task_tick(current: &SchedItem<TaskControlBlock>) -> bool {
     KERNEL_SCHEDULER.lock().task_tick(current)
 }
 
-pub fn set_priority(task: &SchedItem<ProcessControlBlock>, prio: isize) -> bool {
+pub fn set_priority(task: &SchedItem<TaskControlBlock>, prio: isize) -> bool {
     KERNEL_SCHEDULER.lock().set_priority(task, prio)
 }

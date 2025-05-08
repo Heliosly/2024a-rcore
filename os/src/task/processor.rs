@@ -11,11 +11,13 @@ use core::task::{Context, Poll};
 use spin::mutex::Mutex;
 use schedule::CFScheduler;
 use super::current::CurrentTask;
+use super::task::TaskControlBlock;
 use super::{schedule,  TaskStatus};
 use super:: ProcessControlBlock;
 use crate::sync::UPSafeCell;
+use crate::task::current::current_token;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
-use crate::task::put_prev_task;
+use crate::task::{current_process, put_prev_task};
 use crate::trap::{ disable_irqs, enable_irqs, user_return,  TrapStatus}  ;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -59,7 +61,7 @@ impl Processor {
 lazy_static! {
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
-pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<ProcessControlBlock>>>> = LazyInit::new();
+pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<TaskControlBlock>>>> = LazyInit::new();
 pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>> =
     LazyInit::new();
 ///The main part of process execution and scheduling
@@ -74,12 +76,11 @@ pub fn run_tasks() {
 pub fn run_task2(mut curr:CurrentTask){
     let waker = curr.waker();
     let cx = &mut Context::from_waker(&waker);
-        let  inner = curr.inner_exclusive_access();
-        
-       
-        inner.memory_set.activate();
+    current_process().inner_exclusive_access().memory_set.activate();    
     
-        drop(inner);
+       
+    //delete active(conflict)
+    
         // 拿到 future 的所有权，而不是引用！
 
     debug!("poll");
@@ -89,11 +90,11 @@ pub fn run_task2(mut curr:CurrentTask){
         Poll::Ready(exit_code) => {
             debug!("task exit: todo, exit_code={}", exit_code);
             curr.set_state(TaskStatus::Zombie);
-            curr.set_exit_code(exit_code);
+            curr.set_exit_code(exit_code as isize);
             curr.wake_all_waiters();
-            if curr.is_init() {
+            if curr.is_init {
                 assert!(
-                    Arc::strong_count(curr.as_task_ref()) <= 3,
+                    Arc::strong_count(curr.as_task_ref()) <= 2,
                     "count {}",
                     Arc::strong_count(curr.as_task_ref())
                 );
@@ -118,7 +119,8 @@ pub fn run_task2(mut curr:CurrentTask){
                             disable_irqs();
                             drop(core::mem::ManuallyDrop::into_inner(state));
                             
-                            trace!("user return return val: {} sepc:{:#x}",tf.regs.a0,tf.sepc);
+                            trace!("user return return val: {} sepc:{:#x},pid:{}",tf.
+                            regs.a0,tf.sepc,curr.get_pid());
                             
                             enable_irqs();
                             user_return(tf);  

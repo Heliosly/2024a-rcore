@@ -157,6 +157,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
                 if let Some(task) = pick_next_task() {
+                    trace!("take a task");
                     unsafe {
                         CurrentTask::init_current(task);
                     }
@@ -211,7 +212,7 @@ let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3];
 tf.sepc += 4;
 let result = syscall(syscall_id, args).await;
 
-trace!("sys_call end");
+trace!("sys_call end result:{}",result);
 
    
          
@@ -278,7 +279,7 @@ disable_irqs();
                 // 任务结束，需要切换至其他任务，关中断
                 disable_irqs();
                 // info!("return ready");
-                return curr.get_exit_code();
+                return curr.get_exit_code() as i32;
             }
             disable_irqs();
         }

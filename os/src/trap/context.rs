@@ -3,6 +3,8 @@ use core::arch::asm;
 
 use riscv::register::{scause::{Exception, Interrupt, Trap}, sstatus::{self, Sstatus, SPP}};
 
+use crate::task::{current_stack_top, current_task, TaskStatus};
+
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -128,14 +130,14 @@ impl TrapContext {
             sepc: entry,  // entry point of app
           
 
-            kernel_sp:Default::default(),    // kernel stack
+            kernel_sp:current_stack_top(),    // kernel stack
             kernel_s: [0; 12],
             kernel_fp: 0,
             kernel_tp: 0,
             origin_a0: 0,
             fp: [0; 32],
             fcsr: 0,
-            trap_status:Default::default(),
+            trap_status:TrapStatus::Done,
             scause:0,
             stval:0,
             kernel_ra: 114514,
@@ -157,6 +159,10 @@ impl TrapContext {
     ///get scause code
     pub fn get_scause_code(&self) -> usize {
         self.scause
+    }
+    pub fn init(&mut self,user_sp:usize,entry: usize){
+           self.set_sp(user_sp);
+           self.sepc = entry;
     }
     
 

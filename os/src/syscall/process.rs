@@ -5,7 +5,7 @@ use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
 
 use crate::{
     config::{MAX_SYSCALL_NUM, PAGE_SIZE},  fs::{open_file, OpenFlags, NONE_MODE}, mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str, FrameTracker, MapPermission, VirtAddr}, task::{
-        add_task, current_task, exit_current_and_run_next, set_priority, yield_now, ProcessControlBlock, TaskStatus, PID2PC
+        add_task, current_process, current_task, current_token, exit_current_and_run_next, set_priority, yield_now, ProcessControlBlock, TaskStatus, PID2PC
     }, timer::get_time_us, utils::string::get_abs_path
 };
 
@@ -28,7 +28,7 @@ pub struct TaskInfo {
 }
 
 pub fn sys_exit(exit_code: i32)->isize  {
-    trace!("kernel:pid[{}] sys_exit", current_task().pid.0);
+    trace!("kernel:pid[{}] sys_exit", current_task().get_pid());
 
     exit_current_and_run_next(exit_code);
     exit_code as isize
@@ -41,16 +41,16 @@ pub async  fn sys_yield() -> isize {
 }
 
 pub fn sys_getpid() -> isize {
-    trace!("kernel: sys_getpid pid:{}", current_task().pid.0);
-    current_task().pid.0 as isize
+    trace!("kernel: sys_getpid pid:{}", current_task().get_pid());
+    current_task().get_pid() as isize
 }
 
 pub fn sys_fork() -> isize {
-    trace!("kernel:pid[{}] sys_fork", current_task().pid.0);
-    let current_task = current_task();
+    trace!("kernel:pid[{}] sys_fork", current_task().get_pid());
+    let current_process = current_process();
 
-    let new_task = current_task.fork();
-    let new_pid = new_task.pid.0;
+    let new_pro = current_process.fork();
+    let new_pid = new_pro.get_pid();
     // debug!("new_pid:{}",new_pid);
   
     // modify trap context of new_task, because it returns immediately after switching
@@ -65,26 +65,25 @@ pub fn sys_fork() -> isize {
     //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
     //             ppn.ppn().0,ppn as *const _ as usize);
     //         }
-    //         if new_task.pid.0==3 {
+    //         if new_task.get_pid()==3 {
     //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
     //             ppn.ppn().0,ppn as *const _ as usize);
     //         }
     //     }
     // }
     // drop(inner);
-    add_task(new_task);
    
     new_pid as isize
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> isize{
-    trace!("kernel:pid[{}] sys_exec", current_task().pid.0);
-    let task = current_task();
-    let task_inner = task.inner_exclusive_access();
+    trace!("kernel:pid[{}] sys_exec", current_task().get_pid());
+    let process = current_process();
 
-    let token =task_inner.memory_set.token();
+    let token = process.get_user_token();
     let mut path = translated_str(token, path);
+    let proc_inner = process.inner_exclusive_access();
     // path = remove_ansi_escape_sequences(&path);
     // path = strip_color(path, "\u{1b}[0;0m", "\u{1b}[m");
     // if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
@@ -164,16 +163,16 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     debug!("[sys_execve] env is {:?}", env);
 
     let cwd = if !path.starts_with('/') {
-        task_inner.cwd.as_str()
+        proc_inner.cwd.as_str()
     } else {
         "/"
     };
     let abs_path = get_abs_path(&cwd, &path);
     let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE).unwrap().file().unwrap();
     let elf_data = app_inode.read_all();
-    drop(task_inner);
-    task.exec(&elf_data, &argv_vec, &mut env);
-    task.inner_exclusive_access().memory_set.activate();
+    drop(proc_inner);
+    process.exec(&elf_data, &argv_vec, &mut env);
+    process.inner_exclusive_access().memory_set.activate();
     0
 
 
@@ -183,46 +182,46 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     trace!("kernel: sys_waitpid");
-    let task = current_task();
+    let proc= current_process();
     // find a child process
 
     
     // ---- access current PCB exclusively
-    let mut inner = task.inner_exclusive_access();
+    let mut proc_inner = proc.inner_exclusive_access();
 
     // for i in inner.children.iter(){
-    //     print!(" {}",{i.pid.0}); 
+    //     print!(" {}",{i.get_pid()}); 
     // }
 
         // println!(" ");
-    if !inner
+    if !proc_inner
         .children
         .iter()
-        .any(|p| pid == -1 || pid as usize == p.getpid())
+        .any(|p| pid == -1 || pid as usize == p.get_pid())
     {
 
         debug!("cant find pid:{} in parent pid:{},and children count = : {} ",
-        pid,task.pid.0,inner.children.len());
+        pid,proc.get_pid(),proc_inner.children.len());
         return -1;  
         // ---- release current PCB
     }
-    let pair = inner.children.iter().enumerate().find(|(_, p)| {
+    let pair = proc_inner.children.iter().enumerate().find(|(_, p)| {
         // ++++ temporarily access child PCB exclusively
-        p.is_zombie() && (pid == -1 || pid as usize == p.getpid())
+        p.is_zombie() && (pid == -1 || pid as usize == p.get_pid())
         // ++++ release child PCB
     });
     if let Some((idx, child_task)) = pair {
         debug!("chiled idx is removed");
 
-        PID2PC.lock().remove(&child_task.getpid());
-        let child = inner.children.remove(idx);
+        PID2PC.lock().remove(&child_task.get_pid());
+        let child = proc_inner.children.remove(idx);
         // confirm that child will be deallocated after being removed from children list
-        let found_pid = child.getpid();
+        let found_pid = child.get_pid();
         // ++++ temporarily access child PCB exclusively
         let exit_code = child.inner_exclusive_access().exit_code;
 
         // ++++ release child PCB
-        *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+        *translated_refmut(proc_inner.memory_set.token(), exit_code_ptr) = exit_code;
         assert_eq!(Arc::strong_count(&child), 1,"strong_count is incorrect,{}",
         Arc::strong_count(&child));
         found_pid as isize
@@ -240,16 +239,16 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
     let usec=get_time_us().to_ne_bytes();
    
    
     let sec=(get_time_us()/1000000).to_ne_bytes();
 
-    let _cur=current_task().get_user_token();
+    let token=current_token();
     
-    let bufs=translated_byte_buffer(_cur, _ts as *const u8, 16);
+    let bufs=translated_byte_buffer(token, _ts as *const u8, 16);
     let mut i=0;
     for buf in bufs{
         for atm in buf{
@@ -272,7 +271,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!(
         "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
     -1
 }
@@ -281,12 +280,12 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
     if _start % PAGE_SIZE != 0 || _port & !0x7 != 0 || _port & 0x7 == 0 {
         return -1;  
     }
-    let arc=current_task();
+    let arc=current_process();
     bitflags! {
         /// map permission corresponding to that in pte: `R W X U`
         pub struct Portpomiss: u8 {
@@ -326,7 +325,7 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
     if _start % PAGE_SIZE != 0  {
         return -1;  
@@ -334,7 +333,7 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     let _end=_start+_len;
     let end:VirtAddr=_end.into();
     let start:VirtAddr=_start.into();
-    let arc=current_task();
+    let arc=current_process();
     
     if arc.inner_exclusive_access().memory_set.unmap_peek(start, end){
         return -1
@@ -344,8 +343,8 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
-    trace!("kernel:pid[{}] sys_sbrk", current_task().pid.0);
-    if let Some(old_brk) = current_task().change_program_brk(size) {
+    trace!("kernel:pid[{}] sys_sbrk", current_task().get_pid());
+    if let Some(old_brk) = current_process().change_program_brk(size) {
         old_brk as isize
     } else {
         
@@ -358,7 +357,7 @@ pub fn sys_sbrk(size: i32) -> isize {
 pub fn sys_spawn(_path: *const u8) -> isize {
     trace!(
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
     unimplemented!();
     // let current_task = current_task();
@@ -370,10 +369,10 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     //    let tcb=Arc::new(TaskControlBlock::new(elf.as_slice(),path));
     //    let mut inner=tcb.inner_exclusive_access();
     //    let mut pin=current_task.inner_exclusive_access();
-    //    inner.parent.replace(current_task.getpid());
+    //    inner.parent.replace(current_task.get_pid());
     //    pin.children.push(tcb.clone());
     //    drop(inner);
-    //    let pid = tcb.pid.0 as isize;
+    //    let pid = tcb.get_pid() as isize;
     //    add_task(tcb);
     //    return pid;
     // } 
@@ -384,7 +383,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().pid.0
+        current_task().get_pid()
     );
    
    set_priority(&(*current_task().0), prio);

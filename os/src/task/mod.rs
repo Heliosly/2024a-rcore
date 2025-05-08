@@ -15,58 +15,57 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
-mod current;
 pub mod aux;
+mod current;
 mod id;
-mod processor;
-mod waker;
 mod kstack;
+mod processor;
 mod schedule;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
+mod waker;
 mod yieldfut;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::ToString;
-pub use current::current_task;
+pub use core::mem::ManuallyDrop;
+pub use current::{
+    current_process, current_task, current_task_may_uninit, current_token,
+    CurrentTask,
+};
+pub use id::{pid_alloc, PidHandle, RecycleAllocator};
+pub use kstack::{TaskStack,current_stack_top};
+pub use processor::{init, run_task2, run_tasks, Processor};
+pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick};
+pub use task::{ProcessControlBlock, TaskStatus};
+pub use yieldfut::yield_now;
 // pub use manager::get_task_count;
-pub use processor::run_task2;
-pub use kstack::TaskStack;
-pub use current::current_task_may_uninit;
-pub use current::CurrentTask;
-use schedule::CFSTask;
-use schedule::TaskRef;
-use spin::mutex::Mutex;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
+
+
 use lazy_static::*;
+
+use schedule::TaskRef;
+use spin::mutex::Mutex;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
-pub use task::{ProcessControlBlock, TaskStatus};
-pub use id::RecycleAllocator;
-pub use id::{ pid_alloc,  PidHandle};
+
 // pub use manager::add_task;
-pub use processor::{
-     run_tasks,
-    Processor,
-};
-pub use core::mem::ManuallyDrop;
-pub use processor::init;
-pub use yieldfut::yield_now;
-pub use schedule::{add_task,pick_next_task,put_prev_task,task_tick,set_priority};
 
-pub static  PID2PC: Mutex<BTreeMap<usize, TaskRef>> = Mutex::new(BTreeMap::new());
-
+pub type ProcessRef = Arc<ProcessControlBlock>;
+pub static PID2PC: Mutex<BTreeMap<usize, ProcessRef>> = Mutex::new(BTreeMap::new());
+pub static TID2TC: Mutex<BTreeMap<usize, TaskRef>> = Mutex::new(BTreeMap::new());
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     panic!("undo");
     // There must be an application running.
     // let task = take_current_task().unwrap();
- 
+
     // // ---- access current TCB exclusively
     // let mut task_inner = task.inner_exclusive_access();
     // let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     // // Change status to Ready
-    // task_inner.set_state(TaskStatus::Runable); 
+    // task_inner.set_state(TaskStatus::Runable);
     // drop(task_inner);
     // // ---- release current PCB
 
@@ -83,50 +82,35 @@ pub const IDLE_PID: usize = 0;
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
     let task = current_task();
-   
-    
-    println!("exit pid {},exit code:{}",task.pid.0,exit_code);
-    // if task.pid.0 ==3 {
-    //     let inner = task . inner_exclusive_access();
-    //     for area in inner.memory_set.areas.iter(){
-    //         for ppn in area.data_frames.iter(){
-    //             println!("before exit ppn:{:#x},frametracker:{:#x}"
-    //             ,(ppn.1).ppn().0
-    //              ,ppn.1 as *const _ as usize
-    //         );
-    //         }
 
-    //     }
+    let process = current_process();
 
-    // }
-    // if pid == IDLE_PID {
-    //     println!(
-    //         "[kernel] Idle process exit with exit_code {} ...",
-    //         exit_code
-    //     );
-    //     panic!("All applications completed!");
-    // }
-
+    println!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
     // **** access current TCB exclusively
-    let mut inner = task.inner_exclusive_access();
+    let mut inner = process.inner_exclusive_access();
     // Change status to Zombie
-       // Record exit code
-    inner.exit_code = exit_code;
-    // do not move to its parent but under initproc
+    task.set_state(TaskStatus::Zombie);
+    // Record exit code
+    task.set_exit_code(exit_code as isize);
+    let tid = task.id.as_usize();
+    if task.is_leader() {
+        if task.get_pid() != 0 {
+            let mut initproc_inner = INITPROC.inner_exclusive_access();
+            for child in inner.children.iter() {
+                child
+                    .inner_exclusive_access()
+                    .parent
+                    .replace(INITPROC.pid.0);
+                initproc_inner.children.push(child.clone());
+            }
 
-    // ++++++ access initproc TCB exclusively
-    if task.pid.0 !=0
-    {
-        let mut initproc_inner = INITPROC.inner_exclusive_access();
-        for child in inner.children.iter() {
-            child.inner_exclusive_access().parent .replace(INITPROC.pid.0);
-            initproc_inner.children.push(child.clone());
+        } else {
+            
+            let w = &INITPROC;
+            let _ = w;
         }
-    }
-    else{
-        let w = &INITPROC;
-        let _ = w;
-    }
+
+
     // ++++++ release parent PCB
 
     inner.children.clear();
@@ -134,28 +118,43 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     inner.memory_set.recycle_data_pages();
     // drop file descriptors
     inner.fd_table.clear();
-    task.set_state(TaskStatus::Zombie);
-    drop(inner);
-    // **** release current PCB
-    // drop task manually to maintain rc correctly
-    drop(task);
 
+    drop(inner);
+    } 
+    TID2TC.lock().remove(&tid);
+    // 从进程中删除当前线程
+    let mut tasks = process.tasks.lock();
+    let len = tasks.len();
+    for index in 0..len {
+        if tasks[index].id.as_usize() == tid {
+            tasks.remove(index);
+            break;
+        }
+    }
+
+    
+
+    // drop task manually to maintain rc correctly
+    drop(task); 
 }
-static  INITPROC_STR: &str="ch6b_usertest";
+static INITPROC_STR: &str = "ch6b_usertest";
 lazy_static! {
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
     /// but we have user_shell, so we don't need to change it.
-    pub static ref INITPROC: TaskRef = Arc::new(CFSTask::new({
+    pub static ref INITPROC: ProcessRef= Arc::new({
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
         ProcessControlBlock::new(v.as_slice(),"/".to_string())
-    }));
+
+    });
+
 }
 
 ///Add init process to the manager
 pub fn add_initproc() {
-    add_task(INITPROC.clone());
+    PID2PC.lock().insert(INITPROC.pid.0, INITPROC.clone());
+    // INITPROC.inner_exclusive_access().memory_set.activate();
     trace!("addInITPROC ok");
-    }
+}
