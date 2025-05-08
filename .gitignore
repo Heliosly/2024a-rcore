@@ -16,6 +16,6 @@ easy-fs-fuse/target/*
 tools/
 pushall.sh
 *.bak
-
+os/sdcard-rv.img
 user/
 ci-user/
