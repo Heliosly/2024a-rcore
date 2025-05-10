@@ -207,7 +207,8 @@ pub async fn user_task_top() -> i32 {
             enable_irqs();
            
 let syscall_id = tf.regs.a7;
-let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3];
+let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3
+,tf.regs.a4,tf.regs.a5];
 
 tf.sepc += 4;
 let result = syscall(syscall_id, args).await;

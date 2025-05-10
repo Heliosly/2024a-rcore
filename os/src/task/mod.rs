@@ -16,6 +16,7 @@
 #![allow(missing_docs)]
 
 pub mod aux;
+mod flags;
 mod current;
 mod id;
 mod kstack;
@@ -33,11 +34,13 @@ pub use current::{
     current_process, current_task, current_task_may_uninit, current_token,
     CurrentTask,
 };
+pub use flags::{CloneFlags,TaskStatus};
+
 pub use id::{pid_alloc, PidHandle, RecycleAllocator};
 pub use kstack::{TaskStack,current_stack_top};
 pub use processor::{init, run_task2, run_tasks, Processor};
 pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick};
-pub use task::{ProcessControlBlock, TaskStatus};
+pub use task::ProcessControlBlock;
 pub use yieldfut::yield_now;
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
@@ -87,21 +90,18 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     println!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
     // **** access current TCB exclusively
-    let mut inner = process.inner_exclusive_access();
     // Change status to Zombie
     task.set_state(TaskStatus::Zombie);
     // Record exit code
     task.set_exit_code(exit_code as isize);
+    process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {
         if task.get_pid() != 0 {
-            let mut initproc_inner = INITPROC.inner_exclusive_access();
-            for child in inner.children.iter() {
+            for child in process.children.lock().iter() {
                 child
-                    .inner_exclusive_access()
-                    .parent
-                    .replace(INITPROC.pid.0);
-                initproc_inner.children.push(child.clone());
+                    .set_parent(INITPROC.pid.0) ;
+                INITPROC.children.lock().push(child.clone());
             }
 
         } else {
@@ -113,13 +113,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // ++++++ release parent PCB
 
-    inner.children.clear();
+    process.children.lock().clear();
     // deallocate user space
-    inner.memory_set.recycle_data_pages();
+    process.memory_set.lock().recycle_data_pages();
     // drop file descriptors
-    inner.fd_table.clear();
+    process.fd_table.lock().clear();
 
-    drop(inner);
     } 
     TID2TC.lock().remove(&tid);
     // 从进程中删除当前线程

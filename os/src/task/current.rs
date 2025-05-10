@@ -2,7 +2,7 @@ use core::{mem::ManuallyDrop, ops::Deref, task::Waker};
 
 use alloc::sync::Arc;
 
-use super::{schedule::{Task, TaskRef}, ProcessControlBlock, ProcessRef, TaskStatus, PID2PC};
+use super::{schedule::{Task, TaskRef},  ProcessRef, TaskStatus, PID2PC};
 
 
 #[inline]

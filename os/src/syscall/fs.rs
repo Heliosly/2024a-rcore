@@ -21,17 +21,16 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write,fd:{}", current_task().get_pid(),fd);
     let token = current_token();
     let proc = current_process();
-    let inner = proc.inner_exclusive_access();
-    if fd >= inner.fd_table.len() {
+    let fd_table= proc.fd_table.lock();
+    if fd >= fd_table.len() {
         return -1;
     }
-    if let Some(file) = &inner.fd_table[fd] {
+    if let Some(file) = &fd_table[fd] {
         if !file.writable().await.unwrap() {
             return -1;
         }
         let file = file.clone();
         // release current task TCB manually to avoid multi-borrow
-        drop(inner);
         file.write(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize
     } else {
         -1
@@ -42,17 +41,16 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_read,fd:{}", current_task().get_pid(),fd);
     let token = current_token();
     let proc = current_process();
-    let inner = proc.inner_exclusive_access();
-    if fd >= inner.fd_table.len() {
+    let fd_table= proc.fd_table.lock();
+    if fd >= fd_table.len() {
         return -1;
     }
-    if let Some(file) = &inner.fd_table[fd] {
+    if let Some(file) = &fd_table[fd] {
         let file = file.clone();
         if !file.readable().await.unwrap() {
             return -1;
         }
         // release current task TCB manually to avoid multi-borrow
-        drop(inner);
         // trace!("kernel: sys_read .. file.read");
        let res= file.read(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize;
 
@@ -92,9 +90,9 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     }
     match open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap(), 0o777) {
         Ok(inode) => {
-            let mut inner = proc.inner_exclusive_access();
-            let fd = inner.alloc_fd();
-            inner.fd_table[fd] = Some(inode.file().unwrap());
+            let fd = proc.alloc_fd();
+            let mut fd_table = proc.fd_table.lock();
+           fd_table[fd] = Some(inode.file().unwrap());
     
             unsafe {
                 UMAP.insert(fd, path.clone());
@@ -121,14 +119,14 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 pub fn sys_close(fd: usize) -> isize {
     trace!("kernel:pid[{}] sys_close", current_task().get_pid());
     let proc = current_process();
-    let mut inner = proc.inner_exclusive_access();
-    if fd >= inner.fd_table.len() {
+    let mut fd_table = proc.fd_table.lock();
+    if fd >= fd_table.len() {
         return -1;
     }
-    if inner.fd_table[fd].is_none() {
+    if fd_table[fd].is_none() {
         return -1;
     }
-    inner.fd_table[fd].take();
+    fd_table[fd].take();
 
     unsafe { UMAP1.remove(&UMAP[&fd]) };
     unsafe { UMAP.remove(&fd) };
@@ -140,14 +138,13 @@ pub fn sys_close(fd: usize) -> isize {
 pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     trace!("kernel:pid[{}] sys_fstat NOT IMPLEMENTED", current_task().get_pid());
     let proc = current_process();
-    let inner = proc.inner_exclusive_access();
-    if _fd >= inner.fd_table.len() {
+    let fd_table = proc.fd_table.lock();
+    if _fd >= fd_table.len() {
         return -1;
     }
-    if inner.fd_table[_fd].is_none() {
+    if fd_table[_fd].is_none() {
         return -1;
     }
-    drop(inner);
    
     let op=unsafe { UMAP [&_fd].clone()};
     let temp= unsafe {
@@ -229,9 +226,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
                }
                else {
                 let fd= UMAP1.get(&op).unwrap() ;
-             let bind=current_process();
-             let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
-             inner.clear();
+            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().clear();
                }
             }
         }    
@@ -248,9 +243,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
            }
            else{
              let fd=unsafe { UMAP1.get(&name).unwrap() };
-             let bind=current_process();
-             let inner=bind.inner_exclusive_access().fd_table[*fd].clone().unwrap();
-             inner.clear();
+            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().clear();
 
            }
           

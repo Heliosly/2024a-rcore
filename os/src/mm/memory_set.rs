@@ -73,7 +73,6 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
-  
     ///s
     pub fn unmap_peek(
         &mut self,
@@ -108,7 +107,7 @@ impl MemorySet {
         false
     }
     /// 复制逻辑段内容
-    pub fn clone_area(&mut self, start_vpn: VirtPageNum, another: &MemorySet) {
+    pub fn clone_area(&mut self, start_vpn: VirtPageNum, another:&MemorySet) {
         if let Some(area) = another
             .areas
             .iter()
