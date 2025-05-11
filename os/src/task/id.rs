@@ -42,7 +42,10 @@ impl RecycleAllocator {
 
 lazy_static! {
     static ref PID_ALLOCATOR: UPSafeCell<RecycleAllocator> =
-        unsafe { UPSafeCell::new(RecycleAllocator::new()) };
+        unsafe { UPSafeCell::new(RecycleAllocator{
+            current:1,
+            recycled:Vec::new(),
+        }) };
     static ref KSTACK_ALLOCATOR: UPSafeCell<RecycleAllocator> =
         unsafe { UPSafeCell::new(RecycleAllocator::new()) };
 }

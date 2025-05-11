@@ -1,7 +1,8 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
-
-use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET, USER_HEAP_SIZE};
+use core::ops::{Deref, DerefMut};
+use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET, MMAP_PGNUM_TOP, MMAP_TOP, USER_HEAP_SIZE};
 use crate::fs::{map_dynamic_link_file, open_file, OpenFlags, NONE_MODE};
+use crate::syscall::flags::MmapProt;
 use crate::task::aux::{Aux, AuxType};
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
@@ -15,6 +16,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use xmas_elf::ElfFile;
 use core::arch::asm;
+use core::cmp::min;
+use core::ops::Range;
 use lazy_static::*;
 use riscv::register::satp;
 
@@ -69,49 +72,208 @@ pub struct MemorySet {
     ///根页表位置
     pub page_table: PageTable,
     ///memoryset的区域
-    pub areas: Vec<MapArea>,
+    pub areatree: VmAreaTree,
 }
 
-impl MemorySet {
-    ///s
-    pub fn unmap_peek(
-        &mut self,
-        start_va: VirtAddr,
-        end_va: VirtAddr,
-    )->bool{
+/// 虚拟内存区域树：Key 按照 Range.start 排序
+pub struct VmAreaTree {
+    areas: BTreeMap<VirtPageNum, MapArea>,
+}
+impl Deref for VmAreaTree {
+    type Target = BTreeMap<VirtPageNum, MapArea>;
 
-        let var=VPNRange::new(start_va.floor(),end_va.ceil());
+    fn deref(&self) -> &Self::Target {
+        &self.areas
+    }
+}
+
+impl DerefMut for VmAreaTree {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.areas
+    }
+}
+impl VmAreaTree {
+    pub fn push(&mut self,area:MapArea){
+         self.areas.insert(area.vpn_range.get_start(), area);
+    }
+    /// 创建一个空的树
+    pub fn new() -> Self {
+        VmAreaTree { areas: BTreeMap::new() }
+    }
+
+    
+    pub fn remove_by_area(&mut self, area:MapArea)->MapArea{
+        self.areas.remove(&area.vpn_range.get_start()).unwrap()
         
-        for vpn in var{
-            let pte=self.page_table.find_pte(vpn);
-         match pte{
-            Some(p)=>{
-                if !p.is_valid(){
-                    return true
-                }
+    }
+    /// 手动插入一段页号区间，覆盖前需保证不重叠
+    pub fn insert(
+        &mut self,
+        start_vpn: VirtPageNum,
+        end_vpn:   VirtPageNum,
+        map_type: MapType,
+        perm: MapPermission,
+        area_type: MapAreaType,
+    ) -> Result<(), &'static str> {
+        let new_range = start_vpn..end_vpn;
+        if self.is_overlap(&new_range) {
+            return Err("insert: overlap with existing region");
+        }
+        let area = MapArea::new_by_vpn(start_vpn, end_vpn, map_type, perm, area_type);
+        self.areas.insert(start_vpn, area);
+        Ok(())
+    }
 
+    /// 从 MMAP_PGNUM_TOP 向下找 npages 个连续页号，插入并返回起始页号
+    pub fn alloc_pages(
+        &mut self,
+        npages: usize,
+        map_perm: MapPermission,
+        area_type: MapAreaType,
+    ) -> Option<VirtPageNum> {
+        let mut end_pn = MMAP_PGNUM_TOP;
+
+        for area in self.areas.values().rev() {
+            let s = area.vpn_range.get_start().0;
+            let e = area.vpn_range.get_end().0;
+
+            // gap = [e, end_pn)
+            if end_pn >= e + npages {
+                let start_pn = end_pn - npages;
+                if start_pn >= e {
+                    let start_vpn = VirtPageNum(start_pn);
+                    let end_vpn   = VirtPageNum(end_pn);
+                    let new_area = MapArea::new_by_vpn(
+                        start_vpn, end_vpn,
+                        MapType::Framed,    // 你的默认 map_type
+                        map_perm.clone(),
+                        area_type.clone(),
+                    );
+                    self.areas.insert(start_vpn, new_area);
+                    return Some(start_vpn);
+                }
             }
-            None=>{
-                return true
-            }
-         }
+            end_pn = min(end_pn, s);
         }
 
-        for area in &mut self.areas{
-            if area.vpn_range.get_start()==start_va.floor(){
-                (*area).unmap(&mut self.page_table);
-                break;
-            }
+        // 最后，如果 [0, end_pn) 足够，也直接分配
+        if end_pn >= npages {
+            let start_pn = end_pn - npages;
+            let start_vpn = VirtPageNum(start_pn);
+            let end_vpn   = VirtPageNum(end_pn);
+            let new_area = MapArea::new_by_vpn(
+                start_vpn, end_vpn,
+                MapType::Framed,
+                map_perm,
+                area_type,
+            );
+            self.areas.insert(start_vpn, new_area);
+            return Some(start_vpn);
+        }
 
+        None
+    }
+
+    /// 按起始页号释放该区域
+    pub fn dealloc(&mut self, start_vpn: VirtPageNum) -> Result<(), &'static str> {
+        if self.areas.remove(&start_vpn).is_some() {
+            Ok(())
+        } else {
+            Err("dealloc: no such region")
+        }
+    }
+
+    /// 检查一个页号区间是否与已存在任何区域重叠
+    fn is_overlap(&self, range: &Range<VirtPageNum>) -> bool {
+        for area in self.areas.values() {
+            let a_s = area.vpn_range.get_start().0;
+            let a_e = area.vpn_range.get_end().0;
+            if range.start.0 < a_e && a_s < range.end.0 {
+                return true;
+            }
         }
         false
     }
+
+    /// 从 `hint` 向下寻找能容纳 `npages` 页的第一个空闲区
+    pub fn find_gap_from(&self, hint: VirtPageNum, npages: usize) -> Option<VirtPageNum> {
+        let mut end_pn = hint.0;
+        // 遍历所有 start < hint 的区域，倒序（从高地址到低地址）
+        for (start, area) in self.areas.range(..hint).rev() {
+            let s = start.0;
+            let e = area.vpn_range.get_end().0;
+            // 检查 gap = [e, end_pn) 是否足够大
+            if end_pn >= e + npages {
+                let start_pn = end_pn - npages;
+                if start_pn >= e {
+                    // 找到符合条件的 gap，返回起始页号
+                    return Some(VirtPageNum(start_pn));
+                }
+            }
+            // 否则收缩搜索上界到本区域的起始页号
+            end_pn = min(end_pn, s);
+        }
+        // 最后，如果从 0 到 end_pn 足够，也返回
+        if end_pn >= npages {
+            return Some(VirtPageNum(end_pn - npages));
+        }
+        None
+    }
+    /// 可选：调试打印所有区域
+    pub fn debug_print(&self) {
+        for (start, area) in &self.areas {
+            let end = area.vpn_range.get_end();
+            println!(
+                "VmArea [{:#x}..{:#x}) type={:?} perm={:?} area_type={:?}",
+                start.0, end.0, area.map_type, area.map_perm, area.area_type
+            );
+        }
+    }
+}
+/// 简单的页对齐工具
+fn align_up(x: usize, align: usize) -> usize {
+    (x + align - 1) / align * align
+}
+
+impl MemorySet {
+    // ///s
+    // pub fn unmap_peek(
+    //     &mut self,
+    //     start_va: VirtAddr,
+    //     end_va: VirtAddr,
+    // )->bool{
+
+    //     let var=VPNRange::new(start_va.floor(),end_va.ceil());
+        
+    //     for vpn in var{
+    //         let pte=self.page_table.find_pte(vpn);
+    //      match pte{
+    //         Some(p)=>{
+    //             if !p.is_valid(){
+    //                 return true
+    //             }
+
+    //         }
+    //         None=>{
+    //             return true
+    //         }
+    //      }
+    //     }
+
+    //     for area in &mut self.areas{
+    //         if area.vpn_range.get_start()==start_va.floor(){
+    //             (*area).unmap(&mut self.page_table);
+    //             break;
+    //         }
+
+    //     }
+    //     false
+    // }
     /// 复制逻辑段内容
     pub fn clone_area(&mut self, start_vpn: VirtPageNum, another:&MemorySet) {
         if let Some(area) = another
-            .areas
-            .iter()
-            .find(|area| area.vpn_range.get_start() == start_vpn)
+            .areatree.get(&start_vpn)
+            
         {
             for vpn in area.vpn_range {
                 let src_ppn = another.translate(vpn).unwrap().ppn();
@@ -122,42 +284,42 @@ impl MemorySet {
             }
         }
     }
-    ///s
-    pub fn insert_framed_area_peek_for_mmap(
-        &mut self,
-        start_va: VirtAddr,
-        end_va: VirtAddr,
-        permission: MapPermission,
-    )->bool{
+    // ///s
+    // pub fn insert_framed_area_peek_for_mmap(
+    //     &mut self,
+    //     start_va: VirtAddr,
+    //     end_va: VirtAddr,
+    //     permission: MapPermission,
+    // )->bool{
 
-        let var=VPNRange::new(start_va.floor(),end_va.ceil());
+    //     let var=VPNRange::new(start_va.floor(),end_va.ceil());
         
-        for vpn in var{
-            let pte=self.page_table.find_pte(vpn);
+    //     for vpn in var{
+    //         let pte=self.page_table.find_pte(vpn);
          
-                if let Some(a)= pte{
-                    if  a.is_valid() {
-                        return true;
-                    }
+    //             if let Some(a)= pte{
+    //                 if  a.is_valid() {
+    //                     return true;
+    //                 }
                
                 
-            }
-        }
-        self.insert_framed_area(start_va, end_va, permission, MapAreaType::Mmap);
-        false
-    }
+    //         }
+    //     }
+    //     self.insert_framed_area(start_va, end_va, permission, MapAreaType::Mmap);
+    //     false
+    // }
 ///Create a new `MemorySet` from global kernel space
     pub fn new_from_kernel()->Self{
         let page_table = PageTable::new_from_kernel();
 
-        let areas= Vec::new();
-        Self { page_table, areas }
+        let areas=VmAreaTree ::new();
+        Self { page_table, areatree: areas }
     }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {
             page_table: PageTable::new(),
-            areas: Vec::new(),
+            areatree: VmAreaTree::new(),
         }
     }
     /// Get the page table token
@@ -180,14 +342,9 @@ impl MemorySet {
     }
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
-        if let Some((idx, area)) = self
-            .areas
-            .iter_mut()
-            .enumerate()
-            .find(|(_, area)| area.vpn_range.get_start() == start_vpn)
-        {
+       
+        if let Some((_, mut area)) = self.areatree.remove_entry(&start_vpn) {
             area.unmap(&mut self.page_table);
-            self.areas.remove(idx);
         }
     }
 
@@ -197,7 +354,7 @@ impl MemorySet {
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, offset);
         }
-        self.areas.push(map_area);
+        self.areatree.push(map_area);
     }
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
@@ -207,21 +364,21 @@ impl MemorySet {
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data,0);
         }
-        self.areas.push(map_area);
+        self.areatree.push(map_area);
     }
-    ///通过递归调整提示地址，从高到低寻找足够大的未占用虚拟地址空间，确保新分配区域不与现有区域重叠。
-    pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
-        let end_vpn = VirtAddr::from(hint).floor();
-        let start_vpn = VirtAddr::from(hint - size).floor();
-        for area in self.areas.iter() {
-            let (start, end) = area.vpn_range.range();
-            if end_vpn > start && start_vpn < end {
-                let new_hint = VirtAddr::from(start_vpn).0 - PAGE_SIZE;
-                return self.find_insert_addr(new_hint, size);
-            }
-        }
-        VirtAddr::from(start_vpn).0
-    }
+    // ///通过递归调整提示地址，从高到低寻找足够大的未占用虚拟地址空间，确保新分配区域不与现有区域重叠。
+    // pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
+    //     let end_vpn = VirtAddr::from(hint).floor();
+    //     let start_vpn = VirtAddr::from(hint - size).floor();
+    //     for area in self.areatree.iter() {
+    //         let (start, end) = area.vpn_range.range();
+    //         if end_vpn > start && start_vpn < end {
+    //             let new_hint = VirtAddr::from(start_vpn).0 - PAGE_SIZE;
+    //             return self.find_insert_addr(new_hint, size);
+    //         }
+    //     }
+    //     VirtAddr::from(start_vpn).0
+    // }
     /// Mention that trampoline is not collected by areas.
     // fn map_trampoline(&mut self) {
     //     self.page_table.map(
@@ -330,8 +487,17 @@ impl MemorySet {
             let ph = elf.program_header(i).unwrap();
             if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
                 let start_va: VirtAddr = (ph.virtual_addr() as usize + offset.0).into();
+                
                 let end_va: VirtAddr =
                     ((ph.virtual_addr() + ph.mem_size()) as usize + offset.0).into();
+log::info!("[map_elf] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, start_va=0x{:x}, end_va=0x{:x}",
+                i,
+                ph.offset(),
+                ph.mem_size(),
+                start_va.0,
+                end_va.0,
+               
+            );
                 if !has_found_header_va {
                     header_va = start_va.0;
                     has_found_header_va = true;
@@ -423,6 +589,7 @@ impl MemorySet {
             auxv.push(Aux::new(AuxType::BASE, DL_INTERP_OFFSET));
             entry_point = interp_entry_point;
         } else {
+            trace!("no dl");
             auxv.push(Aux::new(AuxType::BASE, 0));
         }
         auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
@@ -490,7 +657,7 @@ impl MemorySet {
         // map trampoline
         // memory_set.map_trampoline();
         // copy data sections/trap_context/user_stack
-        for area in user_space.areas.iter().filter(|a| a.area_type != MapAreaType::Stack&&a.area_type != MapAreaType::Trap) {
+        for (_,area) in user_space.areatree.iter().filter(|(_,a)| a.area_type != MapAreaType::Stack&&a.area_type != MapAreaType::Trap) {
             let new_area = MapArea::from_another(area);
             memory_set.push(new_area, None);
         
@@ -526,16 +693,14 @@ impl MemorySet {
     ///Remove all `MapArea`
     pub fn recycle_data_pages(&mut self) {
         self.page_table.clear();
-        self.areas.clear();
+        self.areatree.clear();
     }
 
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
         if let Some(area) = self
-            .areas
-            .iter_mut()
-            .find(|area| area.vpn_range.get_start() == start.floor())
+            .areatree.get_mut(&start.floor())
         {
             area.shrink_to(&mut self.page_table, new_end.ceil());
             true
@@ -548,9 +713,7 @@ impl MemorySet {
     #[allow(unused)]
     pub fn append_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
         if let Some(area) = self
-            .areas
-            .iter_mut()
-            .find(|area| area.vpn_range.get_start() == start.floor())
+        .areatree.get_mut(&start.floor())
         {
             area.append_to(&mut self.page_table, new_end.ceil());
             true
@@ -580,6 +743,22 @@ impl MapArea {
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
+        Self {
+            vpn_range: VPNRange::new(start_vpn, end_vpn),
+            data_frames: BTreeMap::new(),
+            map_type,
+            map_perm,
+            area_type,
+        }
+    }
+    pub fn new_by_vpn(
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+        map_type: MapType,
+        map_perm: MapPermission,
+        area_type: MapAreaType,
+    ) -> Self {
+     
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
             data_frames: BTreeMap::new(),
@@ -696,6 +875,22 @@ bitflags! {
     }
 }
 
+impl From<MmapProt> for MapPermission{
+     fn from(port:MmapProt)->Self{
+    let mut flag: MapPermission = MapPermission::empty();
+    flag |= MapPermission::U;
+    if port.contains(MmapProt::PROT_READ) {
+        flag |= MapPermission::R;
+    }
+    if port.contains(MmapProt::PROT_WRITE) {
+        flag |= MapPermission::W;
+    }
+    if port.contains(MmapProt::PROT_EXEC) {
+        flag |= MapPermission::X;
+    }
+    flag
+     }
+}
 /// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {

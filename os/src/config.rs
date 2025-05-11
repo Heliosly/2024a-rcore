@@ -2,11 +2,7 @@
 
 #[allow(unused)]
 
-/// user app's heap size 4mb
-pub const USER_HEAP_SIZE: usize = 0x40000;
 
-/// user app's stack size
-pub const USER_STACK_SIZE: usize = 4096 * 16;
 /// kernel stack size
 pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16;
 /// kernel heap size
@@ -54,6 +50,13 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
     - PAGE_SIZE * THREAD_MAX_NUM
     - USER_STACK_SIZE * THREAD_MAX_NUM
     - PAGE_SIZE;
+
+pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
+/// user app's heap size 4mb
+pub const USER_HEAP_SIZE: usize = 0x40000;
+
+/// user app's stack size
+pub const USER_STACK_SIZE: usize = 4096 * 16;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data

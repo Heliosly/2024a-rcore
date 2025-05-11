@@ -27,8 +27,9 @@ mod schedule;
 mod task;
 mod waker;
 mod yieldfut;
-use alloc::collections::btree_map::BTreeMap;
-use alloc::string::ToString;
+use alloc::vec;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use alloc::string::{String, ToString};
 pub use core::mem::ManuallyDrop;
 pub use current::{
     current_process, current_task, current_task_may_uninit, current_token,
@@ -97,7 +98,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {
-        if task.get_pid() != 0 {
+        if task.get_pid() != 1 {
             for child in process.children.lock().iter() {
                 child
                     .set_parent(INITPROC.pid.0) ;
@@ -136,7 +137,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // drop task manually to maintain rc correctly
     drop(task); 
 }
-static INITPROC_STR: &str = "ch6b_usertest";
+static INITPROC_STR: &str =          "ch6b_user_shell";
+
+// static INITPROC_STR: &str =          "musl/basic/yield";
+//  static INITPROC_STR: &str =          "ch6b_user_shell";
 lazy_static! {
     /// Creation of initial process
     ///
@@ -145,7 +149,8 @@ lazy_static! {
     pub static ref INITPROC: ProcessRef= Arc::new({
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
-        ProcessControlBlock::new(v.as_slice(),"/".to_string())
+        ProcessControlBlock::new(v.as_slice(),"/".to_string(),
+        &get_args(/*busybox sh*/"".as_bytes()),&mut get_envs())
 
     });
 
@@ -156,4 +161,73 @@ pub fn add_initproc() {
     PID2PC.lock().insert(INITPROC.pid.0, INITPROC.clone());
     // INITPROC.inner_exclusive_access().memory_set.activate();
     trace!("addInITPROC ok");
+}
+#[allow(unused)]
+/// 分割命令行参数，支持双引号
+fn get_args(command_line: &[u8]) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut in_quote = false;
+    let mut buf: Vec<u8> = Vec::new();
+
+    for &b in command_line {
+        match b {
+            b'"' => {
+                // 遇到引号就切换 in_quote 状态，不加入 buf
+                in_quote = !in_quote;
+            }
+            b' ' if !in_quote => {
+                // 外层空格，分隔参数
+                if !buf.is_empty() {
+                    // 将当前缓冲区作为一个完整参数
+                    args.push(String::from_utf8(buf.clone()).unwrap());
+                    buf.clear();
+                }
+                // 否则跳过多余空格
+            }
+            _ => {
+                // 普通字符或引号内的空格，加入 buf
+                buf.push(b);
+            }
+        }
+    }
+
+    // 最后一个参数
+    if !buf.is_empty() {
+        args.push(String::from_utf8(buf).unwrap());
+    }
+
+    args
+}
+#[allow(dead_code)]
+const BUSYBOX_TESTCASES: &[&str] = &[
+    "busybox sh busybox_testcode.sh",
+    "busybox sh lua_testcode.sh",
+    "libctest_testcode.sh",
+];
+
+#[allow(dead_code)]
+const TESTCASES: &[&str] = &[
+    "batch_syscall",
+    // "syscall_test",
+    // "vdso_test",
+    // "hello_world",
+    // "pipetest",
+    // "std_thread_test",
+];
+/// Now the environment variables are hard coded, we need to read the file "/etc/environment" to get the environment variables
+pub fn get_envs() -> Vec<String> {
+    // Const string for environment variables
+    let  envs:Vec<String> = vec![
+        "SHLVL=1".into(),
+        "PWD=/".into(),
+        "GCC_EXEC_PREFIX=/riscv64-linux-musl-native/bin/../lib/gcc/".into(),
+        "COLLECT_GCC=./riscv64-linux-musl-native/bin/riscv64-linux-musl-gcc".into(),
+        "COLLECT_LTO_WRAPPER=/riscv64-linux-musl-native/bin/../libexec/gcc/riscv64-linux-musl/11.2.1/lto-wrapper".into(),
+        "COLLECT_GCC_OPTIONS='-march=rv64gc' '-mabi=lp64d' '-march=rv64imafdc' '-dumpdir' 'a.'".into(),
+        "LIBRARY_PATH=/lib/".into(),
+        "LD_LIBRARY_PATH=/lib/".into(),
+        "LD_DEBUG=files".into(),
+    ];
+
+    envs
 }

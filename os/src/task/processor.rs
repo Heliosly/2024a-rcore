@@ -9,7 +9,6 @@ use super::task::TaskControlBlock;
 use super::ProcessControlBlock;
 use super::{schedule, TaskStatus};
 use crate::sync::UPSafeCell;
-use crate::task::current::current_token;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::{current_process, put_prev_task};
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapStatus};
@@ -115,9 +114,10 @@ pub fn run_task2(mut curr: CurrentTask) {
                             drop(core::mem::ManuallyDrop::into_inner(state));
 
                             trace!(
-                                "user return return val: {} sepc:{:#x},pid:{}",
+                                "user return return val: {} sepc:{:#x},u_sp:{:#x},pid:{}",
                                 tf.regs.a0,
                                 tf.sepc,
+                                tf.regs.sp,
                                 curr.get_pid()
                             );
 

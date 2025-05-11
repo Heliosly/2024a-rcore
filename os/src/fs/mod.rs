@@ -8,12 +8,12 @@ mod stat;
 mod fd;
 mod pipe;
 use core::panic;
-
+use alloc::vec::Vec;
 use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
-use alloc::{format, string::{String, ToString}, sync::Arc};
+use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use ext4::EXT4FS;
 use fd::FileClass;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
 use lwext4_rust::{bindings::SEEK_END, InodeTypes};
 use spin::{Lazy, RwLock};
@@ -159,17 +159,19 @@ pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
 }
 ///open file
-pub fn open_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
-    let abs_path = &fix_path(abs_path);
+pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
 
     log::debug!("[open] abs_path={}", abs_path);
     // 如果是动态链接文件,转换路径
     if is_dynamic_link_file(abs_path) {
      
-     panic!("dynamic link file"); //
+        abs_path = map_dynamic_link_file(abs_path);
     }
 
+    
+    let abs_path = &fix_path(abs_path);
+
+    println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
     let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
     // 同一个路径对应一个Inode
     if has_inode(abs_path) {
@@ -237,7 +239,42 @@ pub fn remove_inode_idx(path: &str) {
 pub fn print_inner() {
     println!("{:#?}", FD2NODE.read().keys());
 }
-pub fn map_dynamic_link_file(path: &str) -> &str {
-    unimplemented!(); 
+
+pub fn map_dynamic_link_file( path: &str) -> &str {
+
+            log::info!("[map_dynamic] path={}",path);
+    if !path.starts_with('/') { panic!("worth path") };
+    if !DYNAMIC_PATH.contains(path) {
+       
+        for prefix in DYNAMIC_PREFIX.iter() {
+            let full_path = format!("{}{}", prefix, path);
+            log::info!("[map_dynamic] full_path={}", full_path);
+            if DYNAMIC_PATH.contains(full_path.as_str()) {
+                return full_path.leak();
+            }
+        }
+    }
+    
     path
 }
+static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> =
+    Lazy::new(|| vec![ "/glibc", "/musl"]);
+
+static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "/musl/lib/dlopen_dso.so",
+        "/musl/lib/tls_align_dso.so",
+        "/musl/lib/tls_init_dso.so",
+        "/musl/lib/libc.so",
+        "/musl/lib/tls_get_new-dtv_dso.so",
+        "/glibc/lib/dlopen_dso.so",
+         "/glibc/lib/libc.so", 
+         "/glibc/lib/tls_get_new-dtv_dso.so", 
+         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+          "/glibc/lib/tls_align_dso.so", 
+          "/glibc/lib/tls_init_dso.so"
+
+    ]
+    .into_iter()
+    .collect()
+});

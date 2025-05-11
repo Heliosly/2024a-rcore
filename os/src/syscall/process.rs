@@ -1,6 +1,8 @@
 //! Process management syscalls
 //!
 
+use core::panic;
+
 use alloc::{
     format,
     string::{String, ToString},
@@ -9,18 +11,13 @@ use alloc::{
 };
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
-    fs::{open_file, OpenFlags, NONE_MODE},
-    mm::{
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{
         translated_byte_buffer, translated_ref, translated_refmut, translated_str, 
         MapPermission, VirtAddr,
-    },
-    task::{
+    }, syscall::flags::{MmapFlags, MmapProt}, task::{
          current_process, current_task, current_token, exit_current_and_run_next,
         set_priority, yield_now, CloneFlags,  TaskStatus, PID2PC,
-    },
-    timer::get_time_us,
-    utils::{error::SysErrNo, string::get_abs_path},
+    }, timer::{get_time_ms, get_time_us}, utils::{error::SysErrNo, page_round_up, string::get_abs_path}
 };
 
 #[repr(C)]
@@ -208,9 +205,25 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let elf_data = app_inode.read_all();
     process.exec(&elf_data, &argv_vec, &mut env);
     process.memory_set.lock().activate();
-    0
+    argv_vec.len() as isize
 }
 
+pub fn sys_settidaddress()->isize{
+    trace!(
+        "kernel:pid[{}] sys_settidaddress NOT IMPLEMENTED",
+        current_task().get_pid()
+    );
+    //todo(Heliosly)
+    current_task().id.as_usize() as isize
+}
+pub fn sys_getuid()->isize{
+  trace!(
+        "kernel:pid[{}] sys_getuid NOT IMPLEMENTED",
+        current_task().get_pid()
+    );
+    //todo(heliosly)
+  0
+}
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
@@ -299,94 +312,188 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     }
     0
 }
+// pub fn sys_gettimeofday(tp: usize, tz: usize) -> isize {
+//     if tp == 0 {
+//         return -1;
+//     }
+//     let time_ms = get_time_ms(); // 你要实现这个函数，返回毫秒时间戳
 
+//     // 转成 timeval 结构体
+//     let seconds = time_ms / 1000;
+//     let micros = (time_ms % 1000) * 1000;
+
+//     let timeval = TimeVal { sec: seconds , usec: micros  };
+//     // 写入用户空间\
+
+//     *translated_refmut(current_token(), tp as *mut TimeVal) = timeval;
+//     0
+// }
+
+pub fn sys_exitgroup(exit_code: i32) -> isize {
+    trace!(
+        "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
+        current_task().get_pid()
+    );
+    exit_current_and_run_next(exit_code);
+       0
+}
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info ",
         current_task().get_pid()
     );
     -1
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().get_pid()
+// /// YOUR JOB: Implement mmap.
+// pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+//     trace!(
+//         "kernel:pid[{}] sys_mmap addr={:#x}, len={:#x}  ",
+//         current_task().get_pid(), _start, _len
+//     );
+//     if _start % PAGE_SIZE != 0 || _port & !0x7 != 0 || _port & 0x7 == 0 {
+//         return -1;
+//     }
+//     let arc = current_process();
+//     bitflags! {
+//         /// map permission corresponding to that in pte: `R W X U`
+//         pub struct Portpomiss: u8 {
+//             ///Readable
+//             const R = 1 << 0;
+//             ///Writable
+//             const W = 1 << 1;
+//             ///Excutable
+//             const X = 1 << 2;
+
+//         }
+//     }
+//     let portpomis = Portpomiss::from_bits_truncate(_port as u8);
+//     let mut flag: MapPermission = MapPermission::empty();
+//     flag |= MapPermission::U;
+//     if portpomis.contains(Portpomiss::R) {
+//         flag |= MapPermission::R;
+//     }
+//     if portpomis.contains(Portpomiss::W) {
+//         flag |= MapPermission::W;
+//     }
+//     if portpomis.contains(Portpomiss::X) {
+//         flag |= MapPermission::X;
+//     }
+//     let _end = _start + _len;
+
+//     let end: VirtAddr = _end.into();
+//     let start: VirtAddr = _start.into();
+//     if arc
+//         .memory_set
+//         .lock()
+//         .insert_framed_area_peek_for_mmap(start, end, flag)
+//     {
+//         -1
+//     } else {
+//         4
+//     }
+// }
+/// 参考 https://man7.org/linux/man-pages/man2/mmap.2.html
+pub async fn sys_mmap(
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: usize,
+    off: usize,
+) -> isize {
+    //需要有严格的判断返回错误的顺序！！！
+    
+    if flags == 0 {
+        return SysErrNo::EINVAL as isize;
+    }
+
+    let flags = MmapFlags::from_bits(flags).unwrap();
+    if fd == usize::MAX && !flags.contains(MmapFlags::MAP_ANONYMOUS) {
+        return  SysErrNo::EBADF as isize;
+    }
+
+    if len == 0 {
+        return SysErrNo::EINVAL as isize;
+    }
+    let mmap_prot = MmapProt::from_bits(prot).unwrap();
+    let map_perm: MapPermission = mmap_prot.into();
+    
+    // 地址合法性
+    if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
+        return SysErrNo::EPERM as isize;
+    }
+    debug!(
+        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
+        addr, len, fd as isize, off, flags,mmap_prot, map_perm
     );
-    if _start % PAGE_SIZE != 0 || _port & !0x7 != 0 || _port & 0x7 == 0 {
-        return -1;
-    }
-    let arc = current_process();
-    bitflags! {
-        /// map permission corresponding to that in pte: `R W X U`
-        pub struct Portpomiss: u8 {
-            ///Readable
-            const R = 1 << 0;
-            ///Writable
-            const W = 1 << 1;
-            ///Excutable
-            const X = 1 << 2;
-
-        }
-    }
-    let portpomis = Portpomiss::from_bits_truncate(_port as u8);
-    let mut flag: MapPermission = MapPermission::empty();
-    flag |= MapPermission::U;
-    if portpomis.contains(Portpomiss::R) {
-        flag |= MapPermission::R;
-    }
-    if portpomis.contains(Portpomiss::W) {
-        flag |= MapPermission::W;
-    }
-    if portpomis.contains(Portpomiss::X) {
-        flag |= MapPermission::X;
-    }
-    let _end = _start + _len;
-
-    let end: VirtAddr = _end.into();
-    let start: VirtAddr = _start.into();
-    if arc
-        .memory_set
-        .lock()
-        .insert_framed_area_peek_for_mmap(start, end, flag)
-    {
-        -1
-    } else {
-        0
-    }
+    let task = current_process();
+    let len = page_round_up(len);
+    
+    panic!("a");
+    // if fd == usize::MAX {
+    //     let rv = task
+    //         .memory_set.lock()
+    //         .mmap(addr, len, map_perm );
+    //     return rv;
+    // }
+    // if flags.contains(MmapFlags::MAP_ANONYMOUS) {
+    //     //映射1字节没有任何权限的地址
+    //     let rv = task
+    //         .memory_set
+    //         .mmap(0, 1, MapPermission::empty(), flags, None, usize::MAX);
+    //     // insert_bad_address(rv);
+    //     debug!("bad address is 0x{:x}", rv);
+    //     return rv;
+    // }
+    // // check fd and map_permission
+    // let file = task.fd_table.lock().get(fd).unwrap().unwrap();
+    // // 读写权限
+    // if (map_perm.contains(MapPermission::R) && !file.readable().await.unwrap())
+    //     || (map_perm.contains(MapPermission::W) && !file.writable().await.unwrap())
+    //     || (mmap_prot != MmapProt::PROT_NONE && inode.flags.contains(OpenFlags::O_WRONLY))
+    // {
+    //     //如果需要读/写/执行方式映射，必须要求文件可读
+    //     return Err(SysErrNo::EACCES);
+    // }
+    // let rv = task_inner
+    //     .memory_set
+    //     .mmap(addr, len, map_perm, flags, Some(file), off);
+    // debug!("[sys_mmap] alloc addr={:#x}", rv);
+    addr as isize
 }
+
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap ",
         current_task().get_pid()
     );
-    if _start % PAGE_SIZE != 0 {
-        return -1;
-    }
-    let _end = _start + _len;
-    let end: VirtAddr = _end.into();
-    let start: VirtAddr = _start.into();
-    let arc = current_process();
+    // if _start % PAGE_SIZE != 0 {
+    //     return -1;
+    // }
+    // let _end = _start + _len;
+    // let end: VirtAddr = _end.into();
+    // let start: VirtAddr = _start.into();
+    // let arc = current_process();
 
-    if arc
+    // if arc
         
-        .memory_set.lock()
-        .unmap_peek(start, end)
-    {
-        return -1;
-    }
+    //     .memory_set.lock()
+    //     .unmap_peek(start, end)
+    // {
+    //     return -1;
+    // }
     0
 }
 
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
-    trace!("kernel:pid[{}] sys_sbrk", current_task().get_pid());
+    trace!("kernel:pid[{}] sys_sbrk size:{:#x}", current_task().get_pid(),size);
     if let Some(old_brk) = current_process().change_program_brk(size) {
         old_brk as isize
     } else {
@@ -424,7 +531,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority ",
         current_task().get_pid()
     );
 

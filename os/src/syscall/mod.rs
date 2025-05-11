@@ -39,7 +39,7 @@ const SYSCALL_SBRK: usize = 214;
 /// munmap syscall
 const SYSCALL_MUNMAP: usize = 215;
 /// fork syscall
-const SYSCALL_FORK: usize = 220;
+// const SYSCALL_FORK: usize = 220;
 /// exec syscall
 const SYSCALL_EXEC: usize = 221;
 /// mmap syscall
@@ -52,9 +52,16 @@ const SYSCALL_SPAWN: usize = 400;
 const SYSCALL_TASK_INFO: usize = 410;
 /// clone 
 const SYSCALL_CLONE:usize = 220;
+///96
+const SYSCALL_SETTIDADDRESS :usize =96;
+///174
+const SYSCALL_GETUID :usize = 174;
+///94
+const SYSCALL_EXITGROUP :usize=  94;
 mod fs;
 mod process;
 
+pub mod flags;
 use fs::*;
 use process::*;
 
@@ -84,10 +91,13 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         
         
         ),
+        SYSCALL_GETUID=>sys_getuid(),
+        SYSCALL_SETTIDADDRESS=>sys_settidaddress(),
+        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
         SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2]),
+        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
         SYSCALL_SBRK => sys_sbrk(args[0] as i32),
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),

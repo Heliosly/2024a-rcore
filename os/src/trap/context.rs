@@ -91,13 +91,13 @@ pub struct TrapContext {
 }
 
 impl TrapContext {
-    /// create a new TrapContext
+    /// create a new TrapContext "不是全0"
     pub fn new()->Self{
         Self {
             regs: Default::default(),
             sstatus: sstatus::read(), 
             sepc: 0,
-            kernel_sp: 0,
+            kernel_sp: current_stack_top(),
             kernel_ra: 0,
             kernel_s: [0; 12],
             kernel_fp: 0,

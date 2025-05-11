@@ -1,11 +1,11 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
 use super::{pid_alloc, CloneFlags, PidHandle, TaskStatus};
-use crate::config::{PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
+use crate::config::{PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, PageTable, PageTableEntry,
-    VPNRange, VirtAddr,
+    VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::sync::UPSafeCell;
 use crate::task::aux::{Aux, AuxType};
@@ -184,15 +184,20 @@ impl ProcessControlBlock {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> (usize, usize) {
-        let start_va = self.memory_set.lock().find_insert_addr(hint, size);
-        let end_va = start_va + size;
+        let hint_vpn= VirtAddr::from(hint).ceil();
+        let npages = (size+ PAGE_SIZE - 1) / PAGE_SIZE;
+        let top_vpn = self.memory_set.lock().areatree.find_gap_from(hint_vpn, npages).unwrap();
+        let base_vpn = VirtPageNum::from(top_vpn.0-npages);
+
+        let start_va=VirtAddr::from(base_vpn);
+        let end_va = VirtAddr::from(top_vpn);
         self.insert_framed_area(
-            VirtAddr::from(start_va),
-            VirtAddr::from(end_va),
+             start_va,
+             end_va,
             map_perm,
             area_type,
         );
-        (start_va, end_va)
+        (start_va.0, end_va.0)
     }
     ///分配用户资源
     pub fn alloc_user_res(&self) {
@@ -204,11 +209,12 @@ impl ProcessControlBlock {
         );
 
         self.set_user_stack_top(ustack_top);
-        let memory_set: spin::MutexGuard<'_, MemorySet> = self.memory_set.lock();
-        assert!(memory_set
-            .translate(crate::mm::VirtPageNum::from(VirtAddr::from(ustack_bottom)))
-            .unwrap()
-            .is_valid());
+        
+        // let memory_set: spin::MutexGuard<'_, MemorySet> = self.memory_set.lock();
+        // assert!(memory_set
+        //     .translate(VirtAddr::from(ustack_top).floor())
+        //     .unwrap()
+        //     .is_valid());
 
         trace!(
             "user_stack_top:{:#x},bottom:{:#x}",
@@ -267,30 +273,28 @@ impl ProcessControlBlock {
     // }
 }
 
-pub struct ProcessControlBlockInner {}
 
-impl ProcessControlBlockInner {}
 
 impl ProcessControlBlock {
     /// Create a new process
     ///
     /// At present, it is only used for the creation of initproc
-    pub fn new(elf_data: &[u8], cwd: String) -> Self {
+    pub fn new(elf_data: &[u8], cwd: String, argv: &Vec<String>, env: &mut Vec<String>) -> Self {
         // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
-        let (memory_set, user_sp, entry_point, _) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_sp, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
         // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
-
+        let token = memory_set.token();
         // push a task context which goes to trap_return to the top of kernel stack
         let process_id = pid_handle.0;
         let fut = UTRAP_HANDLER();
         let new_task = Arc::new(CFSTask::new(TaskControlBlock::new(
             true,
             process_id,
-            memory_set.token(),
+            token,
             fut,
             Box::new(TrapContext::new()),
         )));
@@ -318,14 +322,101 @@ impl ProcessControlBlock {
             fd_table: Arc::new(Mutex::new(fd_vec)),
         };
         process_control_block.alloc_user_res();
-        let u_sp = process_control_block.user_stack_top();
+        let mut user_sp = process_control_block.user_stack_top();
+               //环境变量内容入栈
+               let mut envp = Vec::new();
+               for env in env.iter() {
+                   user_sp -= env.len() + 1;
+                   envp.push(user_sp);
+                   // println!("{:#X}:{}", user_sp, env);
+                   for (j, c) in env.as_bytes().iter().enumerate() {
+                       *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+                   }
+                   *translated_refmut(token, (user_sp + env.len()) as *mut u8) = 0;
+               }
+               envp.push(0);
+               user_sp -= user_sp % size_of::<usize>();
+       
+               //存放字符串首址的数组
+               let mut argvp = Vec::new();
+               for arg in argv.iter() {
+                   // 计算字符串在栈上的地址
+                   user_sp -= arg.len() + 1;
+                   argvp.push(user_sp);
+                   // println!("{:#X}:{}", user_sp, arg);
+                   for (j, c) in arg.as_bytes().iter().enumerate() {
+                       *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+                   }
+                   // 添加字符串末尾的 null 字符
+                   *translated_refmut(token, (user_sp + arg.len()) as *mut u8) = 0;
+               }
+               user_sp -= user_sp % size_of::<usize>(); //以8字节对齐
+               argvp.push(0);
+       
+               //需放16个字节
+               user_sp -= 16;
+               auxv.push(Aux::new(AuxType::RANDOM, user_sp));
+               for i in 0..0xf {
+                   *translated_refmut(token, (user_sp + i) as *mut u8) = i as u8;
+               }
+               user_sp -= user_sp % 16;
+       
+               // println!("aux:");
+               //将auxv放入栈中
+               auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
+               auxv.push(Aux::new(AuxType::NULL, 0));
+               for aux in auxv.iter().rev() {
+                   // println!("{:?}", aux);
+                   user_sp -= size_of::<Aux>();
+                   *translated_refmut(token, user_sp as *mut usize) = aux.aux_type as usize;
+                   *translated_refmut(token, (user_sp + size_of::<usize>()) as *mut usize) = aux.value;
+               }
+       
+               //将环境变量指针数组放入栈中
+               // println!("env pointers:");
+               user_sp -= envp.len() * size_of::<usize>();
+               let envp_base = user_sp;
+               for i in 0..envp.len() {
+                   put_data(
+                       token,
+                       (user_sp + i * size_of::<usize>()) as *mut usize,
+                       envp[i],
+                   );
+               }
+       
+               // println!("arg pointers:");
+               user_sp -= argvp.len() * size_of::<usize>();
+               let argv_base = user_sp;
+               //将参数指针数组放入栈中
+               for i in 0..argvp.len() {
+                   put_data(
+                       token,
+                       (user_sp + i * size_of::<usize>()) as *mut usize,
+                       argvp[i],
+                   );
+               }
+       
+               //将argc放入栈中
+               user_sp -= size_of::<usize>();
+               *translated_refmut(token, user_sp as *mut usize) = argv.len();
+       
+               //以8字节对齐
+               user_sp -= user_sp % size_of::<usize>();
+               //println!("user_sp:{:#X}", user_sp);
+        
+       
+        // process_control_block.set_user_stack_top(u_sp);
         // prepare TrapContext in user space
-        process_control_block
-            .main_task
-            .lock()
+        let trap_cx=new_task
             .get_trap_cx()
-            .unwrap()
-            .init(u_sp, entry_point);
+            .unwrap();
+        trap_cx .init(user_sp, entry_point);
+        trap_cx.trap_status = TrapStatus::Done;
+        trap_cx.regs.a0 = argv.len();
+        trap_cx.regs.a1 = argv_base;
+        trap_cx.regs.a2 = envp_base;
+
+           
         add_task(new_task.clone());
         TID2TC.lock().insert(new_task.id.0, new_task);
         process_control_block
@@ -591,6 +682,7 @@ impl ProcessControlBlock {
         let heap_bottom = self.heap_bottom();
         let old_break = self.program_brk();
         let new_brk = old_break as isize + size as isize;
+        debug!("[BRK] old={:#x}, new={:#x}",  old_break, new_brk);
         if new_brk < heap_bottom as isize {
             return None;
         }

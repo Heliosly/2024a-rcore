@@ -1,9 +1,12 @@
 use alloc::vec::Vec;
-use spin::mutex::SpinMutex;
-use core::{alloc::Layout,  ptr:: NonNull};
+use core::{alloc::Layout, ptr::NonNull};
 use lazy_init::LazyInit;
+use spin::mutex::SpinMutex;
 
-use crate::{config::{self, PAGE_SIZE}, mm::VirtAddr};
+use crate::{
+    config::{self, PAGE_SIZE},
+    mm::VirtAddr,
+};
 
 pub struct TaskStack {
     ptr: NonNull<u8>,
@@ -24,32 +27,31 @@ impl TaskStack {
     //             layout,
     //             is_init: true,
     //         }
-        
+
     // }
 
-   
-        pub fn alloc(size: usize) -> Self {
-            // 向上对齐到整页
-            let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-            let layout = Layout::from_size_align(aligned_size, PAGE_SIZE).unwrap();
-    
-            let ptr = unsafe { alloc::alloc::alloc(layout) };
-            let ptr = NonNull::new(ptr).expect("Failed to allocate TaskStack");
-    
-            Self {
-                ptr,
-                layout,
-                is_init: false,
-            }
+    pub fn alloc(size: usize) -> Self {
+        // 向上对齐到整页
+        let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let layout = Layout::from_size_align(aligned_size, PAGE_SIZE).unwrap();
+
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
+        let ptr = NonNull::new(ptr).expect("Failed to allocate TaskStack");
+
+        Self {
+            ptr,
+            layout,
+            is_init: false,
         }
-    
-        pub fn top(&self) -> VirtAddr {
-            unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
-        }
-    
-        pub fn down(&self) -> VirtAddr {
-            unsafe { core::mem::transmute(self.ptr.as_ptr()) }
-        }
+    }
+
+    pub fn top(&self) -> VirtAddr {
+        unsafe { core::mem::transmute(self.ptr.as_ptr().add(self.layout.size())) }
+    }
+
+    pub fn down(&self) -> VirtAddr {
+        unsafe { core::mem::transmute(self.ptr.as_ptr()) }
+    }
 }
 
 impl Drop for TaskStack {
@@ -62,7 +64,6 @@ impl Drop for TaskStack {
 
 // #[percpu::def_percpu]
 
-
 static STACK_POOL: LazyInit<SpinMutex<StackPool>> = LazyInit::new();
 pub fn init() {
     let mut stack_pool = StackPool::new();
@@ -71,18 +72,18 @@ pub fn init() {
 }
 #[allow(dead_code)]
 pub fn pick_current_stack() -> TaskStack {
-    let mut stack_pool =  STACK_POOL.lock() ;
+    let mut stack_pool = STACK_POOL.lock();
     stack_pool.pick_current_stack()
 }
 
 pub fn current_stack_top() -> usize {
-    let stack_pool = STACK_POOL.lock() ;
+    let stack_pool = STACK_POOL.lock();
 
     // trace!("current ksp:{:#x}",stack_pool.current_stack().top().0);
     stack_pool.current_stack().top().0
 }
-pub fn current_stack_bottom()->usize{
-      let stack_pool = STACK_POOL.lock() ;
+pub fn current_stack_bottom() -> usize {
+    let stack_pool = STACK_POOL.lock();
 
     // trace!("current ksp:{:#x}",stack_pool.current_stack().top().0);
     stack_pool.current_stack().down().0
@@ -91,13 +92,13 @@ pub fn current_stack_bottom()->usize{
 #[allow(dead_code)]
 
 pub fn put_prev_stack(kstack: TaskStack) {
-    let mut stack_pool =  STACK_POOL.lock() ;
+    let mut stack_pool = STACK_POOL.lock();
     stack_pool.put_prev_stack(kstack)
 }
- pub fn _alloc_current_stack( ) {
-    let mut stack_pool =  STACK_POOL.lock() ;
-       stack_pool.alloc();
-    }
+pub fn _alloc_current_stack() {
+    let mut stack_pool = STACK_POOL.lock();
+    stack_pool.alloc();
+}
 /// A simple stack pool
 #[allow(dead_code)]
 pub(crate) struct StackPool {
@@ -131,7 +132,6 @@ impl StackPool {
         self.current.replace(new_stack).unwrap()
     }
 
-   
     pub fn current_stack(&self) -> &TaskStack {
         assert!(self.current.is_some());
         self.current.as_ref().unwrap()
