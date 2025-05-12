@@ -108,6 +108,7 @@ impl FileWrapper {
         info!("dealt with full path: {}", fpath.as_str());
         fpath
     }
+    
 }
 
 /// The [`VfsNodeOps`] trait provides operations on a file or a directory.

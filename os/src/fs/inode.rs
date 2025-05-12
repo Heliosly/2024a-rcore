@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_END, SEEK_SET};
 
+use super::stat::Kstat;
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
 use crate::mm::UserBuffer;
@@ -218,5 +219,29 @@ impl File for OSInode {
         }
         Ok(inner.offset)
     }
+     fn fstat(&self) -> super::stat::Kstat {
+        super::stat::Kstat {
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: 0,
+            st_nlink: 0,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0,
+            __pad: 0,
+            st_size: self.inner.exclusive_access().inode.size() as isize ,
+            st_blksize: 0,
+            __pad2: 0,
+            st_blocks: 0,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            __unused: [0; 2],
+        }
+    }
+
     }
 

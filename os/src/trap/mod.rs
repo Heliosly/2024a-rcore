@@ -233,7 +233,7 @@ pub async fn user_task_top() -> i32 {
                     // 先只查找不借用：拿到起始页号
                     let start = memset.areatree.find_area(vpn);
                        
-
+                  
                     if let Some(start_va) = start {
                         let MemorySet {
                             areatree,
@@ -242,7 +242,13 @@ pub async fn user_task_top() -> i32 {
                         } = &mut *memset;
 
                         let area = areatree.get_mut(&start_va).unwrap();
-                        if area.vpn_range.empty(){
+                        if area.vpn_range.empty()||area.allocated(){
+                            println!(
+                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                                scause.cause(),
+                                stval,
+                                tf.sepc ,
+                            );
                             exit_current_and_run_next(-2);
                             
                         }
@@ -253,11 +259,23 @@ pub async fn user_task_top() -> i32 {
 
                     trace!("page alloc success area:{:#x}-{:#x}  addr:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0,stval);
                         } else {
+                            println!(
+                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                                scause.cause(),
+                                stval,
+                                tf.sepc ,
+                            );
                             exit_current_and_run_next(-2);
                         }
 
                     }
                     } else {
+                        println!(
+                            "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                            scause.cause(),
+                            stval,
+                            tf.sepc ,
+                        );
                         exit_current_and_run_next(-2);
                     }
                 }

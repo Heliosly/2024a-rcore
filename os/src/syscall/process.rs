@@ -12,8 +12,7 @@ use alloc::{
 
 use crate::{
     config::{MAX_SYSCALL_NUM, PAGE_SIZE}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{
-        translated_byte_buffer, translated_ref, translated_refmut, translated_str, 
-        MapPermission, VirtAddr,
+        flush_tlb, translated_byte_buffer, translated_ref, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, VirtAddr, VirtPageNum
     }, syscall::flags::{MmapFlags, MmapProt}, task::{
          current_process, current_task, current_token, exit_current_and_run_next,
         set_priority, yield_now, CloneFlags,  TaskStatus, PID2PC,
@@ -198,10 +197,15 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 "/".to_string()
             };
     let abs_path = get_abs_path(&cwd, &path);
-    let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)
-        .unwrap()
-        .file()
-        .unwrap();
+    let app_inode = match open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE) {
+        Ok(file) =>  file.file().unwrap(),
+        
+        Err(err) => {
+            println!("the file is not existed");
+            return err as isize;
+        }
+    };
+    
     let elf_data = app_inode.read_all();
     process.exec(&elf_data, &argv_vec, &mut env);
     process.memory_set.lock().activate();
@@ -405,89 +409,159 @@ pub async fn sys_mmap(
     fd: usize,
     off: usize,
 ) -> isize {
-    //需要有严格的判断返回错误的顺序！！！
     
-    if flags == 0 {
+    //需要有严格的判断返回错误的顺序！！！
+     // 0. flags 不能全 0
+     println!("a:{}l:{}p:{}f:{}",addr,len,prot,flags);
+     let flags=1<<4|1<<5;
+     if flags == 0 {
         return SysErrNo::EINVAL as isize;
     }
-
     let flags = MmapFlags::from_bits(flags).unwrap();
-    if fd == usize::MAX && !flags.contains(MmapFlags::MAP_ANONYMOUS) {
-        return  SysErrNo::EBADF as isize;
-    }
 
-    if len == 0 {
-        return SysErrNo::EINVAL as isize;
+    // // 1. 长度不能为 0
+    // if len == 0 {
+    //     return SysErrNo::EINVAL as isize;
+    // }
+    // // 2. 偏移量必须页对齐
+    // if off % PAGE_SIZE != 0 {
+    //     return SysErrNo::EINVAL as isize;
+    // }
+
+    // 3. 匿名映射 | 文件映射：fd 检查
+    let anon = flags.contains(MmapFlags::MAP_ANONYMOUS);
+    if !anon {
+        // 非匿名必须提供合法 fd
+        if fd == usize::MAX {
+            return SysErrNo::EBADF as isize;
+        }
     }
+    // 4. prot -> MapPermission
     let mmap_prot = MmapProt::from_bits(prot).unwrap();
     let map_perm: MapPermission = mmap_prot.into();
-    
-    // 地址合法性
-    if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
-        return SysErrNo::EPERM as isize;
-    }
     debug!(
         "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
         addr, len, fd as isize, off, flags,mmap_prot, map_perm
     );
-    let task = current_process();
+    // 5. MAP_FIXED 且 addr == 0 禁止
+    if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
+        return SysErrNo::EPERM as isize;
+    }
+
+    // 6. 计算页对齐后的长度和页数
     let len = page_round_up(len);
-    
-    panic!("a");
-    // if fd == usize::MAX {
-    //     let rv = task
-    //         .memory_set.lock()
-    //         .mmap(addr, len, map_perm );
-    //     return rv;
+    let pages = len / PAGE_SIZE;
+
+    let proc = current_process();
+    let mut ms = proc.memory_set.lock();
+
+    let fd_table =proc.fd_table.lock();
+    // ——————————————————————————————————————————
+    // 7. 如果是文件映射，要检查文件权限和 offset
+    let file = if !anon {
+        // 7.1 拿到文件对象
+        let file = match fd_table.get(fd).unwrap() {
+            Some(f) => f,
+            None    => return SysErrNo::EBADF as isize,
+        };
+        // 7.2 写映射需可写权限
+        if map_perm.contains(MapPermission::W) && !file.writable().await.unwrap() {
+            return SysErrNo::EACCES as isize;
+        }
+        // 7.3 offset 超出文件长度？
+        if off > file.fstat().st_size as usize {
+            return SysErrNo::EINVAL as isize;
+        }
+        
+        unimplemented!();
+        Some(file.clone())
+    } else {
+        None
+    };
+
+    let va = VirtAddr::from(addr);
+    let vpn = va.floor();
+    let end_vpn = VirtPageNum::from( vpn.0+pages);
+    let range=core::ops::Range { start: (vpn), end: (end_vpn)};
+    // ——————————————————————————————————————————
+    // 8. 按 MAP_FIXED / MAP_FIXED_NOREPLACE / hint / 自动选择地址
+    let base = if flags.contains(MmapFlags::MAP_FIXED) {
+        // 8.1 强制定位：先 munmap 冲突区
+        
+        if ms.areatree.is_overlap(&range )
+            {
+
+                ms.munmap(vpn, end_vpn);
+            }
+        
+        va
+    } else if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
+        // 8.2 不替换：如果冲突则失败
+        if ms.areatree.is_overlap(&range) {
+
+            return SysErrNo::EEXIST as isize;
+        }
+        va
+    } else {
+        // 8.3 默认，从 addr 附近或全局搜索
+       match  ms.areatree.alloc_pages(pages){
+        Some(vpn) => {
+            VirtAddr::from(vpn)
+        },
+        None => {
+            warn!("[sys_mmap] no available gap for mapping {} pages from {:?}", pages, vpn);
+            return SysErrNo::ENOMEM as isize;
+        } 
+       } 
+       
+    };
+
+    // ——————————————————————————————————————————
+    // 9. 构造 VMA / MapArea
+    let mut area = MapArea::new(
+        base,
+        VirtAddr::from(base.0 + len),
+        MapType::Framed,
+        map_perm,
+        MapAreaType::Mmap,   // Option<Arc<File>>
+        
+    );
+
+
+    // 10. 特殊 flags 的额外处理
+    if flags.contains(MmapFlags::MAP_POPULATE) {
+        // 立即为每页缺页、填充物理页
+        area.map(&mut ms.page_table);
+    }
+    // if flags.contains(MmapFlags::MAP_LOCKED) {
+    //     // mlock：锁定这些物理页
+    //     area.lock(&mut ms.page_table)?;
+    // }todo(heliosly)
+    // if flags.contains(MmapFlags::MAP_STACK) {
+    //     // 设置向下扩展属性
+    //     area.set_grows_down(true);
     // }
-    // if flags.contains(MmapFlags::MAP_ANONYMOUS) {
-    //     //映射1字节没有任何权限的地址
-    //     let rv = task
-    //         .memory_set
-    //         .mmap(0, 1, MapPermission::empty(), flags, None, usize::MAX);
-    //     // insert_bad_address(rv);
-    //     debug!("bad address is 0x{:x}", rv);
-    //     return rv;
-    // }
-    // // check fd and map_permission
-    // let file = task.fd_table.lock().get(fd).unwrap().unwrap();
-    // // 读写权限
-    // if (map_perm.contains(MapPermission::R) && !file.readable().await.unwrap())
-    //     || (map_perm.contains(MapPermission::W) && !file.writable().await.unwrap())
-    //     || (mmap_prot != MmapProt::PROT_NONE && inode.flags.contains(OpenFlags::O_WRONLY))
-    // {
-    //     //如果需要读/写/执行方式映射，必须要求文件可读
-    //     return Err(SysErrNo::EACCES);
-    // }
-    // let rv = task_inner
-    //     .memory_set
-    //     .mmap(addr, len, map_perm, flags, Some(file), off);
-    // debug!("[sys_mmap] alloc addr={:#x}", rv);
-    addr as isize
+
+    // ——————————————————————————————————————————
+    // 11. 插入到 MemorySet 的 areatree / VMA 列表
+    ms.areatree.push(area);
+    flush_tlb();
+
+    // 12. 返回映射基址
+    base.0 as isize ;
+   0
 }
 
 
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_munmap ",
         current_task().get_pid()
     );
-    // if _start % PAGE_SIZE != 0 {
-    //     return -1;
-    // }
-    // let _end = _start + _len;
-    // let end: VirtAddr = _end.into();
-    // let start: VirtAddr = _start.into();
-    // let arc = current_process();
-
-    // if arc
-        
-    //     .memory_set.lock()
-    //     .unmap_peek(start, end)
-    // {
-    //     return -1;
-    // }
+    let start_va=VirtAddr::from(start);
+    let end_va= VirtAddr::from(start+len);
+    current_process().memory_set.lock().munmap(start_va.floor(),end_va.ceil() );
     0
 }
 

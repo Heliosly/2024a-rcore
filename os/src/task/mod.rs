@@ -137,11 +137,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // drop task manually to maintain rc correctly
     drop(task); 
 }
-static INITPROC_STR: &str =          "ch6b_user_shell";
+static INITPROC_STR: &str =          "ch4_mmap3";
 
 // static INITPROC_STR: &str =          "musl/basic/yield";
 //  static INITPROC_STR: &str =          "ch6b_user_shell";
-lazy_static! {
+lazy_static! {  
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",

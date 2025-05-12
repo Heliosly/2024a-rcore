@@ -12,11 +12,13 @@ pub mod heap_allocator;
 mod memory_set;
 mod page_table;
 
+use core::arch::asm;
+
 pub use page_table::put_data;
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,KernelAddr,VPNRange};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
 pub use memory_set::remap_test;
-pub use memory_set::{kernel_token, MapPermission, MemorySet, KERNEL_SPACE,MapAreaType,VmAreaTree};
+pub use memory_set::{kernel_token, MapPermission, MemorySet, KERNEL_SPACE,MapAreaType,VmAreaTree,MapArea,MapType};
 use page_table::PTEFlags;
 pub use page_table::{
     translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
@@ -30,3 +32,8 @@ pub fn init() {
     KERNEL_SPACE.exclusive_access().activate();
 }
 
+pub  fn flush_tlb(){
+    unsafe  {
+    asm!("sfence.vma");
+    }
+}

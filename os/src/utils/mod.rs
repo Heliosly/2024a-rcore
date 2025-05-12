@@ -25,7 +25,7 @@ pub fn backtrace() {
         }
     }
 }
-/// 对齐到页
+/// 上对齐到页
 pub fn page_round_up(v: usize) -> usize {
     if v % PAGE_SIZE == 0 {
         v

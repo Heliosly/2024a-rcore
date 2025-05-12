@@ -340,6 +340,7 @@ where
     pub fn empty(&self)->bool{
         self.l==self.r
     }
+ 
 }
 impl<T> IntoIterator for SimpleRange<T>
 where
