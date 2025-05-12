@@ -125,6 +125,7 @@ impl VmAreaTree {
     }
 
     /// 从 MMAP_PGNUM_TOP 向下找 npages 个连续页号，插入并返回起始页号
+    /// 这个函数不会实际分配内存，用于懒分配
     pub fn alloc_pages(
         &mut self,
         npages: usize,
@@ -194,7 +195,20 @@ impl VmAreaTree {
         }
         false
     }
-
+    pub fn find_area(&self, vpn: VirtPageNum) -> Option<VirtPageNum> {
+        // 将虚拟地址转换为页号
+        
+        // 在BTreeMap中查找最后一个起始页号 <= 当前页号的区域
+        self.areas.range(..=vpn).next_back().and_then(|(viddr, area)| {
+            // 检查该区域是否包含目标页号
+            if area.vpn_range.contains(vpn) {
+                Some(*viddr)
+            } else {
+                None
+            }
+        })
+    
+}
     /// 从 `hint` 向下寻找能容纳 `npages` 页的第一个空闲区
     pub fn find_gap_from(&self, hint: VirtPageNum, npages: usize) -> Option<VirtPageNum> {
         let mut end_pn = hint.0;
@@ -366,6 +380,7 @@ impl MemorySet {
         }
         self.areatree.push(map_area);
     }
+
     // ///通过递归调整提示地址，从高到低寻找足够大的未占用虚拟地址空间，确保新分配区域不与现有区域重叠。
     // pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
     //     let end_vpn = VirtAddr::from(hint).floor();

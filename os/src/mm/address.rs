@@ -334,6 +334,12 @@ where
     pub fn range(&self) -> (T, T) {
         (self.l, self.r)
     }
+    pub fn contains(&self,val : T) -> bool{
+        self.l<=val&&self.r>=val
+    }
+    pub fn empty(&self)->bool{
+        self.l==self.r
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

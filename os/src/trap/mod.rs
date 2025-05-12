@@ -15,25 +15,27 @@
 //use crate::config:: TRAP_CONTEXT_BASE;
 
 mod context;
-use crate::syscall:: syscall;
+use crate::mm::{MemorySet, VirtAddr};
+use crate::syscall::syscall;
 use crate::task::{
-    current_task, current_task_may_uninit, exit_current_and_run_next, pick_next_task, run_task2, task_tick, CurrentTask
+    current_process, current_task, current_task_may_uninit, exit_current_and_run_next,
+    pick_next_task, run_task2, task_tick, CurrentTask,
 };
+use crate::timer::set_next_trigger;
+use crate::utils::{backtrace, bpoint};
 pub use context::user_return;
 pub use context::TrapStatus;
-use crate::utils::backtrace;
-use crate::timer::set_next_trigger;
-use core::arch:: global_asm;
+use core::arch::global_asm;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
-use riscv::register::{satp, sepc, sstatus};
 use riscv::register::{
+    mstatus::FS,
     mtvec::TrapMode,
     scause::{self, Exception, Interrupt, Trap},
     sie, stval, stvec,
-    mstatus::FS,
 };
+use riscv::register::{satp, sepc, sstatus};
 global_asm!(include_str!("trap.S"));
 
 /// Initialize trap handling
@@ -48,7 +50,7 @@ extern "C" {
     fn trap_vector_base();
 }
 
-fn set_trap_entry(){
+fn set_trap_entry() {
     unsafe {
         stvec::write(trap_vector_base as usize, TrapMode::Direct);
     }
@@ -69,7 +71,6 @@ fn set_trap_entry(){
 //         trace!("stvec_user:{:#x},true adress :{:#x}",stvec::read().bits(),__trap_from_user as usize);
 // }
 ///irq handle
-
 
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
@@ -102,9 +103,6 @@ pub fn wait_for_irqs() {
     unsafe { riscv::asm::wfi() }
 }
 
-
-
-
 #[no_mangle]
 /// Unimplement: traps/interrupts/exceptions from kernel mode
 
@@ -115,24 +113,18 @@ pub fn trap_from_kernel() {
     // let stval_vpn = VirtPageNum::from(stval);
     // let sepc_vpn = VirtPageNum::from(sepc);
     let scause = scause::read();
-    match scause.cause()  {
-        Trap::Interrupt(Interrupt::SupervisorTimer)=>{
-
-        }
-        _ =>{
-panic!(
-        "stval = {:#x}, sepc = {:#x},
+    match scause.cause() {
+        Trap::Interrupt(Interrupt::SupervisorTimer) => {}
+        _ => {
+            panic!(
+                "stval = {:#x}, sepc = {:#x},
         a trap {:?} from kernel",
-        stval,
-        
-        sepc,
-        
-        scause::read().cause()
-    );
+                stval,
+                sepc,
+                scause::read().cause()
+            );
         }
-
     }
-    
 }
 
 pub use context::TrapContext;
@@ -166,10 +158,10 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
                     None
                 }
             }) {
-//  debug!("run_task pid:{},Arc count:{}",curr.pid.0,
-                  
-//                    Arc::strong_count(&curr)
-//                        );
+                //  debug!("run_task pid:{},Arc count:{}",curr.pid.0,
+
+                //                    Arc::strong_count(&curr)
+                //                        );
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
@@ -185,95 +177,127 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
 
 pub async fn user_task_top() -> i32 {
     loop {
-
         // debug!("into user_task_top");
         let curr = current_task();
-        let  tf =  curr.get_trap_cx().unwrap();
+        let tf = curr.get_trap_cx().unwrap();
         // debug!("trap_status:{:?}",tf.trap_status);
         if tf.trap_status == TrapStatus::Blocked {
             let scause = scause::read();
-    let stval = stval::read();
-    let sepc = sepc::read();
-    trace!(
-        "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
-        scause.cause(),
-        stval,
-        sepc,
-        satp::read().bits()
-    );
-    match scause.cause() {
-        
-        Trap::Exception(Exception::UserEnvCall) => {
-            enable_irqs();
-           
-let syscall_id = tf.regs.a7;
-let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3
-,tf.regs.a4,tf.regs.a5];
+            let stval = stval::read();
+            let sepc = sepc::read();
+            trace!(
+                "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
+                scause.cause(),
+                stval,
+                sepc,
+                satp::read().bits()
+            );
+            match scause.cause() {
+                Trap::Exception(Exception::UserEnvCall) => {
+                    enable_irqs();
 
-tf.sepc += 4;
-let result = syscall(syscall_id, args).await;
+                    let syscall_id = tf.regs.a7;
+                    let args = [
+                        tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
+                    ];
 
-trace!("sys_call end result:{}",result);
+                    tf.sepc += 4;
+                    let result = syscall(syscall_id, args).await;
 
-   
-         
-               tf.regs.a0 = result as usize;
-            
+                    trace!("sys_call end result:{}", result);
 
-// trace!("sys_call end1");
- // 判断任务是否退出
- if curr.is_exited() {
-    // 任务结束，需要切换至其他任务，关中断
-    disable_irqs();
-    return curr.get_exit_code() as i32;
-}
+                    tf.regs.a0 = result as usize;
 
-disable_irqs();
-        }
-        Trap::Exception(Exception::StoreFault)
-        | Trap::Exception(Exception::StorePageFault)
-        | Trap::Exception(Exception::InstructionFault)
-        | Trap::Exception(Exception::InstructionPageFault)
-        | Trap::Exception(Exception::LoadFault)
-        | Trap::Exception(Exception::LoadPageFault) => {
-            
-            println!(
+                    // trace!("sys_call end1");
+                    // 判断任务是否退出
+                    if curr.is_exited() {
+                        // 任务结束，需要切换至其他任务，关中断
+                        disable_irqs();
+                        return curr.get_exit_code() as i32;
+                    }
+
+                    disable_irqs();
+                }
+                Trap::Exception(Exception::StorePageFault)
+                | Trap::Exception(Exception::LoadPageFault)
+                | Trap::Exception(Exception::InstructionPageFault) => {
+                    bpoint();
+                    //懒分配
+                    
+                    let fault_va = VirtAddr::from(stval);
+                    
+                    let  proc = current_process();
+                    let mut memset = proc.memory_set.lock();
+                    let vpn =fault_va.floor();
+
+                    // 先只查找不借用：拿到起始页号
+                    let start = memset.areatree.find_area(vpn);
+                       
+
+                    if let Some(start_va) = start {
+                        let MemorySet {
+                            areatree,
+                            page_table,
+                            ..
+                        } = &mut *memset;
+
+                        let area = areatree.get_mut(&start_va).unwrap();
+                        if area.vpn_range.empty(){
+                            exit_current_and_run_next(-2);
+                            
+                        }
+                  else                   
+               {
+                        if area.vpn_range.contains(vpn) {
+                            area.map(page_table);
+
+                    trace!("page alloc success area:{:#x}-{:#x}  addr:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0,stval);
+                        } else {
+                            exit_current_and_run_next(-2);
+                        }
+
+                    }
+                    } else {
+                        exit_current_and_run_next(-2);
+                    }
+                }
+                Trap::Exception(Exception::StoreFault)
+                | Trap::Exception(Exception::InstructionFault)
+                | Trap::Exception(Exception::LoadFault) => {
+                    println!(
                 "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                 scause.cause(),
                 stval,
                 tf.sepc ,
             );
-           
-            // page fault exit code
 
-            exit_current_and_run_next(-2);
-        }
-        Trap::Exception(Exception::IllegalInstruction) => {
-            println!("[kernel] IllegalInstruction in application, kernel killed it.");
-            // illegal instruction exit code
-            exit_current_and_run_next(-3);
-        }
-        Trap::Interrupt(Interrupt::SupervisorTimer) => {
-            set_next_trigger();
-            
-           tf.trap_status=TrapStatus::Done;
-            on_timer_tick();
-        }
-        _ => {
-            panic!(
-                "Unsupported trap {:?}, stval = {:#x}!",
-                scause.cause(),
-                stval
-            );
-        }
-    }
-           
+                    // page fault exit code
 
-          tf.trap_status = TrapStatus::Done ;
+                    exit_current_and_run_next(-2);
+                }
+                Trap::Exception(Exception::IllegalInstruction) => {
+                    println!("[kernel] IllegalInstruction in application, kernel killed it.");
+                    // illegal instruction exit code
+                    exit_current_and_run_next(-3);
+                }
+                Trap::Interrupt(Interrupt::SupervisorTimer) => {
+                    set_next_trigger();
+
+                    tf.trap_status = TrapStatus::Done;
+                    on_timer_tick();
+                }
+                _ => {
+                    panic!(
+                        "Unsupported trap {:?}, stval = {:#x}!",
+                        scause.cause(),
+                        stval
+                    );
+                }
+            }
+
+            tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end3");
             // 判断任务是否退出
-            
-         
 
             // trace!("sys_call end4");
             if curr.is_zombie() {
@@ -285,26 +309,21 @@ disable_irqs();
             disable_irqs();
         }
 
-            // trace!("sys_call end5");
-        
+        // trace!("sys_call end5");
+
         //偶数次poll时会从重新运行这个函数开始
         poll_fn(|_cx| {
-            if tf .trap_status == TrapStatus::Done {
+            if tf.trap_status == TrapStatus::Done {
                 Poll::Pending
             } else {
-
                 Poll::Ready(0)
-
             }
         })
-        .await ;
-  
+        .await;
     }
 }
 pub fn on_timer_tick() {
     if let Some(curr) = current_task_may_uninit() {
-        if task_tick(curr.as_task_ref()) {
-         
-        }
+        if task_tick(curr.as_task_ref()) {}
     }
 }
