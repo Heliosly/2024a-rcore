@@ -10,6 +10,7 @@ use alloc::{
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
 
 use super::{  File,OSInode, OpenFlags, Stdin, Stdout};
+use core::ops::{Deref, DerefMut};
 pub struct FdTable {
     inner: UnsafeCell<FdTableInner>,
 }
@@ -46,6 +47,40 @@ impl FileClass {
 pub struct FileDescriptor {
     pub flags: OpenFlags,
     pub file: FileClass,
+    
+}
+
+
+impl Deref for FileDescriptor {
+    type Target = dyn File;
+
+    fn deref(&self) -> &Self::Target {
+        match &self.file {
+            FileClass::File(inode_arc) => {
+                &**inode_arc
+            }
+            FileClass::Abs(file_arc) => {
+                &**file_arc
+            }
+        }
+    }
+}
+
+impl DerefMut for FileDescriptor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            match &self.file {
+                FileClass::File(f) => {
+                    let arc_ptr = Arc::as_ptr(f) as *mut OSInode;
+                    &mut *arc_ptr
+                }
+                FileClass::Abs(f) => {
+                    let arc_ptr = Arc::as_ptr(f) as *mut dyn File;
+                    &mut *arc_ptr
+                }
+            }
+        }
+    }
 }
 
 impl FileDescriptor {
@@ -69,13 +104,13 @@ impl FileDescriptor {
     }
 
     pub fn unset_cloexec(&mut self) {
-        self.flags &= !OpenFlags::O_CLOEXEC;
+        self.flags &= !OpenFlags::FD_CLOEXEC;
     }
     pub fn set_cloexec(&mut self) {
-        self.flags |= OpenFlags::O_CLOEXEC;
+        self.flags |= OpenFlags::FD_CLOEXEC;
     }
     pub fn cloexec(&self) -> bool {
-        self.flags.contains(OpenFlags::O_CLOEXEC)
+        self.flags.contains(OpenFlags::FD_CLOEXEC)
     }
     pub fn non_block(&self) -> bool {
         self.flags.contains(OpenFlags::O_NONBLOCK)

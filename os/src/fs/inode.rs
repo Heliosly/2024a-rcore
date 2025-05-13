@@ -39,7 +39,7 @@ bitflags! {
         const O_RSYNC       = 0o4010000;   // 同步读操作（通常与 O_SYNC 效果相同）
         const O_DIRECTORY   = 0o200000;    // 打开目标必须是目录
         const O_NOFOLLOW    = 0o400000;    // 如果路径是符号链接，则打开失败（不跟随符号链接）
-        const O_CLOEXEC     = 0o2000000;   // exec 调用时自动关闭该文件描述符
+        const FD_CLOEXEC     = 0o2000000;   // exec 调用时自动关闭该文件描述符
         const O_ASYNC       = 0o20000;     // 启用异步 I/O，I/O 事件会产生信号
         const O_DIRECT      = 0o40000;     // 尽可能绕过页缓存进行直接磁盘访问
         const O_LARGEFILE   = 0o100000;    // 允许打开大于 2GB 的文件（32 位系统相关）

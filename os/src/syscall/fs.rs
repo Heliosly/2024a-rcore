@@ -3,17 +3,18 @@ use core::mem;
 
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::{String, ToString};
+use lwext4_rust::bindings::EINVAL;
 
 pub struct Ino{
     link:u32,
     ino:u64,
 }
-use crate::fs::{ find_inode, open_file, File, Kstat, OSInode, OpenFlags, Stat, StatMode};
+use crate::fs::{ find_inode, open_file, File, FileClass, FileDescriptor, Kstat, OSInode, OpenFlags, Stat, StatMode};
 use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_process, current_task, current_token};
 use crate::utils::error::SysErrNo;
 
-use super::flags::{FstatatFlags, AT_FDCWD};
+use super::flags::{ FstatatFlags, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
 pub static mut UMAP:BTreeMap<usize,String>=BTreeMap::new();
 pub static mut UMAP1:BTreeMap<String,usize>=BTreeMap::new();
 pub static mut UMAP2:BTreeMap<String,String>=BTreeMap::new();
@@ -29,12 +30,12 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         return -1;
     }
     if let Some(file) = &fd_table[fd] {
-        if !file.writable().await.unwrap() {
+        if !file.any().writable().await.unwrap() {
             return -1;
         }
         let file = file.clone();
         // release current task TCB manually to avoid multi-borrow
-        file.write(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize
+        file.any().write(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize
     } else {
         -1
     }
@@ -50,12 +51,12 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
     }
     if let Some(file) = &fd_table[fd] {
         let file = file.clone();
-        if !file.readable().await.unwrap() {
+        if !file.any().readable().await.unwrap() {
             return -1;
         }
         // release current task TCB manually to avoid multi-borrow
         // trace!("kernel: sys_read .. file.read");
-       let res= file.read(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize;
+       let res= file.any().read(UserBuffer::new(translated_byte_buffer(token, buf, len))).await.unwrap() as isize;
 
        res
     } else {
@@ -91,11 +92,12 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
         unsafe { ITOS.remove(&path.clone()) };
         return -1;
     }
-    match open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap(), 0o777) {
+    let openflags= OpenFlags::from_bits(flags).unwrap();
+    match open_file(path.as_str(), openflags, 0o777) {
         Ok(inode) => {
             let fd = proc.alloc_fd();
             let mut fd_table = proc.fd_table.lock();
-           fd_table[fd] = Some(inode.file().unwrap());
+           fd_table[fd] = Some(FileDescriptor::new(openflags,  inode));
     
             unsafe {
                 UMAP.insert(fd, path.clone());
@@ -180,10 +182,7 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     
 }
 
-pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize{
-    
- 0
-}
+
 pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> isize{
     // 伪实现
    0
@@ -211,8 +210,7 @@ pub fn sys_fstatat(
             .get(dirfd as usize)
             .and_then(|opt| opt.clone())
             .ok_or_else(|| -(SysErrNo::EBADF as isize)).unwrap();
-        let inode = file.as_any()
-            .downcast_ref::<OSInode>()
+        let inode = file.file()
             .expect("Not an inode file");
         *translated_refmut(token, kst)=   inode.fstat() ;
         return 0;
@@ -229,8 +227,7 @@ pub fn sys_fstatat(
             .get(dirfd as usize)
             .and_then(|opt| opt.clone())
             .ok_or_else(|| -(SysErrNo::EBADF as isize)).unwrap();
-        let inode = file.as_any()
-            .downcast_ref::<OSInode>()
+        let inode = file.file()
             .expect("Not an inode file");
         inode.get_path()
     };
@@ -307,7 +304,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
                }
                else {
                 let fd= UMAP1.get(&op).unwrap() ;
-            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().clear();
+            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().file().unwrap().clear();
                }
             }
         }    
@@ -324,7 +321,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
            }
            else{
              let fd=unsafe { UMAP1.get(&name).unwrap() };
-            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().clear();
+            current_process().fd_table.lock().get(*fd).unwrap().clone().unwrap().file().unwrap().clear();
 
            }
           
@@ -333,3 +330,139 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
     }
    0
 }
+
+
+
+/// 系统调用 fcntl 的实现
+pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
+    let proc = current_process();
+    
+    let mut table_guard = proc.fd_table.lock();
+    match cmd {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            // 校验 fd 是否有效
+            let file = match proc.get_file(fd) {
+                Some(f) => f,
+                None => return SysErrNo::EBADF as isize,
+            };
+
+            // arg 是新描述符号的下限
+            let min_fd = arg;
+
+            // 分配从 min_fd 开始的空闲描述符
+            match proc.alloc_fd_from(min_fd) {
+                Some(new_fd) => {
+                     // 如果 new_fd 超出了当前 fd_table 的长度，需要扩展它
+        if new_fd >= table_guard.len() {
+            // 用 None 填充，直到 new_fd 这个索引是有效的
+            // resize_with 比循环 push 更高效
+            table_guard.resize_with(new_fd + 1, || None);
+        }
+                 
+                    // 复制文件对象（Arc 克隆）
+                    table_guard[new_fd] = Some(file.clone());
+                    // 如果是 F_DUPFD_CLOEXEC，则设置 FD_CLOEXEC
+                    if cmd == F_DUPFD_CLOEXEC {
+                       table_guard[new_fd].clone().unwrap().set_cloexec();
+                    } else {
+                        table_guard[new_fd].clone().unwrap().unset_cloexec() ; // 默认不设置 close-on-exec
+                    }
+                    new_fd as isize
+                }
+                None =>SysErrNo::EMFILE as isize, // 描述符已用尽
+            }
+        }
+        F_GETFD => {
+            // 校验 fd 是否有效
+            if fd >= table_guard.len() || table_guard[fd].is_none() {
+                return SysErrNo::EBADF as isize;
+            }
+            // 返回文件描述符标志
+            table_guard[fd].clone().unwrap().cloexec() as isize
+        }
+        F_SETFD => {
+            // 校验 fd 是否有效
+            if fd >= table_guard.len() || table_guard[fd].is_none() {
+                return SysErrNo::EBADF as isize;
+            }
+            // 仅保留 FD_CLOEXEC 位
+            let mut fd = table_guard[fd].clone().unwrap();
+             if arg & FD_CLOEXEC==1{
+                fd.set_cloexec();
+             }
+             else {
+                fd.unset_cloexec();
+             }
+            0 // 成功
+        }
+        F_GETFL => {
+            // 校验 fd 是否有效
+            let file = match proc.get_file(fd) {
+                Some(f) => f,
+                None => return SysErrNo::EBADF as isize,
+            };
+            // 获取文件状态标志（O_APPEND、O_NONBLOCK 等）
+            match &table_guard[fd] {
+                Some(fd) => fd.flags.bits() as isize,
+                None => SysErrNo::EBADF as isize,
+            }
+        }
+        F_SETFL => {
+            // 校验 fd 是否有效
+            let mut file = match proc.get_file(fd) {
+                Some(f) => f,
+                None => return SysErrNo::EBADF as isize,
+            };
+
+            // 获取当前标志
+            let current_flags = file.flags;
+
+            // 可修改的标志掩码（这里只允许 O_APPEND 和 O_NONBLOCK）
+            let settable_mask = OpenFlags::O_APPEND | OpenFlags::O_NONBLOCK;
+            // 保留不可修改的位，合并新标志
+            let new_flags_val = (current_flags.bits() & !settable_mask.bits())
+                | (arg as u32& settable_mask.bits());
+            let new_flags = OpenFlags::from_bits_truncate(new_flags_val);
+
+            // 应用新的状态标志
+            file.flags=new_flags;
+           0
+           
+        }
+        // 其他命令（如文件锁 F_GETLK/F_SETLK）可后续实现
+        _ => {
+            // 不支持的命令
+            EINVAL as isize
+        }
+    }
+}
+
+// 假设 TaskInner/文件表有如下辅助方法：
+// impl TaskInner {
+//     // 根据 fd 获取文件对象
+//     fn get_file(&self, fd: usize) -> Option<Arc<dyn File>> { ... }
+//     // 从指定起点分配新的 fd
+//     fn alloc_fd_from(&mut self, min_fd: usize) -> Option<usize> { ... }
+//     // fd_table: Vec<Option<Arc<dyn File>>>
+//     // fd_flags: Vec<usize> // 存储 FD_CLOEXEC 标志
+// }
+
+// 假设 File trait 定义：
+// pub trait File: Send + Sync {
+//     // 获取当前状态标志
+//     fn get_status_flags(&self) -> Result<OpenFlags, SomeError>;
+//     // 设置状态标志
+//     fn set_status_flags(&self, flags: OpenFlags) -> Result<(), SomeError>;
+// }
+
+// 假设 OpenFlags 定义（来自 bitflags）：
+// bitflags! {
+//     pub struct OpenFlags: usize {
+//         const O_RDONLY   = 0;
+//         const O_WRONLY   = 1;
+//         const O_RDWR     = 2;
+//         const O_APPEND   = 1024;
+//         const O_NONBLOCK = 2048;
+//         // …其他标志…
+//     }
+// }

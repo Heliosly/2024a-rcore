@@ -52,3 +52,13 @@ pub struct UtsName {
 }
 
 pub const  AT_FDCWD :isize =  -100;
+
+
+
+pub const F_DUPFD: usize = 0;
+pub const F_DUPFD_CLOEXEC: usize = 1030;
+pub const F_GETFD: usize = 1;
+pub const F_SETFD: usize = 2;
+pub const F_GETFL: usize = 3;
+pub const F_SETFL: usize = 4;
+pub const FD_CLOEXEC: usize = 1;

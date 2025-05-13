@@ -64,3 +64,6 @@ pub const IS_ASYNC: usize = 0x5f5f5f5f;
 
 /// Dynamic linked interpreter address range in user space
 pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
+
+///Max Fd
+pub const MAX_FD:usize=1024;

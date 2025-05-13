@@ -1,8 +1,8 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
 use super::{pid_alloc, yield_now, CloneFlags, PidHandle, TaskStatus};
-use crate::config::{PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
-use crate::fs::{File, Stdin, Stdout};
+use crate::config::{MAX_FD, PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
+use crate::fs::{File, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, PageTable, PageTableEntry,
     VPNRange, VirtAddr, VirtPageNum,
@@ -70,11 +70,62 @@ pub struct ProcessControlBlock {
     /// Application address space
     //     ///wait wakers
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
-    pub fd_table: Arc<Mutex<Vec<Option<Arc<dyn File + Send + Sync>>>>>,
+    pub fd_table: Arc<Mutex<Vec<Option<FileDescriptor>>>>,
     //todo(heliosly)
 }
 
 impl ProcessControlBlock {
+     /// 只读地取出 fd_table[fd] 对应的文件句柄（Arc 克隆）。
+    /// 不会修改表里原有的 Option。
+    pub fn get_file(&self, fd: usize) -> Option<FileDescriptor> {
+        let table = self.fd_table.lock();
+        table.get(fd)
+             .and_then(|opt| opt.clone())
+    }
+    /// 分配一个大于或等于 min_fd 的最小可用文件描述符。
+    ///
+    /// # Arguments
+    /// * `min_fd`: 新文件描述符的最小编号。
+    ///
+    /// # Returns
+    /// * `Some(usize)`: 如果找到可用的 fd，则返回其编号。
+    /// * `None`: 如果从 min_fd 到 PROCESS_MAX_FDS-1 都没有可用的 fd。
+    ///
+    /// 注意：此函数仅仅 *找到* 一个可用的 fd 编号。
+    /// 调用者负责实际获取 fd_table 的锁，并在必要时调整其大小，
+    /// 然后将 FileDescriptor 实例插入到返回的 fd 编号对应的位置。
+    pub fn alloc_fd_from(&self, min_fd: usize) -> Option<usize> {
+      
+        let table_guard = self.fd_table.lock();
+
+        // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上限
+        for fd_candidate in min_fd..MAX_FD {
+            if fd_candidate < table_guard.len() {
+                // 如果 fd_candidate 在当前 fd_table 的范围内
+                if table_guard[fd_candidate].is_none() {
+                    // 找到了一个空的槽位
+                    return Some(fd_candidate);
+                }
+            } else {
+                // 如果 fd_candidate 超出了当前 fd_table 的范围，
+                // 但仍在 PROCESS_MAX_FDS 之内，那么这个槽位是可用的。
+                // fd_table 将在稍后实际插入文件时被扩展。
+                return Some(fd_candidate);
+            }
+        }
+
+        // 如果循环完成都没有找到，说明从 min_fd 开始的所有槽位都被占用了
+        // (或者 min_fd >= PROCESS_MAX_FDS)
+        None
+    }
+
+    /// “取出” fd_table[fd] 对应的文件句柄，
+    /// 表中该项会被置为 None，相当于关闭/移除它。
+    pub fn take_file(&self, fd: usize) -> Option<FileDescriptor> {
+        let mut table = self.fd_table.lock();
+        table.get_mut(fd)
+             .and_then(|opt| opt.take())
+    }
     pub fn activate_user_memoryset(&self) {
         self.memory_set.lock().activate();
     }
@@ -299,10 +350,21 @@ impl ProcessControlBlock {
             Box::new(TrapContext::new()),
         )));
 
-        let fd_vec: Vec<Option<Arc<dyn File + Send + Sync>>> = vec![
-            Some(Arc::new(Stdin)),
-            Some(Arc::new(Stdout)),
-            Some(Arc::new(Stdout)),
+        let fd_vec: Vec<Option<FileDescriptor>> = vec![
+            Some(FileDescriptor {
+                flags: OpenFlags::O_RDONLY,
+                file: FileClass::Abs(Arc::new(Stdin)),
+            }),
+            // stdout: 只写
+            Some(FileDescriptor {
+                flags: OpenFlags::O_WRONLY,
+                file: FileClass::Abs(Arc::new(Stdout)),
+            }),
+            // stderr: 只写
+            Some(FileDescriptor {
+                flags: OpenFlags::O_WRONLY,
+                file: FileClass::Abs(Arc::new(Stdout)),
+            }),
         ];
 
         let process_control_block = Self {
@@ -602,10 +664,10 @@ impl ProcessControlBlock {
             tcb.id.0 as isize
         } else {
             // copy fd table
-            let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+            let mut new_fd_table: Vec<Option<FileDescriptor>> = Vec::new();
             for fd in self.fd_table.lock().iter() {
                 if let Some(file) = fd {
-                    new_fd_table.push(Some(file.clone()));
+                    new_fd_table.push(Some(file.clone()));//todo()
                 } else {
                     new_fd_table.push(None);
                 }
