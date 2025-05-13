@@ -18,9 +18,9 @@ cfg-if = { path = "vendor/cfg-if" }
 kernel_guard = { path = "src/kernel_guard" ,features = ["preempt"]}
 lazy_init = { path = "vendor/lazy_init"}
 spin = "0.9"
-lwext4_rust = { path = "lwext4_rust" }
 hashbrown = "0.12.0"
 num_enum = { version = "0.7.2", default-features = false }
+lwext4_rust = { path = "lwext4_rust" }
 [profile.release]
 debug = true
 

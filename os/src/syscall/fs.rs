@@ -2,15 +2,18 @@
 use core::mem;
 
 use alloc::collections::btree_map::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 pub struct Ino{
     link:u32,
     ino:u64,
 }
-use crate::fs::{ open_file, OpenFlags, Stat, StatMode};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+use crate::fs::{ find_inode, open_file, File, Kstat, OSInode, OpenFlags, Stat, StatMode};
+use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_process, current_task, current_token};
+use crate::utils::error::SysErrNo;
+
+use super::flags::{FstatatFlags, AT_FDCWD};
 pub static mut UMAP:BTreeMap<usize,String>=BTreeMap::new();
 pub static mut UMAP1:BTreeMap<String,usize>=BTreeMap::new();
 pub static mut UMAP2:BTreeMap<String,String>=BTreeMap::new();
@@ -175,6 +178,84 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     
  
     
+}
+
+pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize{
+    
+ 0
+}
+pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> isize{
+    // 伪实现
+   0
+}
+
+pub fn sys_fstatat(
+    dirfd: isize,
+    path_ptr: *const u8,
+    kst: *mut Kstat,
+    flags: usize,
+) -> isize {
+    let token = current_token();
+    // 从用户态指针获取 Rust 字符串（可能为空）
+    let path = translated_str(token, path_ptr);
+    let proc = current_process();
+    let flags= FstatatFlags::from_bits(flags).unwrap();
+    // 1. 先处理 AT_EMPTY_PATH：如果允许空路径且 path 为空，就 stat dirfd 自身
+    if flags.contains(FstatatFlags::EMPTY_PATH)  && path.is_empty() {
+        // dirfd 必须不是 AT_FDCWD
+        if dirfd == AT_FDCWD {
+            return -(SysErrNo::EINVAL as isize);
+        }
+        let fd_table = proc.fd_table.lock();
+        let file = fd_table
+            .get(dirfd as usize)
+            .and_then(|opt| opt.clone())
+            .ok_or_else(|| -(SysErrNo::EBADF as isize)).unwrap();
+        let inode = file.as_any()
+            .downcast_ref::<OSInode>()
+            .expect("Not an inode file");
+        *translated_refmut(token, kst)=   inode.fstat() ;
+        return 0;
+    }
+
+    // 2. 计算完整路径
+    let base_path = if path.starts_with('/') {
+        String::new()
+    } else if dirfd == AT_FDCWD {
+        proc.cwd.lock().clone()
+    } else {
+        let fd_table = proc.fd_table.lock();
+        let file = fd_table
+            .get(dirfd as usize)
+            .and_then(|opt| opt.clone())
+            .ok_or_else(|| -(SysErrNo::EBADF as isize)).unwrap();
+        let inode = file.as_any()
+            .downcast_ref::<OSInode>()
+            .expect("Not an inode file");
+        inode.get_path()
+    };
+    let full_path = base_path + &path;
+
+    // 3. 根据 AT_SYMLINK_NOFOLLOW 决定是否跟随符号链接
+    let mut open_flags = OpenFlags::O_RDONLY;
+    if flags.contains(FstatatFlags::SYMLINK_NO_FOLLOW) {
+        open_flags |= OpenFlags::O_ASK_SYMLINK;
+    }
+
+    // 4. 在 VFS 中查找对应 inode
+    match find_inode(full_path.as_str(), open_flags) {
+        Ok(inode) => {
+            // 将 inode 的元数据写入用户提供的 Kstat 结构
+           
+                *translated_refmut(token, kst)=   inode.fstat() ;
+            
+            0
+        }
+        Err(err) => {
+            // 根据不同错误返回不同 errno
+           err as isize
+        }
+    }
 }
 
 /// YOUR JOB: Implement linkat.

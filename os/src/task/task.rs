@@ -1,6 +1,6 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
-use super::{pid_alloc, CloneFlags, PidHandle, TaskStatus};
+use super::{pid_alloc, yield_now, CloneFlags, PidHandle, TaskStatus};
 use crate::config::{PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{
@@ -186,8 +186,8 @@ impl ProcessControlBlock {
     ) -> (usize, usize) {
         let hint_vpn= VirtAddr::from(hint).ceil();
         let npages = (size+ PAGE_SIZE - 1) / PAGE_SIZE;
-        let top_vpn = self.memory_set.lock().areatree.find_gap_from(hint_vpn, npages).unwrap();
-        let base_vpn = VirtPageNum::from(top_vpn.0-npages);
+        let base_vpn= self.memory_set.lock().areatree.find_gap_from(hint_vpn, npages).unwrap();
+        let top_vpn = VirtPageNum::from(base_vpn.0+npages);
 
         let start_va=VirtAddr::from(base_vpn);
         let end_va = VirtAddr::from(top_vpn);
@@ -536,7 +536,7 @@ impl ProcessControlBlock {
     }
 
     /// parent process fork the child process
-    pub fn clone_task(
+    pub async  fn clone_task(
         &self,
         flags: CloneFlags,
         user_stack: usize,
@@ -569,6 +569,7 @@ impl ProcessControlBlock {
             task_pid_usize = a.0;
             Some(a)
         };
+        let  trap_cx= Box::new(*current_task().get_trap_cx().unwrap());
 
         let fut = UTRAP_HANDLER();
         let tcb = Arc::new(CFSTask::new(TaskControlBlock::new(
@@ -576,15 +577,15 @@ impl ProcessControlBlock {
             task_pid_usize,
             memory_set.lock().token(),
             fut,
-            Box::new(TrapContext::new()),
+            trap_cx,
         )));
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
             let parent_token = self.memory_set.lock().token();
             *translated_refmut(parent_token, ptid as *mut u32) = tcb.id.0 as u32;
         }
         if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            todo!();
-            //(Heliosly)
+            // todo!();
+            //todo(Heliosly)
         }
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
@@ -634,7 +635,8 @@ impl ProcessControlBlock {
                 self.pid.0,
                 process_control_block.pid.0
             );
-            process_control_block.clone_user_res(&self);
+            process_control_block.tasks.lock().push(tcb.clone());
+            // process_control_block.clone_user_res(&self);
             self.children.lock().push(process_control_block.clone());
             PID2PC
                 .lock()
@@ -642,11 +644,10 @@ impl ProcessControlBlock {
             process_control_block.pid.0 as isize
         };
 
-        {
+                   
+{
+    let trap_cx= tcb.get_trap_cx().unwrap();
             // modify kernel_sp in trap_cx
-            let trap_cx = tcb.get_trap_cx().unwrap();
-            *trap_cx = current_task().get_trap_cx().unwrap().clone();
-            trap_cx.kernel_sp = current_stack_top();
             trap_cx.trap_status = TrapStatus::Done;
             trap_cx.regs.a0 = 0;
 
@@ -656,6 +657,7 @@ impl ProcessControlBlock {
             // 没有给定用户栈的时候，只能是共享了地址空间，且原先调用clone的有用户栈，此时已经在之前的trap clone时复制了
             if user_stack != 0 {
                 trap_cx.set_sp(user_stack);
+                
                 // info!(
                 //     "New user stack: sepc:{:X}, stack:{:X}",
                 //     trap_frame.sepc, trap_frame.regs.sp
@@ -668,6 +670,7 @@ impl ProcessControlBlock {
         // return
         // **** release child PCB
         // ---- release parent PCB
+        yield_now().await;
 
         res
     }

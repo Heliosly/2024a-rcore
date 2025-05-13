@@ -7,7 +7,7 @@ mod vfs;
 mod stat;
 mod fd;
 mod pipe;
-use core::panic;
+use core::{any::Any, panic};
 use alloc::vec::Vec;
 use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
@@ -17,16 +17,17 @@ use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
 use lwext4_rust::{bindings::SEEK_END, InodeTypes};
 use spin::{Lazy, RwLock};
-use stat::Kstat;
 pub use stat::Statfs;
 use vfs::vfs_ops::VfsNodeOps;
 pub use vfs::vfs_ops::VfsOps;
+pub use stat::Kstat;
+pub use inode::OSInode;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
 
 /// trait File for all file types
-pub trait File: Send + Sync {
+pub trait File: Send + Sync +Any {
     
     fn read<'a>(&'a self, buf: UserBuffer) -> ASyscallRet<'a>{
         unimplemented!();
@@ -57,6 +58,11 @@ pub trait File: Send + Sync {
       fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
           unimplemented!("not support!");
       }
+
+    fn as_any(&self) -> &dyn Any {
+        unimplemented!();
+    }
+      
 }
 
 /// The stat of a inode
@@ -88,7 +94,7 @@ bitflags! {
     }
 }
 
-pub use inode::{ OSInode, OpenFlags};
+pub use inode:: OpenFlags;
 pub use stdio::{Stdin, Stdout};
 
 
@@ -157,6 +163,9 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
 /// 判断是否是动态链接文件
 pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
+}
+pub fn find_inode(abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
+      root_inode().find(abs_path, flags, 0)
 }
 ///open file
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {

@@ -1,8 +1,8 @@
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use lwext4_rust::{bindings::ext4_direntry, InodeTypes};
 
-use crate::{fs::OpenFlags, utils::error::{SysErrNo, SyscallRet}};
+use crate::{fs::{stat::Kstat, OpenFlags}, utils::error::{SysErrNo, SyscallRet}};
 
 /// Filesystem operations.
 pub trait VfsOps: Send + Sync {
@@ -36,6 +36,14 @@ pub trait VfsOps: Send + Sync {
 
 /// Node (file/directory) operations.
 pub trait VfsNodeOps: Send + Sync {
+    fn path(&self) ->String{
+        unimplemented!()
+    }
+     fn fstat(&self)->Kstat{
+        unimplemented!()
+     }
+
+
      ///
      fn size(&self) -> usize {
         unimplemented!()

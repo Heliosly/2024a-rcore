@@ -34,3 +34,21 @@ bitflags! {
         const PROT_EXEC = 1 << 2;
     }
 }
+bitflags! {
+    pub struct FstatatFlags: usize {
+        const SYMLINK_NO_FOLLOW = 0x100; // 不跟随符号链接
+        const EMPTY_PATH      = 0x1000; // 允许空路径，表示操作 dirfd 本身
+        const NO_AUTOMOUNT    = 0x800;  // 不自动挂载（可选）
+        const REMOVEDIR       = 0x200;  // 仅用于 unlinkat
+    }
+}
+#[repr(C)]
+pub struct UtsName {
+    pub sysname: [u8; 65],
+    pub nodename: [u8; 65],
+    pub release: [u8; 65],
+    pub version: [u8; 65],
+    pub machine: [u8; 65],
+}
+
+pub const  AT_FDCWD :isize =  -100;

@@ -17,5 +17,6 @@ tools/
 pushall.sh
 *.bak
 os/sdcard-rv.img
+os/fs.img
 user/
 ci-user/

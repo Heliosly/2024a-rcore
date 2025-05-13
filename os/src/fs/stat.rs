@@ -1,5 +1,5 @@
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default,Clone, Copy)]
 pub struct Kstat {
     pub st_dev: usize,  // 包含文件的设备 ID
     pub st_ino: usize,  // 索引节点号
@@ -21,6 +21,7 @@ pub struct Kstat {
     pub st_ctime_nsec: usize, // 上次状态变化的时间（纳秒精度）
     pub __unused: [u32; 2],
 }
+
 
 #[repr(C)]
 #[derive(Debug, Default)]

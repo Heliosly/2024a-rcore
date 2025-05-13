@@ -5,11 +5,13 @@ use core::cell::RefCell;
 use crate::alloc::string::String;
 use crate::drivers::block::disk::Disk;
 use crate::fs::inode::InodeType;
+use crate::fs::stat::Kstat;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
 use crate::fs::{as_inode_type, fix_path, OpenFlags};
 use crate::utils::error::{SysErrNo, SyscallRet};
 
 use alloc::ffi::CString;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use log::*;
 use lwext4_rust::bindings::{
@@ -218,6 +220,36 @@ impl VfsNodeOps for FileWrapper {
         None
     }
 
+
+        fn fstat(&self) -> Kstat {
+            // 获取 ext4_inode_stat 结构
+            let a= self.0.borrow_mut().fstat().unwrap();
+        
+            Kstat {
+                st_dev: a.st_dev,
+                st_ino: a.st_ino,
+                st_mode: a.st_mode,
+                st_nlink: a.st_nlink,
+                st_uid: a.st_uid,
+                st_gid: a.st_gid,
+                st_rdev: 0,             // ext4_inode_stat 没有这个字段，填 0
+                __pad: 0,               // 填 0
+                st_size: a.st_size,
+                st_blksize: a.st_blksize,
+                __pad2: 0,              // 填 0
+                st_blocks: a.st_blocks,
+                st_atime: a.st_atime,
+                st_atime_nsec: 0,       // ext4_inode_stat 没有纳秒，填 0
+                st_mtime: a.st_mtime,
+                st_mtime_nsec: 0,       // 填 0
+                st_ctime: a.st_ctime,
+                st_ctime_nsec: 0,       // 填 0
+                __unused: [0; 2],       // 填 0
+            }
+        }
+        
+
+    
     /*
     /// Read directory entries into `dirents`, starting from `start_idx`.
     fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> Result<usize, i32> {
@@ -458,6 +490,9 @@ fn fmode_set(&self, mode: u32) -> SyscallRet {
         return Err(r.into());
     }
     Ok(EOK as usize)
+}
+fn path (&self)->String{
+    self.0.borrow().get_path().to_string_lossy().to_string()
 }
 
 }

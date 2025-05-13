@@ -221,28 +221,27 @@ pub async fn user_task_top() -> i32 {
                 Trap::Exception(Exception::StorePageFault)
                 | Trap::Exception(Exception::LoadPageFault)
                 | Trap::Exception(Exception::InstructionPageFault) => {
-                    bpoint();
                     //懒分配
-                    
+
                     let fault_va = VirtAddr::from(stval);
-                    
-                    let  proc = current_process();
+
+                    let proc = current_process();
                     let mut memset = proc.memory_set.lock();
-                    let vpn =fault_va.floor();
+                    let vpn = fault_va.floor();
 
                     // 先只查找不借用：拿到起始页号
                     let start = memset.areatree.find_area(vpn);
-                       
-                  
+
                     if let Some(start_va) = start {
                         let MemorySet {
                             areatree,
                             page_table,
                             ..
-                        } = &mut *memset;
+                        } = &mut *memset;;
+                        bpoint();
 
                         let area = areatree.get_mut(&start_va).unwrap();
-                        if area.vpn_range.empty()||area.allocated(){
+                        if area.vpn_range.empty() || area.allocated(vpn) {
                             println!(
                                 "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                                 scause.cause(),
@@ -250,28 +249,31 @@ pub async fn user_task_top() -> i32 {
                                 tf.sepc ,
                             );
                             exit_current_and_run_next(-2);
-                            
-                        }
-                  else                   
-               {
-                        if area.vpn_range.contains(vpn) {
-                            area.map(page_table);
-
-                    trace!("page alloc success area:{:#x}-{:#x}  addr:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0,stval);
                         } else {
-                            println!(
-                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                            if area.vpn_range.contains(vpn) {
+                                area.map(page_table);
+
+                                trace!(
+                                    "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
+                                    area.vpn_range.get_start().0,
+                                    area.vpn_range.get_end().0,
+                                    stval
+                                );
+                            } else {
+                                println!(
+                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it..",
                                 scause.cause(),
                                 stval,
                                 tf.sepc ,
                             );
-                            exit_current_and_run_next(-2);
-                        }
+                                exit_current_and_run_next(-2);
+                            }
 
-                    }
+                            bpoint();
+                        }
                     } else {
                         println!(
-                            "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                            "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it...",
                             scause.cause(),
                             stval,
                             tf.sepc ,
@@ -283,7 +285,7 @@ pub async fn user_task_top() -> i32 {
                 | Trap::Exception(Exception::InstructionFault)
                 | Trap::Exception(Exception::LoadFault) => {
                     println!(
-                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it....",
                 scause.cause(),
                 stval,
                 tf.sepc ,

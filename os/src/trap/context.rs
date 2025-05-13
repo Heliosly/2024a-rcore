@@ -54,7 +54,7 @@ pub struct GeneralRegisters {
     pub t6: usize, //30
 }
 #[repr(C)]
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone,Copy)]
 ///trap context structure containing sstatus, sepc and registers
 pub struct TrapContext {
     /// General-Purpose Register x0-30

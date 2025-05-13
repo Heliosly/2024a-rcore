@@ -52,21 +52,32 @@ const SYSCALL_SPAWN: usize = 400;
 const SYSCALL_TASK_INFO: usize = 410;
 /// clone 
 const SYSCALL_CLONE:usize = 220;
-///96
+///set tid address
 const SYSCALL_SETTIDADDRESS :usize =96;
-///174
+///get uid
 const SYSCALL_GETUID :usize = 174;
-///94
+///exit group
 const SYSCALL_EXITGROUP :usize=  94;
+///
+const SYSCALL_SIGPROCMASK :usize =135;
+const SYSCALL_RT_SIGACTION :usize =134;
+const SYSCALL_GETPPID:usize = 173;
+const SYSCALL_UNAME:usize = 160;
+const SYSCALL_FSTATAT :usize =79;
+const SYSCALL_IOCTL :usize =29;
+const SYSCALL_FCNTL:usize =25;
 mod fs;
 mod process;
-
+mod signal;
+mod other;
 pub mod flags;
 use fs::*;
 use process::*;
+use other::*;
 
-use crate::fs::Stat;
+use crate::{fs::{Kstat, Stat}, signal::signal::{SigAction, SigSet}};
 
+use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
@@ -78,12 +89,33 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Stat),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_YIELD => sys_yield().await,
-        SYSCALL_GETPID => sys_getpid(),
         // SYSCALL_FORK => sys_fork(),
+       
+        SYSCALL_GETUID=>sys_getuid(),
+        SYSCALL_SETTIDADDRESS=>sys_settidaddress(),
+        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32),
+        SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
+        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
+        SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
+       
+        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
+        SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
+        SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
+        SYSCALL_SIGPROCMASK => sys_sigprocmask(
+            args[0] as usize,
+            args[1] as *const SigSet,
+            args[2] as *mut SigSet,
+        ),
+    
+        SYSCALL_RT_SIGACTION => sys_rt_sigaction(
+            args[0],
+            args[1] as *const SigAction,
+            args[2] as *mut SigAction,
+        ),
+        SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_CLONE => sys_clone(
          args
-        ),
+        ).await,
         SYSCALL_EXEC => sys_execve(args[0] as *const u8,
         
             args[1] as *const usize,
@@ -91,17 +123,14 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         
         
         ),
-        SYSCALL_GETUID=>sys_getuid(),
-        SYSCALL_SETTIDADDRESS=>sys_settidaddress(),
-        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32),
-        SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
-        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
-        SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
+        SYSCALL_FSTATAT => sys_fstatat(args[0] as isize, args[1] as *const u8, args[2] as *mut Kstat, args[3]),
+        SYSCALL_YIELD => sys_yield().await,
+        SYSCALL_GETPID => sys_getpid(),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
-        SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
-        SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
+        SYSCALL_UNAME => sys_uname(args[0]),
+        SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
+        SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
 

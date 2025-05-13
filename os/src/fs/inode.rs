@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 /// src/fs/os_inode.rs
 
 use alloc::sync::Arc;
@@ -6,6 +7,7 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_END, SEEK_SET};
 
+use super::ext4::ops::FileWrapper;
 use super::stat::Kstat;
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
@@ -84,6 +86,10 @@ impl OSInode {
         }
         out
     }
+    pub fn get_path(&self)->String{
+        let inner = self.inner.exclusive_access();
+       inner.inode.as_any().downcast_ref::<FileWrapper>().unwrap().path()
+    }
 }
 
 impl OpenFlags {
@@ -158,6 +164,9 @@ impl InodeType {
 
 /// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OSInode {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn clear(&self) {
         let _ = self.inner.exclusive_access().inode.truncate(0);
         

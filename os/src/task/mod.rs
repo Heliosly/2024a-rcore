@@ -137,10 +137,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // drop task manually to maintain rc correctly
     drop(task); 
 }
-static INITPROC_STR: &str =          "ch4_mmap3";
+// static INITPROC_STR: &str =          "cosmmap_clone";
 
 // static INITPROC_STR: &str =          "musl/basic/yield";
-//  static INITPROC_STR: &str =          "ch6b_user_shell";
+ static INITPROC_STR: &str =          "musl/busybox";
 lazy_static! {  
     /// Creation of initial process
     ///
@@ -150,7 +150,7 @@ lazy_static! {
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
         let v = inode.file().unwrap().read_all();
         ProcessControlBlock::new(v.as_slice(),"/".to_string(),
-        &get_args(/*busybox sh*/"".as_bytes()),&mut get_envs())
+        &get_args("busybox sh".as_bytes()),&mut get_envs())
 
     });
 

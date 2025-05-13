@@ -4,6 +4,7 @@ use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET
 use crate::fs::{map_dynamic_link_file, open_file, OpenFlags, NONE_MODE};
 use crate::syscall::flags::MmapProt;
 use crate::task::aux::{Aux, AuxType};
+use crate::utils::bpoint;
 use super::{flush_tlb, frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{/*PhysAddr,*/ PhysPageNum, VirtAddr, VirtPageNum};
@@ -187,9 +188,10 @@ impl VmAreaTree {
         }
         false
     }
+    ///使用一个vpn去找对应存在的area，返回area的start_va
     pub fn find_area(&self, vpn: VirtPageNum) -> Option<VirtPageNum> {
         // 将虚拟地址转换为页号
-        
+        bpoint();
         // 在BTreeMap中查找最后一个起始页号 <= 当前页号的区域
         self.areas.range(..=vpn).next_back().and_then(|(viddr, area)| {
             // 检查该区域是否包含目标页号
@@ -279,7 +281,7 @@ pub fn munmap(
 
         // **中间这部分 [r0, r1) 是要给新 area 用的**，
         // 先把对应的 PTE 一个个清掉
-        if area.allocated
+        if area.allocated(r0)
     {
         for vpn in r0.0.. r1.0 {
             self.page_table.unmap(VirtPageNum(vpn));
@@ -753,13 +755,13 @@ pub struct MapArea {
     map_type: MapType,
     map_perm: MapPermission,
     area_type: MapAreaType,
-    allocated:bool,
     
 }
 
 impl MapArea {
-    pub fn allocated(&self)->bool{
-           self.allocated
+    pub fn allocated(&self,vpn: VirtPageNum)->bool{
+        self.data_frames.contains_key(&vpn)
+
     }
     pub fn new(
         start_va: VirtAddr,
@@ -776,7 +778,6 @@ impl MapArea {
             map_type,
             map_perm,
             area_type,
-            allocated:false,
         }
     }
     pub fn new_by_vpn(
@@ -793,7 +794,6 @@ impl MapArea {
             map_type,
             map_perm,
             area_type,
-            allocated:false,
         }
     }
     pub fn from_another(another: &Self) -> Self {
@@ -803,7 +803,6 @@ impl MapArea {
             map_type: another.map_type,
             map_perm: another.map_perm,
             area_type: another.area_type,
-            allocated:false,
         }
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -832,14 +831,12 @@ impl MapArea {
         page_table.unmap(vpn);
     }
     pub fn map(&mut self, page_table: &mut PageTable) {
-        self.allocated=true;
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         
-        self.allocated=false;
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
@@ -894,7 +891,6 @@ impl MapArea {
             map_type: self.map_type,
             map_perm: self.map_perm,
             area_type: self.area_type,
-            allocated:false,
         }
     }
     pub fn start_vpn(&self) -> VirtPageNum {
