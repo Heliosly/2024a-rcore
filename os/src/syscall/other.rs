@@ -1,25 +1,61 @@
-use crate::{mm::translated_refmut, task::current_token};
+use core::mem::offset_of;
+
+use crate::{mm::{fill_str, get_target_ref_mut, translated_refmut}, task::current_token, utils::error:: SyscallRet};
 
 use super::flags::UtsName;
 
-fn fill_str(buf: &mut [u8], s: &str) {
-    let bytes = s.as_bytes();
-    let len = bytes.len().min(buf.len() - 1);
-    buf[..len].copy_from_slice(&bytes[..len]);
-    buf[len] = 0; // null-terminator
-}
+
 const SYSNAME: &str = "rCore";
 const NODENAME: &str = "rcore-host";
 const RELEASE: &str = "0.1";
 const VERSION: &str = "0.1 (rcore)";
 const MACHINE: &str = "riscv64";
-pub fn sys_uname(buf: usize) -> isize {
+pub fn sys_uname(buf: usize) -> SyscallRet {
     let token = current_token();
-    let uts: &mut UtsName = translated_refmut(token, buf as *mut  UtsName);
-    fill_str(&mut uts.sysname, SYSNAME);
-    fill_str(&mut uts.nodename, NODENAME);
-    fill_str(&mut uts.release, RELEASE);
-    fill_str(&mut uts.version, VERSION);
-    fill_str(&mut uts.machine, MACHINE);
-    0
+    // buf 是远端虚拟地址
+    let remote = buf as *mut UtsName;
+
+    // 给每个字段调用 fill_str，把常量写到远端
+    unsafe {
+        // 注意：字段偏移可以用 core::ptr::addr_of_mut!
+        let base = remote as *mut u8;
+
+        // sysname: [u8; 65]
+        fill_str(
+            token,
+            base.add(offset_of!(UtsName, sysname)),
+            SYSNAME,
+            65
+        )?;
+        // nodename: [u8; 65]
+        fill_str(
+            token,
+            base.add(offset_of!(UtsName, nodename)),
+            NODENAME,
+            65
+        )?;
+        // release: [u8; 65]
+        fill_str(
+            token,
+            base.add(offset_of!(UtsName, release)),
+            RELEASE,
+            65
+        )?;
+        // version: [u8; 65]
+        fill_str(
+            token,
+            base.add(offset_of!(UtsName, version)),
+            VERSION,
+            65
+        )?;
+        // machine: [u8; 65]
+        fill_str(
+            token,
+            base.add(offset_of!(UtsName, machine)),
+            MACHINE,
+            65
+        )?;
+    }
+
+    Ok(0)
 }

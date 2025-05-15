@@ -88,7 +88,11 @@ impl OSInode {
     }
     pub fn get_path(&self)->String{
         let inner = self.inner.exclusive_access();
-       inner.inode.as_any().downcast_ref::<FileWrapper>().unwrap().path()
+       inner.inode.path()
+    }
+    pub fn is_dir(&self)->bool{
+        let inner =self.inner.exclusive_access();
+        inner.inode.is_dir()
     }
 }
 

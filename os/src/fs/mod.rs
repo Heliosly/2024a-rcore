@@ -146,7 +146,7 @@ fn as_inode_type(types: InodeTypes) -> InodeType {
         }
     }
 }
-fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
+fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
     // 一定能找到,因为除了RootInode外都有父结点
     let parent_dir = root_inode();
     let (readable, writable) = flags.read_write();
@@ -157,7 +157,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     inode.set_timestamps(None, Some((get_time_ms() / 1000) as u32), None);
     insert_inode_idx(abs_path, inode.clone());
     let osinode = OSInode::new(readable, writable, inode);
-    Ok(FileClass::File(Arc::new(osinode)))
+    Ok(FileDescriptor::new(flags, FileClass::File(Arc::new(osinode))))
 }
 
 
@@ -169,7 +169,7 @@ pub fn find_inode(abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, 
       root_inode().find(abs_path, flags, 0)
 }
 ///open file
-pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
+pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
 
     log::debug!("[open] abs_path={}", abs_path);
     // 如果是动态链接文件,转换路径
@@ -214,7 +214,7 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
         if flags.contains(OpenFlags::O_TRUNC) {
             inode.truncate(0)?;
         }
-        return Ok(FileClass::File(Arc::new(osfile)));
+        return Ok(FileDescriptor::new(flags,FileClass::File(Arc::new(osfile))));
     }
 
     // 节点不存在

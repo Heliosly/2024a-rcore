@@ -75,19 +75,18 @@ use fs::*;
 use process::*;
 use other::*;
 
-use crate::{fs::{Kstat, Stat}, signal::signal::{SigAction, SigSet}};
+use crate::{fs::{Kstat, Stat}, signal::signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
 
 use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
-pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
-    match syscall_id {
-        SYSCALL_OPEN => sys_open(args[1] as *const u8, args[2] as u32),
+pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
+  match syscall_id {
+        SYSCALL_OPEN => sys_openat(args[0] as isize,args[1] as *const u8,args[2] as u32,args[3] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_LINKAT => sys_linkat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_UNLINKAT => sys_unlinkat(args[1] as *const u8),
-        SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
-        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Stat),
+        
+        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Kstat),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         // SYSCALL_FORK => sys_fork(),
        
@@ -131,7 +130,11 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_UNAME => sys_uname(args[0]),
         SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
         SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]),
+SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
+        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
+    
+
 
 }

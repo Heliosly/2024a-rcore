@@ -25,14 +25,16 @@ mod schedule;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
-mod waker;
+pub(crate) mod waker;
+pub(crate) mod sleeplist;
 mod yieldfut;
+// mod timelist;
 use alloc::vec;
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use alloc::string::{String, ToString};
 pub use core::mem::ManuallyDrop;
 pub use current::{
-    current_process, current_task, current_task_may_uninit, current_token,
+    current_process, current_task, current_task_may_uninit, current_token,current_task_id,
     CurrentTask,
 };
 pub use flags::{CloneFlags,TaskStatus};
@@ -40,9 +42,10 @@ pub use flags::{CloneFlags,TaskStatus};
 pub use id::{pid_alloc, PidHandle, RecycleAllocator};
 pub use kstack::{TaskStack,current_stack_top};
 pub use processor::{init, run_task2, run_tasks, Processor};
-pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick};
+pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick,Task,TaskRef};
 pub use task::ProcessControlBlock;
 pub use yieldfut::yield_now;
+
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
@@ -50,15 +53,14 @@ use alloc::sync::Arc;
 
 use lazy_static::*;
 
-use schedule::TaskRef;
-use spin::mutex::Mutex;
+use spin::mutex::Mutex as Spin;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
 
 // pub use manager::add_task;
 
 pub type ProcessRef = Arc<ProcessControlBlock>;
-pub static PID2PC: Mutex<BTreeMap<usize, ProcessRef>> = Mutex::new(BTreeMap::new());
-pub static TID2TC: Mutex<BTreeMap<usize, TaskRef>> = Mutex::new(BTreeMap::new());
+pub static PID2PC: Spin<BTreeMap<usize, ProcessRef>> =Spin::new(BTreeMap::new());
+pub static TID2TC: Spin<BTreeMap<usize, TaskRef>> = Spin::new(BTreeMap::new());
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     panic!("undo");
@@ -137,10 +139,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // drop task manually to maintain rc correctly
     drop(task); 
 }
-// static INITPROC_STR: &str =          "cosmmap_clone";
+static INITPROC_STR: &str =          "cosshell";
 
 // static INITPROC_STR: &str =          "musl/basic/yield";
- static INITPROC_STR: &str =          "musl/busybox";
+//  static INITPROC_STR: &str =          "musl/busybox";
 lazy_static! {  
     /// Creation of initial process
     ///

@@ -248,7 +248,7 @@ impl VirtPageNum {
 
 impl PhysAddr {
     ///Get reference to `PhysAddr` value
-    pub fn get_ref<T>(&self) -> &'static T {
+    pub fn get_ref<T>(&self) ->  &'static T {
         // unsafe { (self.0 as *const T).as_ref().unwrap() }
         KernelAddr::from(*self).get_ref()
     }
@@ -257,6 +257,9 @@ impl PhysAddr {
         // unsafe { (self.0 as *mut T).as_mut().unwrap() }
         KernelAddr::from(*self).get_mut()
     }
+    pub fn get_ptr<T>(&self)->*const T{
+        KernelAddr::from(*self).get_ptr()
+    }
 }
 
 /// impl KernelAddr
@@ -264,6 +267,10 @@ impl KernelAddr {
     /// 定义一个公共函数 `as_ref`，它接受一个泛型参数 `T`
     pub fn get_ref<T>(&self) -> &'static T {
         unsafe { (self.0 as *const T).as_ref().unwrap() }
+    }
+    
+    pub fn get_ptr<T>(&self)-> *const T{
+        self.0 as *const T
     }
     /// 定义一个公共函数 `as_mut`，它接受一个泛型参数 `T`，并返回一个可变引用 `&'static mut T`
     ///Get mutable reference to `PhysAddr` value
@@ -432,6 +439,7 @@ impl Sub<usize> for VirtAddr {
         VirtAddr(self.0 - rhs)
     }
 }
+
 
 /// a simple range structure for virtual page number
 pub type VPNRange = SimpleRange<VirtPageNum>;

@@ -263,6 +263,9 @@ pub fn current_token()->usize{
     
 }
 
+pub fn current_task_id()->usize{
+    current_task().id()
+}
 
 
 

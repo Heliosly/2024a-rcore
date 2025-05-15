@@ -67,3 +67,6 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 
 ///Max Fd
 pub const MAX_FD:usize=1024;
+
+// Maximum path length
+pub const PATH_MAX: usize = 4096;

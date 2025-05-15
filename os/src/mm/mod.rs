@@ -21,8 +21,8 @@ pub use memory_set::remap_test;
 pub use memory_set::{kernel_token, MapPermission, MemorySet, KERNEL_SPACE,MapAreaType,VmAreaTree,MapArea,MapType};
 use page_table::PTEFlags;
 pub use page_table::{
-    translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
-    PageTableEntry, UserBuffer, UserBufferIterator,
+    translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,get_target_ref_mut,
+    PageTableEntry, UserBuffer, UserBufferIterator,fill_str
 };
 /// initiate heap allocator, frame allocator and kernel space
 pub fn init() {

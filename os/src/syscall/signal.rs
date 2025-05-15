@@ -1,18 +1,18 @@
-use crate::{signal::signal::{SigAction, SigSet}, utils::error::SysErrNo};
+use crate::{signal::signal::{SigAction, SigSet}, utils::error::{SysErrNo, SyscallRet}};
 
 
-pub fn sys_sigprocmask(how: usize, set: *const SigSet, oldset: *mut SigSet) -> isize {
+pub fn sys_sigprocmask(how: usize, set: *const SigSet, oldset: *mut SigSet) -> SyscallRet {
     if how > 2 {
-        return SysErrNo::EINVAL as isize;
+        return Err( SysErrNo::EINVAL);
     }
     // 正常执行逻辑
-    0
+    Ok(0)
 }
 
 pub fn sys_rt_sigaction(
     signo: usize,
     act: *const SigAction,
     old_act: *mut SigAction,
-) -> isize {
-0
+) -> SyscallRet {
+Ok(0)
 }

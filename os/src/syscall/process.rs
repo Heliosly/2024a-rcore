@@ -11,22 +11,27 @@ use alloc::{
 };
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{
-        flush_tlb, translated_byte_buffer, translated_ref, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, VirtAddr, VirtPageNum
-    }, syscall::flags::{MmapFlags, MmapProt}, task::{
-         current_process, current_task, current_token, exit_current_and_run_next,
-        set_priority, yield_now, CloneFlags,  TaskStatus, PID2PC,
-    }, timer::{get_time_ms, get_time_us}, utils::{error::SysErrNo, page_round_up, string::get_abs_path}
+    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
+    fs::{open_file, OpenFlags, NONE_MODE},
+    mm::{
+        flush_tlb, translated_byte_buffer, translated_ref, translated_refmut, translated_str,
+        MapArea, MapAreaType, MapPermission, MapType, VirtAddr, VirtPageNum,
+    },
+    syscall::flags::{MmapFlags, MmapProt},
+    task::{
+        current_process, current_task, current_token, exit_current_and_run_next, set_priority,
+        yield_now, CloneFlags, TaskStatus, PID2PC,
+    },
+    timer::{get_time_ms, get_time_us, TimeVal},
+    utils::{
+        error::{SysErrNo, SyscallRet},
+        page_round_up,
+        string::get_abs_path,
+    },
 };
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct TimeVal {
-    pub sec: usize,
-    pub usec: usize,
-}
-
 /// Task information
+#[repr(C)]
 #[allow(dead_code)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
@@ -37,26 +42,26 @@ pub struct TaskInfo {
     time: usize,
 }
 
-pub fn sys_getppid()->isize{
+pub fn sys_getppid() -> SyscallRet {
     trace!("[sys_getppid] pid :{}", current_task().get_pid());
-    current_process().parent() as isize
+    Ok(current_process().parent())
 }
-pub fn sys_exit(exit_code: i32) -> isize {
+pub fn sys_exit(exit_code: i32) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exit", current_task().get_pid());
 
     exit_current_and_run_next(exit_code);
-    exit_code as isize
+    Ok(exit_code as usize)
 }
 
-pub async fn sys_yield() -> isize {
+pub async fn sys_yield() -> SyscallRet {
     trace!("kernel: sys_yield");
     yield_now().await;
-    0
+    Ok(0)
 }
 
-pub fn sys_getpid() -> isize {
+pub fn sys_getpid() -> SyscallRet {
     trace!("kernel: sys_getpid pid:{}", current_task().get_pid());
-    current_task().get_pid() as isize
+    Ok(current_task().get_pid())
 }
 /// # Arguments for riscv
 /// * `flags` - usize
@@ -64,7 +69,7 @@ pub fn sys_getpid() -> isize {
 /// * `ptid` - usize
 /// * `tls` - usize
 /// * `ctid` - usize
-pub async  fn sys_clone(args: [usize; 6]) -> isize {
+pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //解析参数
     let flags = args[0];
     let user_stack = args[1];
@@ -75,17 +80,57 @@ pub async  fn sys_clone(args: [usize; 6]) -> isize {
 
     let flags =
         CloneFlags::from_bits(flags & !0x3f).expect(&format!("unsupport cloneflags : {}", flags));
-    debug!("[sys_clone] flags:{:#?},user_stack:{:#x},ptid:{:#x},tls:{:#x},ctid:{:#x}",flags,user_stack,ptid,tls,ctid);
+    debug!(
+        "[sys_clone] flags:{:#?},user_stack:{:#x},ptid:{:#x},tls:{:#x},ctid:{:#x}",
+        flags, user_stack, ptid, tls, ctid
+    );
+    // Invalid combination checks for clone flags
     if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
-        // Error when CLONE_SIGHAND was specified in the flags mask, but CLONE_VM was not.
-        return SysErrNo::EINVAL as isize;
+        // CLONE_SIGHAND requires CLONE_VM
+        return Err(SysErrNo::EINVAL);
     }
+
+    if flags.contains(CloneFlags::CLONE_SETTLS) && !flags.contains(CloneFlags::CLONE_VM) {
+        // CLONE_SETTLS requires CLONE_VM
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if flags.contains(CloneFlags::CLONE_THREAD) && !flags.contains(CloneFlags::CLONE_SIGHAND) {
+        // CLONE_THREAD requires CLONE_SIGHAND (to share signal handlers)
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if flags.contains(CloneFlags::CLONE_THREAD) && !flags.contains(CloneFlags::CLONE_VM) {
+        // CLONE_THREAD requires CLONE_VM (threads must share address space)
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
+        // CLONE_CHILD_SETTID only makes sense when sharing VM
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) && !flags.contains(CloneFlags::CLONE_VM) {
+        // CLONE_CHILD_CLEARTID only makes sense when sharing VM
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
+        // CLONE_PARENT_SETTID only makes sense when sharing VM
+        return Err(SysErrNo::EINVAL);
+    }
+
     if flags.contains(CloneFlags::CLONE_PIDFD) && !flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-        return SysErrNo::EINVAL as isize;
+        // CLONE_PIDFD requires CLONE_PARENT_SETTID
+        return Err(SysErrNo::EINVAL);
     }
 
-   proc.clone_task(flags,user_stack,ptid,tls,ctid).await
+    if flags.contains(CloneFlags::CLONE_VFORK) && flags.contains(CloneFlags::CLONE_THREAD) {
+        // VFORK and THREAD are mutually exclusive
+        return Err(SysErrNo::EINVAL);
+    }
 
+    proc.clone_task(flags, user_stack, ptid, tls, ctid).await
 }
 // pub fn sys_fork() -> isize {
 //     trace!("kernel:pid[{}] sys_fork", current_task().get_pid());
@@ -119,13 +164,13 @@ pub async  fn sys_clone(args: [usize; 6]) -> isize {
 // }
 
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
-pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> isize {
+pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exec", current_task().get_pid());
     let process = current_process();
 
     let token = process.get_user_token();
     let mut path = translated_str(token, path);
-       //处理argv参数
+    //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     // if !argv.is_null() {
     //     let argv_ptr = *translated_ref(token, argv);
@@ -140,7 +185,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if argv.is_null() {
             break;
         }
-        let argv_ptr = *translated_ref(token, argv);
+        let argv_ptr = *translated_ref(token, argv)?;
         if argv_ptr == 0 {
             break;
         }
@@ -168,7 +213,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if envp.is_null() {
             break;
         }
-        let envp_ptr = *translated_ref(token, envp);
+        let envp_ptr = *translated_ref(token, envp)?;
         if envp_ptr == 0 {
             break;
         }
@@ -196,46 +241,39 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     debug!("[sys_execve] env is {:?}", env);
 
     let cwd = if !path.starts_with('/') {
-                let cwd_lock = process.cwd.lock();
-                cwd_lock.clone()
-            } else {
-                "/".to_string()
-            };
-    let abs_path = get_abs_path(&cwd, &path);
-    let app_inode = match open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE) {
-        Ok(file) =>  file.file().unwrap(),
-        
-        Err(err) => {
-            println!("the file is not existed");
-            return err as isize;
-        }
+        let cwd_lock = process.cwd.lock();
+        cwd_lock.clone()
+    } else {
+        "/".to_string()
     };
-    
-    let elf_data = app_inode.read_all();
+    let abs_path = get_abs_path(&cwd, &path);
+    let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+
+    let elf_data = app_inode.file()?.read_all();
     process.exec(&elf_data, &argv_vec, &mut env);
     process.memory_set.lock().activate();
-    argv_vec.len() as isize
+    Ok(argv_vec.len())
 }
 
-pub fn sys_settidaddress()->isize{
+pub fn sys_settidaddress() -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_settidaddress NOT IMPLEMENTED",
         current_task().get_pid()
     );
     //todo(Heliosly)
-    current_task().id.as_usize() as isize
+    Ok(current_task().id.as_usize())
 }
-pub fn sys_getuid()->isize{
-  trace!(
+pub fn sys_getuid() -> SyscallRet {
+    trace!(
         "kernel:pid[{}] sys_getuid NOT IMPLEMENTED",
         current_task().get_pid()
     );
     //todo(heliosly)
-  0
+    Ok(0)
 }
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
-pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
+pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
     trace!("kernel: sys_waitpid");
     let proc = current_process();
     // find a child process
@@ -259,7 +297,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             proc.get_pid(),
             childvec.len()
         );
-        return -1;
+        return Err(SysErrNo::ECHILD);
         // ---- release current PCB
     }
     let pair = childvec.iter().enumerate().find(|(_, p)| {
@@ -278,16 +316,16 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         let exit_code = child.exit_code();
 
         // ++++ release child PCB
-        *translated_refmut(proc.get_user_token(), exit_code_ptr)=exit_code ;
+        *translated_refmut(proc.get_user_token(), exit_code_ptr)? = exit_code;
         assert_eq!(
             Arc::strong_count(&child),
             1,
             "strong_count is incorrect,{}",
             Arc::strong_count(&child)
         );
-        found_pid as isize
+        Ok(found_pid)
     } else {
-        -2
+        return Err(SysErrNo::EAGAIN);
     }
     // ---- release current PCB automatically
 }
@@ -295,7 +333,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().get_pid()
@@ -319,7 +357,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
             i += 1;
         }
     }
-    0
+    Ok(0)
 }
 // pub fn sys_gettimeofday(tp: usize, tz: usize) -> isize {
 //     if tp == 0 {
@@ -338,23 +376,20 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 //     0
 // }
 
-pub fn sys_exitgroup(exit_code: i32) -> isize {
+pub fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
         current_task().get_pid()
     );
     exit_current_and_run_next(exit_code);
-       0
+    Ok(0)
 }
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info ",
-        current_task().get_pid()
-    );
-    -1
+pub fn sys_task_info(_ti: *mut TaskInfo) -> SyscallRet {
+    trace!("kernel:pid[{}] sys_task_info ", current_task().get_pid());
+    Ok(0)
 }
 
 // /// YOUR JOB: Implement mmap.
@@ -413,34 +448,39 @@ pub async fn sys_mmap(
     flags: u32,
     fd: usize,
     off: usize,
-) -> isize {
-    
+) -> SyscallRet {
     //需要有严格的判断返回错误的顺序！！！
-     // 0. flags 不能全 0
-     if flags == 0 {
-        return SysErrNo::EINVAL as isize;
+    // 0. flags 不能全 0
+    if flags == 0 {
+        return Err(SysErrNo::EINVAL);
     }
-    let flags = MmapFlags::from_bits(flags).unwrap();
+    let flags = match MmapFlags::from_bits(flags) {
+        Some(f) => f,
+        None => return Err(SysErrNo::EINVAL),
+    };
 
-    // // 1. 长度不能为 0
-    // if len == 0 {
-    //     return SysErrNo::EINVAL as isize;
-    // }
-    // // 2. 偏移量必须页对齐
-    // if off % PAGE_SIZE != 0 {
-    //     return SysErrNo::EINVAL as isize;
-    // }
+    // 1. 长度不能为 0
+    if len == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    // 2. 偏移量必须页对齐
+    if off % PAGE_SIZE != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
 
     // 3. 匿名映射 | 文件映射：fd 检查
     let anon = flags.contains(MmapFlags::MAP_ANONYMOUS);
     if !anon {
         // 非匿名必须提供合法 fd
         if fd == usize::MAX {
-            return SysErrNo::EBADF as isize;
+            return Err(SysErrNo::EBADE);
         }
     }
     // 4. prot -> MapPermission
-    let mmap_prot = MmapProt::from_bits(prot).unwrap();
+    let mmap_prot = match MmapProt::from_bits(prot) {
+        Some(f) => f,
+        None => return Err(SysErrNo::EINVAL),
+    };
     let map_perm: MapPermission = mmap_prot.into();
     debug!(
         "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
@@ -448,7 +488,7 @@ pub async fn sys_mmap(
     );
     // 5. MAP_FIXED 且 addr == 0 禁止
     if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
-        return SysErrNo::EPERM as isize;
+        return Err(SysErrNo::EPERM);
     }
 
     // 6. 计算页对齐后的长度和页数
@@ -458,24 +498,24 @@ pub async fn sys_mmap(
     let proc = current_process();
     let mut ms = proc.memory_set.lock();
 
-    let fd_table =proc.fd_table.lock();
+    let fd_table = proc.fd_table.lock();
     // ——————————————————————————————————————————
     // 7. 如果是文件映射，要检查文件权限和 offset
     let file = if !anon {
         // 7.1 拿到文件对象
-        let file = match fd_table.get(fd).unwrap() {
-            Some(f) => f,
-            None    => return SysErrNo::EBADF as isize,
+        let file = match fd_table.get(fd) {
+            Some(f) => f.clone().unwrap(),
+            None => return Err(SysErrNo::EBADF),
         };
         // 7.2 写映射需可写权限
-        if map_perm.contains(MapPermission::W) && !file.writable().await.unwrap() {
-            return SysErrNo::EACCES as isize;
+        if map_perm.contains(MapPermission::W) && !file.writable().await? {
+            return Err(SysErrNo::EACCES);
         }
         // 7.3 offset 超出文件长度？
         if off > file.fstat().st_size as usize {
-            return SysErrNo::EINVAL as isize;
+            return Err(SysErrNo::EINVAL);
         }
-        
+
         unimplemented!();
         Some(file.clone())
     } else {
@@ -484,43 +524,42 @@ pub async fn sys_mmap(
 
     let va = VirtAddr::from(addr);
     let vpn = va.floor();
-    let end_vpn = VirtPageNum::from( vpn.0+pages);
-    let range=core::ops::Range { start: (vpn), end: (end_vpn)};
+    let end_vpn = VirtPageNum::from(vpn.0 + pages);
+    let range = core::ops::Range {
+        start: (vpn),
+        end: (end_vpn),
+    };
     // ——————————————————————————————————————————
     // 8. 按 MAP_FIXED / MAP_FIXED_NOREPLACE / hint / 自动选择地址
     let base = if flags.contains(MmapFlags::MAP_FIXED) {
         // 8.1 强制定位：先 munmap 冲突区
 
-        
-        if ms.areatree.is_overlap(&range )
-            {
+        if ms.areatree.is_overlap(&range) {
+            ms.munmap(vpn, end_vpn);
+        }
 
-                ms.munmap(vpn, end_vpn);
-            }
-        
         va
     } else if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
         // 8.2 不替换：如果冲突则失败
         if ms.areatree.is_overlap(&range) {
-
-            return SysErrNo::EEXIST as isize;
+            return Err(SysErrNo::EEXIST);
         }
         va
     } else {
         // 8.3 默认，从 addr 附近或全局搜索
-       match  ms.areatree.alloc_pages(pages){
-        Some(vpn) => {
-            VirtAddr::from(vpn)
-        },
-        None => {
-            warn!("[sys_mmap] no available gap for mapping {} pages from {:?}", pages, vpn);
-            return SysErrNo::ENOMEM as isize;
-        } 
-       } 
-       
+        match ms.areatree.alloc_pages(pages) {
+            Some(vpn) => VirtAddr::from(vpn),
+            None => {
+                warn!(
+                    "[sys_mmap] no available gap for mapping {} pages from {:?}",
+                    pages, vpn
+                );
+                return Err(SysErrNo::ENOMEM);
+            }
+        }
     };
-    if base.0>=MMAP_TOP{
-        return SysErrNo::ENOMEM as isize;
+    if base.0 >= MMAP_TOP {
+        return Err(SysErrNo::ENOMEM);
     }
     // ——————————————————————————————————————————
     // 9. 构造 VMA / MapArea
@@ -529,11 +568,10 @@ pub async fn sys_mmap(
         VirtAddr::from(base.0 + len),
         MapType::Framed,
         map_perm,
-        MapAreaType::Mmap,   // Option<Arc<File>>
-        
+        MapAreaType::Mmap, // Option<Arc<File>>
     );
 
-    debug!("[sys_mmap]mmap ok,base:{:#x}",base.0);
+    debug!("[sys_mmap]mmap ok,base:{:#x}", base.0);
 
     // 10. 特殊 flags 的额外处理
     if flags.contains(MmapFlags::MAP_POPULATE) {
@@ -555,35 +593,37 @@ pub async fn sys_mmap(
     flush_tlb();
 
     // 12. 返回映射基址
-    base.0 as isize 
+    Ok(base.0)
 }
 
-
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(start: usize, len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap ",
-        current_task().get_pid()
-    );
-    let start_va=VirtAddr::from(start);
-    let end_va= VirtAddr::from(start+len);
-    current_process().memory_set.lock().munmap(start_va.floor(),end_va.ceil() );
-    0
+pub fn sys_munmap(start: usize, len: usize) -> SyscallRet {
+    trace!("kernel:pid[{}] sys_munmap ", current_task().get_pid());
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start + len);
+    current_process()
+        .memory_set
+        .lock()
+        .munmap(start_va.floor(), end_va.ceil());
+    Ok(0)
 }
 
 /// change data segment size
-pub fn sys_sbrk(size: i32) -> isize {
-    trace!("kernel:pid[{}] sys_sbrk size:{:#x}", current_task().get_pid(),size);
-    if let Some(old_brk) = current_process().change_program_brk(size) {
-        old_brk as isize
-    } else {
-        -1
+pub fn sys_sbrk(size: i32) -> SyscallRet {
+    trace!(
+        "kernel:pid[{}] sys_sbrk size:{:#x}",
+        current_task().get_pid(),
+        size
+    );
+    match current_process().change_program_brk(size) {
+        Some(old_brk) => Ok(old_brk),
+        None => Err(SysErrNo::ENOMEM),
     }
 }
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(_path: *const u8) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().get_pid()
@@ -605,16 +645,12 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     //    add_task(tcb);
     //    return pid;
     // }
-    
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(prio: isize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_set_priority ",
-        current_task().get_pid()
-    );
+pub fn sys_set_priority(prio: isize) -> SyscallRet {
+    trace!("kernel:pid[{}] sys_set_priority ", current_task().get_pid());
 
     set_priority(&(*current_task().0), prio);
-    0
+    Ok(0)
 }

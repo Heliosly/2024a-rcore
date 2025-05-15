@@ -7,7 +7,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
+use crate::utils::error::{TemplateRet, SysErrNo, SyscallRet};
 
 use super::{  File,OSInode, OpenFlags, Stdin, Stdout};
 use core::ops::{Deref, DerefMut};
@@ -217,7 +217,7 @@ impl FdTable {
         self.get_ref().files.len()
     }
 
-    pub fn resize(&self, size: usize) -> GeneralRet {
+    pub fn resize(&self, size: usize) -> TemplateRet<()> {
         if size > self.get_soft_limit() {
             return Err(SysErrNo::EMFILE);
         }

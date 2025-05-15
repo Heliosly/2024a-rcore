@@ -26,6 +26,7 @@ use crate::utils::{backtrace, bpoint};
 pub use context::user_return;
 pub use context::TrapStatus;
 use core::arch::global_asm;
+use core::fmt::Debug;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
@@ -204,9 +205,13 @@ pub async fn user_task_top() -> i32 {
                     tf.sepc += 4;
                     let result = syscall(syscall_id, args).await;
 
-                    trace!("sys_call end result:{}", result);
+                    let result =match result {
+                        Ok(res) => res ,
+                        Err(err) =>     {debug!("[Syscall]Err:{}",err.str());-(err as isize) as usize    }      ,
+                    };
+                    trace!("[user_task_top]sys_call end result:{}", result);
 
-                    tf.regs.a0 = result as usize;
+                    tf.regs.a0 = result ;
 
                     // trace!("sys_call end1");
                     // 判断任务是否退出

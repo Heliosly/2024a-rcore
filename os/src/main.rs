@@ -22,6 +22,8 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(naked_functions)]
+
+#![feature(linked_list_cursors)]
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
@@ -80,7 +82,6 @@ pub fn setbootsp() {
        
     }
 }
-
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
