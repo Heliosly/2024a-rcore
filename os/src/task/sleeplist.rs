@@ -191,7 +191,7 @@ impl Future for SleepFuture {
 
         // 4. 设置任务状态 (使用 task_arc_for_waker_and_state)
         let mut state_guard = task_arc_for_waker_and_state.state_lock_manual();
-        if **state_guard == TaskStatus::Running || **state_guard == TaskStatus::Runable {
+        if **state_guard == TaskStatus::Running || **state_guard == TaskStatus::Runnable {
             **state_guard = TaskStatus::Blocked;
         } else if **state_guard == TaskStatus::Blocking {
             // 根据 wakeup_task，Blocking 会变 Waked。如果希望它能被 add_task，则需 Blocked

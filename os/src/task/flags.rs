@@ -60,7 +60,7 @@ pub enum WaitStatus {
 /// task status: UnInit, Ready, Running, Exited, Blocked, Zombie
 pub enum TaskStatus {
     Running = 0,
-    Runable = 1,
+    Runnable = 1,
     Blocking = 2,
     Waked = 3,
     Blocked = 4,

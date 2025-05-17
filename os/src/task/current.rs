@@ -241,14 +241,8 @@ pub fn current_task() -> CurrentTask {
 
 pub fn current_process()->ProcessRef{
 
-    let current_task = current_task();
-    let current_process = Arc::clone(
-        PID2PC
-            .lock()
-            .get(&current_task.get_pid())
-            .unwrap(),
-    );
-    current_process
+ current_task().get_process()
+   
 }
 
 

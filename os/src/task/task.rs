@@ -1,12 +1,13 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
-use super::{pid_alloc, yield_now, CloneFlags, PidHandle, TaskStatus};
+use super::{pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
 use crate::config::{MAX_FD, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{ FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
      VirtAddr, VirtPageNum,
 };
+use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::sync::MutexGuard;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
@@ -76,11 +77,13 @@ pub struct ProcessControlBlock {
     //     ///wait wakers
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     pub fd_table: Arc<Mutex<Vec<Option<FileDescriptor>>>>,
+    pub signal_shared_state: Mutex<ProcessSignalSharedState>,
     //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
 impl ProcessControlBlock {
 
+    
     /// 获取文件描述符表（fd_table）的长度。
     pub async  fn fd_len(&self) -> usize {
         self.fd_table.lock().await.len()
@@ -402,7 +405,15 @@ impl ProcessControlBlock {
              task.set_token(new_token);
         }
     }
+    pub async fn find_task_by_tid(&self,id:usize)->Option<TaskRef>{
+        self.tasks.lock().await
+        .iter()                             
+        .find(|t| t.id() == id)             
+        .cloned()
 }
+
+}
+//  Non    
 
     //         let a= *(self.task_status.lock().await) ;
     //         a== TaskStatus::Zombie
@@ -469,6 +480,8 @@ impl ProcessControlBlock {
             heap_bottom: AtomicUsize::new(heap_bottom as usize),
             program_brk: AtomicUsize::new(0),
             fd_table: Arc::new(Mutex::new(fd_table)),
+            
+            signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
         }
 
     }
@@ -512,6 +525,8 @@ impl ProcessControlBlock {
             main_task: Mutex::new(new_task.clone()),
             tasks: Mutex::new(vec![new_task.clone()]),
             fd_table: Arc::new(Mutex::new(fd_vec)),
+
+            signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
         };
         process_control_block.alloc_user_res().await;
         let mut user_sp = process_control_block.user_stack_top();
@@ -747,6 +762,22 @@ impl ProcessControlBlock {
             Arc::new(Mutex::new(MemorySet::from_existed_user(
                 self.memory_set.lock().await.deref(),
             )))
+
+            {
+                // 生成信号跳板
+                let signal_trampoline_vaddr: VirtAddr = (axconfig::SIGNAL_TRAMPOLINE).into();
+                let signal_trampoline_paddr =
+                    virt_to_phys((start_signal_trampoline as usize).into());
+                memory_set.lock().await.map_page_without_alloc(
+                    signal_trampoline_vaddr,
+                    signal_trampoline_paddr,
+                    MappingFlags::READ
+                        | MappingFlags::EXECUTE
+                        | MappingFlags::USER
+                        | MappingFlags::WRITE,
+                )?;
+            }
+            memory_set
         };
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
             self.parent()
@@ -820,6 +851,7 @@ impl ProcessControlBlock {
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
                 user_stack_top: AtomicUsize::new(0),
 
+                signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
                 tasks: Mutex::new(Vec::new()),
             });
             if user_stack==0{
@@ -970,8 +1002,10 @@ pub struct TaskControlBlock {
     /// 是否是所属进程下的主线程
     is_leader: AtomicBool,
     process_id: AtomicUsize,
+   pub  signal_state: Mutex<TaskSignalState>,
     pub page_table_token: UnsafeCell<usize>,
     // pub cpu_set: AtomicU64,
+
 }
 impl TaskControlBlock {
     
@@ -996,8 +1030,8 @@ impl TaskControlBlock {
             process_id: AtomicUsize::new(process_id),
             page_table_token: UnsafeCell::new(page_table_token),
             trap_cx: UnsafeCell::new(Some(trap_cx)),
-            state: Spin::new(TaskStatus::Runable),
-            
+            state: Spin::new(TaskStatus::Runnable),
+            signal_state: Mutex::new(TaskSignalState::default()), 
         }
     }
     ///
@@ -1064,6 +1098,14 @@ impl TaskControlBlock {
             *self.page_table_token.get() = token;
         }
     }
+pub fn get_process(&self)->ProcessRef{
+    Arc::clone(
+        PID2PC
+            .lock()
+            .get(&self.get_pid())
+            .unwrap(),
+    )
+}
 }
 
 pub fn new_fd_with_stdio()->Vec<Option<FileDescriptor>>{

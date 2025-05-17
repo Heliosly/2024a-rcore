@@ -268,3 +268,39 @@ impl SigInfo {
         }
     }
 }
+/// 恢复被信号处理函数打断前的 TrapFrame，准备返回用户态。
+/// 如果存在 saved_trap，则返回 true（表示已装载），否则返回 false。
+#[no_mangle]
+pub async fn load_trap_for_signal() -> bool {
+    // 1. 找到当前任务
+    let task = current_task();
+    // 2. 拿到它的信号状态
+    let mut sig_state = task.signal_state.lock().await;
+
+    // 3. 如果之前有保存的 TrapFrame，就拿出来
+    if let Some(saved_frame) = sig_state.last_trap_frame.take() {
+        unsafe {
+            // 4. 拿到实际用于中断/异常的内核栈上的 TrapFrame 指针
+            //    假设你有这样的方法：
+            let now_trap_frame: &mut TrapFrame = task.utrap_frame().unwrap(); 
+            // TODO: 如果你的系统用别的名字或 API，请替换上面这一行
+
+            // 5. 拷贝回去，恢复原先全部寄存器状态
+            *now_trap_frame = saved_frame;
+
+            // 6. 如果当时用的是 SA_SIGINFO（sig_info = true），
+            //    需要从用户栈上的 SignalUserContext 里再拿一次 PC
+            if sig_state.sig_info {
+                // 用户态信号上下文结构在用户栈顶
+                let sp = now_trap_frame.get_sp();
+                let user_ctx = &*(sp as *const SignalUserContext);
+                let pc = user_ctx.get_pc();
+                now_trap_frame.set_pc(pc);
+            }
+        }
+        true
+    } else {
+        // 没有未处理的信号上下文
+        false
+    }
+}

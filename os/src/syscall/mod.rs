@@ -66,6 +66,7 @@ const SYSCALL_UNAME:usize = 160;
 const SYSCALL_FSTATAT :usize =79;
 const SYSCALL_IOCTL :usize =29;
 const SYSCALL_FCNTL:usize =25;
+const SYSCALL_SIGNALRET:usize =139;
 mod fs;
 mod process;
 mod signal;
@@ -75,7 +76,8 @@ use fs::*;
 use process::*;
 use other::*;
 
-use crate::{fs::Kstat , signal::signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
+use crate::{fs::Kstat , timer::TimeVal, utils::error::SyscallRet};
+
 
 use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
@@ -100,17 +102,17 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_SBRK => sys_sbrk(args[0] as i32).await,
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
-        SYSCALL_SIGPROCMASK => sys_sigprocmask(
-            args[0] as usize,
-            args[1] as *const SigSet,
-            args[2] as *mut SigSet,
-        ),
+        // SYSCALL_SIGPROCMASK => sys_sigprocmask(
+        //     args[0] as usize,
+        //     args[1] as *const SigSet,
+        //     args[2] as *mut SigSet,
+        // ),
     
-        SYSCALL_RT_SIGACTION => sys_rt_sigaction(
-            args[0],
-            args[1] as *const SigAction,
-            args[2] as *mut SigAction,
-        ),
+        // SYSCALL_RT_SIGACTION => sys_rt_sigaction(
+        //     args[0],
+        //     args[1] as *const SigAction,
+        //     args[2] as *mut SigAction,
+        // ),
         SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_CLONE => sys_clone(
          args

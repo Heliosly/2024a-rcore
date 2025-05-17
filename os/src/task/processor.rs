@@ -6,13 +6,9 @@
 
 use super::current::CurrentTask;
 use super::task::TaskControlBlock;
-use super::ProcessControlBlock;
 use super::{schedule, TaskStatus};
-use crate::mm::{activate_by_token, KERNEL_PAGE_TABLE_TOKEN, KERNEL_SPACE};
-use crate::sync::{Mutex, UPSafeCell};
+use crate::mm::activate_by_token;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
-use crate::task::schedule::CFSTask;
-use crate::task::task::new_fd_with_stdio;
 use crate::task::{put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
 use alloc::boxed::Box;
@@ -22,7 +18,6 @@ use core::panic;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use lazy_init::LazyInit;
-use lazy_static::*;
 use schedule::CFScheduler;
 use spin::mutex::Mutex as Spin;
 /// Processor management structure
@@ -95,13 +90,13 @@ pub fn run_task2(mut curr: CurrentTask) {
                         }
                     }
 
-                    **state = TaskStatus::Runable;
+                    **state = TaskStatus::Runnable;
                     put_prev_task(curr.clone());
                     CurrentTask::clean_current();
                 }
 
                 // 处于 Runable 状态的任务一定处于就绪队列中，不可能在 CPU 上运行
-                TaskStatus::Runable => panic!("Runable ? cannot be peding"),
+                TaskStatus::Runnable => panic!("Runable ? cannot be peding"),
                 // 等待 Mutex 等进入到 Blocking 状态，但还在这个 CPU 上运行，
                 // 此时还没有被唤醒，因此将状态修改为 Blocked，等待被唤醒
                 TaskStatus::Blocking => {

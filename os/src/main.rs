@@ -58,6 +58,7 @@ use config::KERNEL_DIRECT_OFFSET;
 use trap::user_task_top;
 
 global_asm!(include_str!("entry.asm"));
+global_asm!(include_str!("signal.S"));
 /// clear BSS segment
 fn clear_bss() {
     extern "C" {
