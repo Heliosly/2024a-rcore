@@ -28,30 +28,34 @@ mod task;
 pub(crate) mod waker;
 pub(crate) mod sleeplist;
 mod yieldfut;
+use alloc::boxed::Box;
 // mod timelist;
 use alloc::vec;
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use alloc::string::{String, ToString};
+use lazy_init::LazyInit;
+use core::future::Future;
 pub use core::mem::ManuallyDrop;
+use core::task::{Context, Poll};
 pub use current::{
     current_process, current_task, current_task_may_uninit, current_token,current_task_id,
-    CurrentTask,
+    CurrentTask,current_task_id_may_uninit,
 };
 pub use flags::{CloneFlags,TaskStatus};
 
 pub use id::{pid_alloc, PidHandle, RecycleAllocator};
 pub use kstack::{TaskStack,current_stack_top};
-pub use processor::{init, run_task2, run_tasks, Processor};
+pub use processor::{init, run_task2};
 pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick,Task,TaskRef};
 pub use task::ProcessControlBlock;
 pub use yieldfut::yield_now;
+pub use waker::custom_noop_waker;
 
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
 
 
-use lazy_static::*;
 
 use spin::mutex::Mutex as Spin;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
@@ -85,7 +89,7 @@ pub fn suspend_current_and_run_next() {
 pub const IDLE_PID: usize = 0;
 
 /// Exit the current 'Running' task and run the next task in task list.
-pub fn exit_current_and_run_next(exit_code: i32) {
+pub async  fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
     let task = current_task();
 
@@ -101,10 +105,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let tid = task.id.as_usize();
     if task.is_leader() {
         if task.get_pid() != 1 {
-            for child in process.children.lock().iter() {
+            for child in process.children.lock().await.iter() {
                 child
                     .set_parent(INITPROC.pid.0) ;
-                INITPROC.children.lock().push(child.clone());
+                INITPROC.children.lock().await.push(child.clone());
             }
 
         } else {
@@ -116,16 +120,16 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // ++++++ release parent PCB
 
-    process.children.lock().clear();
+    process.children.lock().await.clear();
     // deallocate user space
-    process.memory_set.lock().recycle_data_pages();
+    process.memory_set.lock().await.recycle_data_pages();
     // drop file descriptors
-    process.fd_table.lock().clear();
+    process.fd_table.lock().await.clear();
 
     } 
     TID2TC.lock().remove(&tid);
     // 从进程中删除当前线程
-    let mut tasks = process.tasks.lock();
+    let mut tasks = process.tasks.lock().await;
     let len = tasks.len();
     for index in 0..len {
         if tasks[index].id.as_usize() == tid {
@@ -139,31 +143,60 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // drop task manually to maintain rc correctly
     drop(task); 
 }
-static INITPROC_STR: &str =          "cosshell";
 
+// static INITPROC_STR: &str =          "ch5b_initproc";
+// static INITPROC_STR: &str =          "ch2b_power_3";
 // static INITPROC_STR: &str =          "musl/basic/yield";
 //  static INITPROC_STR: &str =          "musl/busybox";
-lazy_static! {  
+
+//  static INITPROC_STR: &str =          "cosmmap_clone";
+ static INITPROC_STR: &str =          "ch5b_usertest";
+pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
     /// but we have user_shell, so we don't need to change it.
-    pub static ref INITPROC: ProcessRef= Arc::new({
-        let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY,0o777).unwrap();
-        let v = inode.file().unwrap().read_all();
-        ProcessControlBlock::new(v.as_slice(),"/".to_string(),
-        &get_args("busybox sh".as_bytes()),&mut get_envs())
 
-    });
+//  pub  static KERNEL_IDLE_PROCESS:LazyInit<ProcessRef> = LazyInit::new();
 
-}
 
-///Add init process to the manager
-pub fn add_initproc() {
-    PID2PC.lock().insert(INITPROC.pid.0, INITPROC.clone());
-    // INITPROC.inner_exclusive_access().memory_set.activate();
-    trace!("addInITPROC ok");
-}
+    pub fn add_initproc() {
+        // 打开 init 可执行文件，并读取所有字节
+        let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY, 0o777).unwrap();
+        let data = inode.file().unwrap().read_all();
+    
+        // 1. 创建 PCB future
+        let mut envs = get_envs(); // 注意：new 需要 &mut envs
+        let binding = get_args("".as_bytes());
+        let pcb_fut = ProcessControlBlock::new(
+            data.as_slice(),
+            "/".to_string(),
+            &binding,
+            &mut envs,
+        );
+    
+        // 2. Pin 到堆上
+        let mut pinned = Box::pin(pcb_fut);
+    
+        // 3. 准备 waker 和 context
+        let waker = custom_noop_waker();
+        let mut ctx = Context::from_waker(&waker);
+    
+        // 4. Poll 一次
+        let pcb_inner = match pinned.as_mut().poll(&mut ctx) {
+            Poll::Ready(pcb) => pcb,
+            Poll::Pending => {
+                panic!("KERNEL_ASSERTION_FAILURE: ProcessControlBlock::new returned Pending");
+            }
+        };
+    
+        // 5. 用结果初始化
+        let pcb = Arc::new(pcb_inner);
+        INITPROC.init_by(pcb.clone());
+        PID2PC.lock().insert(INITPROC.pid.0, pcb);
+    
+        trace!("add_initproc ok");
+    }
 #[allow(unused)]
 /// 分割命令行参数，支持双引号
 fn get_args(command_line: &[u8]) -> Vec<String> {

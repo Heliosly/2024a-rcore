@@ -2,7 +2,7 @@ use core::{mem::ManuallyDrop, ops::Deref, task::Waker};
 
 use alloc::sync::Arc;
 
-use super::{schedule::{Task, TaskRef},  ProcessRef, TaskStatus, PID2PC};
+use super::{ schedule::{Task, TaskRef}, ProcessRef, TaskStatus, PID2PC};
 
 
 #[inline]
@@ -252,19 +252,29 @@ pub fn current_process()->ProcessRef{
 }
 
 
-pub fn current_token()->usize{
+pub async  fn current_token()->usize{
     let current_task = current_task();
   
         PID2PC
             .lock()
             .get(&current_task.get_pid())
-            .unwrap().get_user_token()
+            .unwrap().get_user_token().await
    
     
 }
 
 pub fn current_task_id()->usize{
     current_task().id()
+}
+
+pub fn current_task_id_may_uninit() -> usize {
+    match CurrentTask::try_get(){
+        Some(curr)=>{
+            curr.id()
+        },
+
+        None =>1,
+    }
 }
 
 

@@ -2,6 +2,7 @@
 use core::ops::{Deref, DerefMut};
 use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET, MMAP_PGNUM_TOP, MMAP_TOP, USER_HEAP_SIZE};
 use crate::fs::{map_dynamic_link_file, open_file, OpenFlags, NONE_MODE};
+use crate::mm::{page_table, KERNEL_PAGE_TABLE_TOKEN, KERNEL_SPACE};
 use crate::syscall::flags::MmapProt;
 use crate::task::aux::{Aux, AuxType};
 use crate::utils::bpoint;
@@ -10,16 +11,13 @@ use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{/*PhysAddr,*/ PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
-use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use xmas_elf::ElfFile;
 use core::arch::asm;
-use core::cmp::min;
+use core::cmp::{max, min};
 use core::ops::Range;
-use lazy_static::*;
 use riscv::register::satp;
 
 extern "C" {
@@ -37,11 +35,7 @@ extern "C" {
     // fn strampoline();
 }
 
-lazy_static! {
-    /// The kernel's initial memory mapping(kernel address space)
-    pub static ref KERNEL_SPACE: Arc<UPSafeCell<MemorySet>> =
-        Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
-}
+   
 
 /// Map area type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,11 +57,6 @@ pub enum MapAreaType {
     /// MMIO(for kernel)
     MMIO,
 }
-/// the kernel token
-pub fn kernel_token() -> usize {
-    KERNEL_SPACE.exclusive_access().token()
-}
-
 /// address space
 pub struct MemorySet {
     ///根页表位置
@@ -95,7 +84,10 @@ impl DerefMut for VmAreaTree {
 }
 impl VmAreaTree {
     pub fn push(&mut self,area:MapArea){
+        // trace!("[VmAreaTree] push area: l:{:#x} r:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0 ); 
+      
          self.areas.insert(area.vpn_range.get_start(), area);
+       
     }
     /// 创建一个空的树
     pub fn new() -> Self {
@@ -191,7 +183,6 @@ impl VmAreaTree {
     ///使用一个vpn去找对应存在的area，返回area的start_va
     pub fn find_area(&self, vpn: VirtPageNum) -> Option<VirtPageNum> {
         // 将虚拟地址转换为页号
-        bpoint();
         // 在BTreeMap中查找最后一个起始页号 <= 当前页号的区域
         self.areas.range(..=vpn).next_back().and_then(|(viddr, area)| {
             // 检查该区域是否包含目标页号
@@ -206,6 +197,7 @@ impl VmAreaTree {
     /// 从 `hint` 向下寻找能容纳 `npages` 页的第一个空闲区
     pub fn find_gap_from(&self, hint: VirtPageNum, npages: usize) -> Option<VirtPageNum> {
         let mut end_pn = hint.0;
+        
         // 遍历所有 start < hint 的区域，倒序（从高地址到低地址）
         for (start, area) in self.areas.range(..hint).rev() {
             let s = start.0;
@@ -238,11 +230,6 @@ impl VmAreaTree {
         }
     }
 }
-/// 简单的页对齐工具
-fn align_up(x: usize, align: usize) -> usize {
-    (x + align - 1) / align * align
-}
-
 impl MemorySet {
 
    /// unmap 拆分 这个range两端的area
@@ -709,6 +696,8 @@ log::info!("[map_elf] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, start_va=
         // 
         // trace!("activated");
     }
+   
+     
     /// Translate a virtual page number to a page table entry
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
 
@@ -943,25 +932,24 @@ impl From<MmapProt> for MapPermission{
 pub fn remap_test() {
     
     info!("[kernel]:remap testing");
-    let mut kernel_space = KERNEL_SPACE.exclusive_access();
+    let page_table=PageTable::from_token(*KERNEL_PAGE_TABLE_TOKEN);
     let mid_text: VirtAddr = (stext as usize + (etext as usize - stext as usize) / 2).into();
     let mid_rodata: VirtAddr =
         (srodata as usize + (erodata as usize - srodata as usize) / 2).into();
     let mid_data: VirtAddr = (sdata as usize + (edata as usize - sdata as usize) / 2).into();
-    assert!(!kernel_space
-        .page_table
+    assert!(!
+        page_table
         .translate(mid_text.floor())
         .unwrap()
         .writable(),);
     debug!("text pass");
-    assert!(!kernel_space
-        .page_table
+    assert!(!
+        page_table
         .translate(mid_rodata.floor())
         .unwrap()
         .writable(),);
     debug!("rodata pass");
-    assert!(!kernel_space
-        .page_table
+    assert!(!page_table
         .translate(mid_data.floor())
         .unwrap()
         .executable(),);

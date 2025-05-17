@@ -8,10 +8,13 @@ use super::current::CurrentTask;
 use super::task::TaskControlBlock;
 use super::ProcessControlBlock;
 use super::{schedule, TaskStatus};
-use crate::sync::UPSafeCell;
+use crate::mm::{activate_by_token, KERNEL_PAGE_TABLE_TOKEN, KERNEL_SPACE};
+use crate::sync::{Mutex, UPSafeCell};
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
-use crate::task::{current_process, put_prev_task};
-use crate::trap::{disable_irqs, enable_irqs, user_return, TrapStatus};
+use crate::task::schedule::CFSTask;
+use crate::task::task::new_fd_with_stdio;
+use crate::task::{put_prev_task };
+use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
@@ -21,57 +24,19 @@ use core::task::{Context, Poll};
 use lazy_init::LazyInit;
 use lazy_static::*;
 use schedule::CFScheduler;
-use spin::mutex::Mutex;
+use spin::mutex::Mutex as Spin;
 /// Processor management structure
-pub struct Processor {
-    ///The task currently executing on the current processor
-    current: Option<Arc<ProcessControlBlock>>,
-}
-impl Processor {
-    pub fn set_current(&mut self, task: Arc<ProcessControlBlock>) {
-        self.current = Some(task);
-    }
-    ///Create an empty Processor
-    pub fn new() -> Self {
-        Self { current: None }
-    }
 
-    //Get mutable reference to `idle_task_cx`
-
-    ///Get current task in moving semanteme
-    pub fn take_current(&mut self) -> Option<Arc<ProcessControlBlock>> {
-        self.current.take()
-    }
-
-    ///Get current task in cloning semanteme
-    pub fn current(&self) -> Option<Arc<ProcessControlBlock>> {
-        self.current.as_ref().map(Arc::clone)
-    }
-    ///Get current task ref
-    pub fn current_ref(&self) -> Option<&Arc<ProcessControlBlock>> {
-        self.current.as_ref()
-    }
-}
-
-lazy_static! {
-    pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
-}
-pub static KERNEL_SCHEDULER: LazyInit<Arc<Mutex<CFScheduler<TaskControlBlock>>>> = LazyInit::new();
+pub static KERNEL_SCHEDULER: LazyInit<Arc<Spin<CFScheduler<TaskControlBlock>>>> = LazyInit::new();
 pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>> =
     LazyInit::new();
-///The main part of process execution and scheduling
-///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
-pub fn run_tasks() {
-    loop {
-        panic!("undo");
-    }
-}
+
 ///runtask with future;
 /// IMPO
 pub fn run_task2(mut curr: CurrentTask) {
     let waker = curr.waker();
     let cx = &mut Context::from_waker(&waker);
-    current_process().memory_set.lock().activate();
+    activate_by_token(unsafe { *curr.page_table_token.get() });
 
     //delete active(conflict)
 
@@ -120,7 +85,11 @@ pub fn run_task2(mut curr: CurrentTask) {
                                 tf.regs.sp,
                                 curr.get_pid()
                             );
-
+                            // trace!("ret tf");
+                            //  trace!(
+                            //                                 "return trapcontext :{:#?}",
+                            //                                 tf
+                            //                             );
                             enable_irqs();
                             user_return(tf);
                         }
@@ -155,7 +124,7 @@ pub fn run_task2(mut curr: CurrentTask) {
         }
     }
 }
-///Return to idle control flow for new scheduling
+//Return to idle control flow for new scheduling
 // pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 //     let mut processor = PROCESSOR.exclusive_access();
 //     let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
@@ -174,5 +143,25 @@ pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>)
     // kstack::alloc_current_stack();
     UTRAP_HANDLER.init_by(utrap_handler);
     let scheduler = CFScheduler::new();
-    KERNEL_SCHEDULER.init_by(Arc::new(Mutex::new(scheduler)));
+    KERNEL_SCHEDULER.init_by(Arc::new(Spin::new(scheduler)));
+    // let task = Arc::new(CFSTask::new(TaskControlBlock::new(
+    //     false,
+    //     1,
+    //     *KERNEL_PAGE_TABLE_TOKEN,
+    //     Box::pin(async move {
+    //         debug!("[idle kernel thread] ");
+    //         0xdead as i32
+    //     }),
+    //     Box::new(TrapContext::new()),
+    // )));
+    // // unsafe { CurrentTask::init_current(task.clone()) };
+    // let pcb = Arc::new(ProcessControlBlock::spawn(
+    //     0,
+    //     KERNEL_SPACE.clone(),
+    //     0,
+    //     new_fd_with_stdio(),
+    //     "".into(),
+    //     Mutex::new(task),
+    // ));
+    // KERNEL_IDLE_PROCESS.init_by(pcb);
 }

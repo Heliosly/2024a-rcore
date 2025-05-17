@@ -3,10 +3,7 @@
 use super::{PhysAddr, PhysPageNum};
 use crate::config::MEMORY_END;
 use crate::mm::address::KernelAddr;
-use crate::sbi::console_getchar;
-use crate::sync::UPSafeCell;
-use crate::task::current_task;
-use crate::utils::bpoint;
+
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
 use core::fmt::{self, Debug, Formatter};

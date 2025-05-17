@@ -8,7 +8,8 @@ use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use core::task::{Context, Poll};
 
 use crate::sync::waitqueue::WaitQueue;
-use crate::task::current_task_id;
+use crate::task::{current_task_id, current_task_id_may_uninit};
+use crate::utils::bpoint;
 
 #[must_use = "If unused, the lock will be immediately unlocked"]
 pub struct Mutex<T: ?Sized> {
@@ -83,7 +84,7 @@ impl<T: ?Sized> Mutex<T> {
     /// 强制解锁。调用者必须确保这是安全的操作，例如当前任务确实是锁的拥有者。
     /// （通常在 MutexGuard::drop 内部调用，此时 Guard 的存在就暗示了所有权）
     pub unsafe fn force_unlock(&self) {
-        let releaser_id = current_task_id(); // 获取当前尝试解锁的任务ID
+        let releaser_id = current_task_id_may_uninit(); // 获取当前尝试解锁的任务ID
         let previous_owner_id = self.owner_task_id.swap(0, AtomicOrdering::Release);
 
         // 只有当锁之前确实被持有 (previous_owner_id != 0)
@@ -131,43 +132,51 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     }
 }
 
-// MutexGuard Deref, DerefMut, Debug, Drop impls (保持不变)
 impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
     type Target = T;
+
     #[inline(always)]
     fn deref(&self) -> &T {
         unsafe {
             match self.data_ptr {
-                Some(ptr) => &*ptr,
-                None => panic!("MutexGuard: Dereferenced before lock acquired"),
+                Some(ptr) => &*ptr, // 如果已经加锁，data_ptr 是 Some，直接解引用返回引用
+                None => panic!("MutexGuard: Dereferenced before lock acquired"), // 未加锁时解引用，panic 防止未定义行为
             }
         }
     }
 }
+
 impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         unsafe {
             match self.data_ptr {
-                Some(ptr) => &mut *ptr,
-                None => panic!("MutexGuard: Mutable dereference before lock acquired"),
+                Some(ptr) => &mut *ptr, // 已加锁，返回可变引用
+                None => {
+                    bpoint();
+                    panic!("MutexGuard: Mutable dereference before lock acquired")
+                    // 未加锁时尝试可变访问，panic
+                }
             }
         }
     }
 }
+
 impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.data_ptr {
-            Some(_) => fmt::Debug::fmt(&**self, f),
-            None => write!(f, "MutexGuard {{ <lock not acquired> }}"),
+            Some(_) => fmt::Debug::fmt(&**self, f), // 如果加锁成功，打印内部数据的 Debug 格式
+            None => write!(f, "MutexGuard {{ <lock not acquired> }}"), // 否则提示“未加锁”
         }
     }
 }
+
 impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         if self.data_ptr.is_some() {
-            unsafe { self.lock.force_unlock() }
+            unsafe { self.lock.force_unlock() } // 如果加锁成功，释放锁
         }
+        // 若未加锁，无需释放
     }
 }
 
@@ -177,7 +186,6 @@ impl<'a, T: ?Sized + 'a> Future for MutexGuard<'a, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let guard_mut_ref = self.get_mut();
 
-        
         // 如果 data_ptr 已经是 Some，说明这个 MutexGuard 实例已经持有锁（通常来自于 try_lock 或者上一次 .poll() 返回的 Guard）。
         // 这时我们把它从旧的 Guard（self）里取出来，创建一个新的 MutexGuard 返回给调用者，并结束。
         // 这么做可以避免旧的 self 在 Drop 时把锁释放掉——只有真正被返回的那个 Guard 持有释放责任。
@@ -189,7 +197,8 @@ impl<'a, T: ?Sized + 'a> Future for MutexGuard<'a, T> {
             });
         }
 
-        let current_id = current_task_id();
+        let current_id = current_task_id_may_uninit();
+
         if current_id == 0 {
             panic!("Task ID from current_task_id() cannot be 0 for Mutex operations.");
         }
@@ -202,7 +211,6 @@ impl<'a, T: ?Sized + 'a> Future for MutexGuard<'a, T> {
                 AtomicOrdering::Acquire,
                 AtomicOrdering::Relaxed,
             ) {
-                
                 Ok(_) => {
                     // 成功获取锁
                     guard_mut_ref.data_ptr = Some(guard_mut_ref.lock.data.get());

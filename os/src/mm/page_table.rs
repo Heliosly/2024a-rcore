@@ -2,14 +2,14 @@
 
 
 
-use super::KernelAddr;
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,memory_set::KERNEL_SPACE};
+use super::{KernelAddr, KERNEL_PAGE_TABLE_PPN};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
 use crate::config;
-use crate::utils::error::{GeneralRet, SysErrNo, TemplateRet};
+use crate::utils::error::{ SysErrNo, TemplateRet};
 use crate::utils::is_aligned_to;
 bitflags! {
     /// page table entry flags
@@ -86,7 +86,7 @@ impl PageTable {
     ///Create new PageTable from global kernel space
     pub fn new_from_kernel() -> Self {
         let frame = frame_alloc().unwrap();
-        let global_root_ppn = KERNEL_SPACE.exclusive_access().page_table.root_ppn ;
+        let global_root_ppn = *KERNEL_PAGE_TABLE_PPN ;
 
         // Map kernel space
         // Note that we just need shallow copy here
@@ -102,6 +102,9 @@ impl PageTable {
             root_ppn: frame.ppn(),
             frames: vec![frame],
         }
+    }
+    pub fn root_ppn(&self)->PhysPageNum{
+        self.root_ppn
     }
     /// Create a new page table
     pub fn new() -> Self {
@@ -215,22 +218,6 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     v
 }
 
-
-
-#[allow(unused)]
-
-/// Translate a ptr[u8] array through page table and return a mutable reference of T
-/// 不支持跨页
-pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static mut T> {
-    let page_table = PageTable::from_token(token);
-    let va = ptr as usize;
-    match  page_table
-        .translate_va(VirtAddr::from(va)){
-        Some(pa)=> Ok(pa.get_mut()),
-        None => Err(SysErrNo::ENOMEM),
-    }
-        
-}
 
 /// An abstraction over a buffer passed from user space to kernel space
 pub struct UserBuffer {
@@ -398,25 +385,23 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
     if !crosses_page_boundary {
         // 数据完全在单页内
         // 如果对齐允许，可以尝试直接写入
-        // `translated_refmut` 理应能处理对齐检查或者使用 `write_unaligned`
-        // 为简单起见，假设 `translated_refmut` 工作正常
+     
         // 若 `T` 对齐要求较高且 `ptr` 可能不对齐，`ptr.write_unaligned(data)` 更安全
-        // 但 `translated_refmut` 返回 `&mut T` 意味着保证对齐
         
-        // 复用已有的 translated_refmut 是好的选择
-        // 这里假设 `translated_refmut` 返回指向物理内存的可变引用
+        
+        
         // 如果没有 `translated_refmut`，则需要自行写物理地址
         // 检查从 start_va 到 start_va + data_size - 1 所有字节均映射
-        for offset in 0..data_size {
-            if page_table.translate_va(start_va + offset).is_none() {
-                return Err(PutDataError::TranslationFailed(start_va + offset));
-            }
-        }
-        // 写入物理内存地址
-        let dest_phys_ptr = start_pa.get_mut::<T>();
+        // for offset in 0..data_size {
+        //     if page_table.translate_va(start_va + offset).is_none() {
+        //         return Err(PutDataError::TranslationFailed(start_va + offset));
+        //     }
+        // }
+     
+      
         // 安全：调用者保证 ptr 对 T 来说有效且可写
-        unsafe { ptr::write(dest_phys_ptr, data) };
-
+        unsafe { ptr::write(start_pa.get_mut(), data) };
+        
         // 或者：
         // let target_mut_ref: &mut T = &mut *start_pa.as_mut_ptr::<T>();
         // *target_mut_ref = data;
@@ -543,6 +528,22 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
 
 
 
+#[allow(unused)]
+
+/// Translate a ptr[u8] array through page table and return a mutable reference of T
+/// 不支持跨页
+pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static mut T> {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+    match  page_table
+        .translate_va(VirtAddr::from(va)){
+        Some(pa)=> Ok(pa.get_mut()),
+        None => Err(SysErrNo::ENOMEM),
+    }
+        
+}
+
+
 /// Translates a virtual address `ptr` from the address space identified by `token`
 /// and returns a reference to `T`.
 ///
@@ -569,7 +570,8 @@ pub fn translated_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
         let page_table = PageTable::from_token(token);
         page_table.translate_va(va).ok_or(TranslateRefError::TranslationFailed(va))?;
         // SAFETY: For ZSTs, creating a reference from a dangling but aligned pointer is allowed.
-        return Ok(unsafe { &*(core::ptr::null::<T>() as *const T) }); // Or use ptr::NonNull::dangling()
+        // return Ok(unsafe { &*(core::ptr::null::<T>() as *const T) }); // Or use ptr::NonNull::dangling()
+        return Ok(unsafe { &*core::ptr::NonNull::dangling().as_ptr() });
     }
 
     let page_table = PageTable::from_token(token);

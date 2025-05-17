@@ -89,7 +89,6 @@ pub fn rust_main() -> ! {
     println!("[kernel] Hello, !");
     logging::init();
     mm::init();
-    mm::remap_test();
     mm::heap_allocator::heap_test();
     mm::frame_allocator::frame_allocator_test();
     trap::init();

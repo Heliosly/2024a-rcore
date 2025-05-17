@@ -3,7 +3,6 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use log::debug;
 
 // pub fn trim_first_point_slash(path: &str) -> &str {
 //     if path.starts_with("./") {

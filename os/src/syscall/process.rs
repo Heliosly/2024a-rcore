@@ -1,7 +1,6 @@
 //! Process management syscalls
 //!
 
-use core::panic;
 
 use alloc::{
     format,
@@ -22,7 +21,7 @@ use crate::{
         current_process, current_task, current_token, exit_current_and_run_next, set_priority,
         yield_now, CloneFlags, TaskStatus, PID2PC,
     },
-    timer::{get_time_ms, get_time_us, TimeVal},
+    timer::{ get_time_us, TimeVal},
     utils::{
         error::{SysErrNo, SyscallRet},
         page_round_up,
@@ -46,10 +45,10 @@ pub fn sys_getppid() -> SyscallRet {
     trace!("[sys_getppid] pid :{}", current_task().get_pid());
     Ok(current_process().parent())
 }
-pub fn sys_exit(exit_code: i32) -> SyscallRet {
+pub async  fn sys_exit(exit_code: i32) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exit", current_task().get_pid());
 
-    exit_current_and_run_next(exit_code);
+    exit_current_and_run_next(exit_code).await;
     Ok(exit_code as usize)
 }
 
@@ -85,10 +84,10 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
         flags, user_stack, ptid, tls, ctid
     );
     // Invalid combination checks for clone flags
-    if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
-        // CLONE_SIGHAND requires CLONE_VM
-        return Err(SysErrNo::EINVAL);
-    }
+    // if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
+    //     // CLONE_SIGHAND requires CLONE_VM
+    //     return Err(SysErrNo::EINVAL);
+    // }
 
     if flags.contains(CloneFlags::CLONE_SETTLS) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_SETTLS requires CLONE_VM
@@ -164,11 +163,11 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
 // }
 
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
-pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
+pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exec", current_task().get_pid());
     let process = current_process();
 
-    let token = process.get_user_token();
+    let token = process.get_user_token().await;
     let mut path = translated_str(token, path);
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
@@ -241,7 +240,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     debug!("[sys_execve] env is {:?}", env);
 
     let cwd = if !path.starts_with('/') {
-        let cwd_lock = process.cwd.lock();
+        let cwd_lock = process.cwd.lock().await;
         cwd_lock.clone()
     } else {
         "/".to_string()
@@ -250,8 +249,8 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
 
     let elf_data = app_inode.file()?.read_all();
-    process.exec(&elf_data, &argv_vec, &mut env);
-    process.memory_set.lock().activate();
+    process.exec(&elf_data, &argv_vec, &mut env).await?;
+    process.memory_set.lock().await.activate();
     Ok(argv_vec.len())
 }
 
@@ -273,7 +272,7 @@ pub fn sys_getuid() -> SyscallRet {
 }
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
-pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
+pub async  fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
     trace!("kernel: sys_waitpid");
     let proc = current_process();
     // find a child process
@@ -286,7 +285,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
 
     // println!(" ");
 
-    let mut childvec = proc.children.lock();
+    let mut childvec = proc.children.lock().await;
     if !childvec
         .iter()
         .any(|p| pid == -1 || pid as usize == p.get_pid())
@@ -300,11 +299,13 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
         return Err(SysErrNo::ECHILD);
         // ---- release current PCB
     }
-    let pair = childvec.iter().enumerate().find(|(_, p)| {
-        // ++++ temporarily access child PCB exclusively
-        p.is_zombie() && (pid == -1 || pid as usize == p.get_pid())
-        // ++++ release child PCB
-    });
+    let mut pair = None;
+    for (idx, p) in childvec.iter().enumerate() {
+        if p.is_zombie().await && (pid == -1 || pid as usize == p.get_pid()) {
+            pair = Some((idx, p));
+            break;
+        }
+    }
     if let Some((idx, child_task)) = pair {
         debug!("chiled idx is removed");
 
@@ -316,7 +317,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
         let exit_code = child.exit_code();
 
         // ++++ release child PCB
-        *translated_refmut(proc.get_user_token(), exit_code_ptr)? = exit_code;
+        *translated_refmut(proc.get_user_token().await, exit_code_ptr)? = exit_code;
         assert_eq!(
             Arc::strong_count(&child),
             1,
@@ -333,7 +334,7 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
+pub async fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().get_pid()
@@ -342,7 +343,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
 
     let sec = (get_time_us() / 1000000).to_ne_bytes();
 
-    let token = current_token();
+    let token = current_token().await;
 
     let bufs = translated_byte_buffer(token, _ts as *const u8, 16);
     let mut i = 0;
@@ -376,12 +377,12 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
 //     0
 // }
 
-pub fn sys_exitgroup(exit_code: i32) -> SyscallRet {
+pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
         current_task().get_pid()
     );
-    exit_current_and_run_next(exit_code);
+    exit_current_and_run_next(exit_code).await;
     Ok(0)
 }
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -496,12 +497,13 @@ pub async fn sys_mmap(
     let pages = len / PAGE_SIZE;
 
     let proc = current_process();
-    let mut ms = proc.memory_set.lock();
+    let mut ms = proc.memory_set.lock().await;
 
-    let fd_table = proc.fd_table.lock();
+    let fd_table = proc.fd_table.lock().await;
     // ——————————————————————————————————————————
-    // 7. 如果是文件映射，要检查文件权限和 offset
-    let file = if !anon {
+    // 7. 如果是文件映射，要检查文件权限和 off_file
+
+    let _file = if !anon {
         // 7.1 拿到文件对象
         let file = match fd_table.get(fd) {
             Some(f) => f.clone().unwrap(),
@@ -597,25 +599,25 @@ pub async fn sys_mmap(
 }
 
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(start: usize, len: usize) -> SyscallRet {
+pub async  fn sys_munmap(start: usize, len: usize) -> SyscallRet {
     trace!("kernel:pid[{}] sys_munmap ", current_task().get_pid());
     let start_va = VirtAddr::from(start);
     let end_va = VirtAddr::from(start + len);
     current_process()
         .memory_set
-        .lock()
+        .lock().await
         .munmap(start_va.floor(), end_va.ceil());
     Ok(0)
 }
 
 /// change data segment size
-pub fn sys_sbrk(size: i32) -> SyscallRet {
+pub async  fn sys_sbrk(size: i32) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_sbrk size:{:#x}",
         current_task().get_pid(),
         size
     );
-    match current_process().change_program_brk(size) {
+match current_process().change_program_brk(size).await {
         Some(old_brk) => Ok(old_brk),
         None => Err(SysErrNo::ENOMEM),
     }

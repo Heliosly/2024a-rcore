@@ -71,3 +71,17 @@ pub fn wakeup_task(task_ptr: *const Task) {
     core::mem::drop(core::mem::ManuallyDrop::into_inner(state));
 
 }
+
+/// 自定义一个 noop waker：  
+/// 它的 wake/wake_by_ref/drop 都是空操作，因为我们保证 future 立刻 ready。
+pub fn custom_noop_waker() -> Waker {
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE), // clone
+        |_| {},                                       // wake
+        |_| {},                                       // wake_by_ref
+        |_| {},                                       // drop
+    );
+    let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+    // Safety: VTABLE 是有效的，所有操作都无副作用，waker 的生命周期由 Context 管理
+    unsafe { Waker::from_raw(raw) }
+}

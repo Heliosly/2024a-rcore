@@ -75,29 +75,29 @@ use fs::*;
 use process::*;
 use other::*;
 
-use crate::{fs::{Kstat, Stat}, signal::signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
+use crate::{fs::Kstat , signal::signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
 
 use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
   match syscall_id {
-        SYSCALL_OPEN => sys_openat(args[0] as isize,args[1] as *const u8,args[2] as u32,args[3] as u32),
-        SYSCALL_CLOSE => sys_close(args[0]),
+        SYSCALL_OPEN => sys_openat(args[0] as isize,args[1] as *const u8,args[2] as u32,args[3] as u32).await,
+        SYSCALL_CLOSE => sys_close(args[0]).await,
         SYSCALL_LINKAT => sys_linkat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_UNLINKAT => sys_unlinkat(args[1] as *const u8),
         
-        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Kstat),
-        SYSCALL_EXIT => sys_exit(args[0] as i32),
+        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Kstat).await,
+        SYSCALL_EXIT => sys_exit(args[0] as i32).await,
         // SYSCALL_FORK => sys_fork(),
        
         SYSCALL_GETUID=>sys_getuid(),
         SYSCALL_SETTIDADDRESS=>sys_settidaddress(),
-        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32),
-        SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
-        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
+        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32).await,
+        SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32).await,
+        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]).await,
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
        
-        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
+        SYSCALL_SBRK => sys_sbrk(args[0] as i32).await,
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
         SYSCALL_SIGPROCMASK => sys_sigprocmask(
@@ -121,15 +121,15 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[2] as *const usize
         
         
-        ),
-        SYSCALL_FSTATAT => sys_fstatat(args[0] as isize, args[1] as *const u8, args[2] as *mut Kstat, args[3]),
+        ).await,
+        SYSCALL_FSTATAT => sys_fstatat(args[0] as isize, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
         SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
-        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_UNAME => sys_uname(args[0]),
+        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]).await,
+        SYSCALL_UNAME => sys_uname(args[0]).await,
         SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
-        SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]),
+        SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]).await,
 SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         _ => panic!("Unsupported syscall_id: {}", syscall_id),

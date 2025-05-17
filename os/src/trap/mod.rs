@@ -25,6 +25,7 @@ use crate::timer::set_next_trigger;
 use crate::utils::{backtrace, bpoint};
 pub use context::user_return;
 pub use context::TrapStatus;
+use riscv::register::scause::Scause;
 use core::arch::global_asm;
 use core::fmt::Debug;
 use core::future::poll_fn;
@@ -173,6 +174,56 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
         }
     }
 }
+fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
+    println!(
+        "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+        scause.cause(),
+        stval,
+        sepc
+    );
+    panic!();
+}
+/// 处理页错误陷阱（存储、加载、指令页错误）
+async fn handle_page_fault(tf: &mut TrapContext, scause: Scause, stval: usize) {
+   
+    // println!("{:#?}",tf);
+    let fault_va = VirtAddr::from(stval);
+    let proc = current_process();
+    let mut memset = proc.memory_set.lock().await;
+    let vpn = fault_va.floor();
+
+    // 先只查找不借用：拿到起始页号
+    let start = memset.areatree.find_area(vpn);
+
+    if let Some(start_va) = start {
+        let MemorySet {
+            areatree,
+            page_table,
+            ..
+        } = &mut *memset;
+
+        let area = areatree.get_mut(&start_va).unwrap();
+        if area.vpn_range.empty() || area.allocated(vpn) {
+            log_page_fault_error(scause, stval, tf.sepc);
+            exit_current_and_run_next(-2).await;
+        } else if area.vpn_range.contains(vpn) {
+            area.map(page_table);
+            trace!(
+                "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
+                area.vpn_range.get_start().0,
+                area.vpn_range.get_end().0,
+                stval
+            );
+        } else {
+            log_page_fault_error(scause, stval, tf.sepc);
+            exit_current_and_run_next(-2).await;
+        }
+    } else {
+        log_page_fault_error(scause, stval, tf.sepc);
+        exit_current_and_run_next(-2).await;
+    }
+}
+
 ///a future to handle user trap
 /// IMPO
 
@@ -193,6 +244,11 @@ pub async fn user_task_top() -> i32 {
                 sepc,
                 satp::read().bits()
             );
+            // if curr.get_pid()==3{
+            //     trace!(
+            //         "Trap:{:#?}",tf
+            //     )
+            // }
             match scause.cause() {
                 Trap::Exception(Exception::UserEnvCall) => {
                     enable_irqs();
@@ -227,64 +283,14 @@ pub async fn user_task_top() -> i32 {
                 | Trap::Exception(Exception::LoadPageFault)
                 | Trap::Exception(Exception::InstructionPageFault) => {
                     //懒分配
-
-                    let fault_va = VirtAddr::from(stval);
-
-                    let proc = current_process();
-                    let mut memset = proc.memory_set.lock();
-                    let vpn = fault_va.floor();
-
-                    // 先只查找不借用：拿到起始页号
-                    let start = memset.areatree.find_area(vpn);
-
-                    if let Some(start_va) = start {
-                        let MemorySet {
-                            areatree,
-                            page_table,
-                            ..
-                        } = &mut *memset;;
-                        bpoint();
-
-                        let area = areatree.get_mut(&start_va).unwrap();
-                        if area.vpn_range.empty() || area.allocated(vpn) {
-                            println!(
-                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                                scause.cause(),
-                                stval,
-                                tf.sepc ,
-                            );
-                            exit_current_and_run_next(-2);
-                        } else {
-                            if area.vpn_range.contains(vpn) {
-                                area.map(page_table);
-
-                                trace!(
-                                    "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
-                                    area.vpn_range.get_start().0,
-                                    area.vpn_range.get_end().0,
-                                    stval
-                                );
-                            } else {
-                                println!(
-                                "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it..",
-                                scause.cause(),
-                                stval,
-                                tf.sepc ,
-                            );
-                                exit_current_and_run_next(-2);
-                            }
-
-                            bpoint();
-                        }
-                    } else {
-                        println!(
-                            "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it...",
-                            scause.cause(),
-                            stval,
-                            tf.sepc ,
-                        );
-                        exit_current_and_run_next(-2);
-                    }
+                    println!(
+                        "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                        scause.cause(),
+                        stval,
+                        sepc
+                    );
+                    handle_page_fault(tf, scause, stval).await;
+                    
                 }
                 Trap::Exception(Exception::StoreFault)
                 | Trap::Exception(Exception::InstructionFault)
@@ -298,12 +304,12 @@ pub async fn user_task_top() -> i32 {
 
                     // page fault exit code
 
-                    exit_current_and_run_next(-2);
+                    exit_current_and_run_next(-2).await;
                 }
                 Trap::Exception(Exception::IllegalInstruction) => {
                     println!("[kernel] IllegalInstruction in application, kernel killed it.");
                     // illegal instruction exit code
-                    exit_current_and_run_next(-3);
+                    exit_current_and_run_next(-3).await;
                 }
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();

@@ -1,20 +1,20 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
 use super::{pid_alloc, yield_now, CloneFlags, PidHandle, TaskStatus};
-use crate::config::{MAX_FD, PAGE_SIZE, PRE_ALLOC_PAGES, USER_STACK_SIZE, USER_STACK_TOP};
-use crate::fs::{File, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
+use crate::config::{MAX_FD, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
+use crate::fs::{ FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, PageTable, PageTableEntry,
-    VPNRange, VirtAddr, VirtPageNum,
+    put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
+     VirtAddr, VirtPageNum,
 };
-use crate::sync::{MutexGuard, UPSafeCell};
+use crate::sync::MutexGuard;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
 use crate::task::{add_task, current_task, PID2PC, TID2TC};
 use crate::trap::{TrapContext, TrapStatus};
-use crate::utils::error::{TemplateRet, SysErrNo, SyscallRet};
+use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet };
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
 use alloc::string::String;
@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::future::Future;
 use core::mem::ManuallyDrop;
+use core::ops::Deref;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicUsize, Ordering};
 use core::task::Waker;
@@ -33,7 +34,7 @@ use spin::mutex::Mutex as Spin;
 use crate::sync::Mutex;
 unsafe impl Sync for ProcessControlBlock {}
 unsafe impl Send for ProcessControlBlock {}
-
+type FdTable= Vec<Option<FileDescriptor>>;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -61,7 +62,7 @@ pub struct ProcessControlBlock {
     /// where the application address space is lower than base_size
     base_size: AtomicUsize,
     /// current work p
-    pub cwd: Spin<String>,
+    pub cwd: Mutex<String>,
     /// Parent process of the current process.
     /// Weak will not affect the reference count of the parent
     parent: AtomicUsize,
@@ -117,11 +118,11 @@ impl ProcessControlBlock {
     /// 注意：此函数仅仅 *找到* 一个可用的 fd 编号。
     /// 调用者负责实际获取 fd_table 的锁，并在必要时调整其大小，
     /// 然后将 FileDescriptor 实例插入到返回的 fd 编号对应的位置。
-    pub fn alloc_fd_from(&self, min_fd: usize) -> Option<usize> {
+    pub async  fn alloc_fd_from(&self, min_fd: usize) -> Option<usize> {
       
-        let table_guard = self.fd_table.lock();
+        let table_guard = self.fd_table.lock().await;
 
-        // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上限
+        // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上
         for fd_candidate in min_fd..MAX_FD {
             if fd_candidate < table_guard.len() {
                 // 如果 fd_candidate 在当前 fd_table 的范围内
@@ -153,15 +154,15 @@ impl ProcessControlBlock {
     ///
     /// * `Some(FileDescriptor)`: 如果存在，则返回文件句柄。
     /// * `None`: 如果 fd_table 中不存在该 fd，或该 fd 对应的项为 None。
-    pub fn take_file(&self, fd: usize) -> Option<FileDescriptor> {
-        let mut table = self.fd_table.lock();
+    pub async fn take_file(&self, fd: usize) -> Option<FileDescriptor> {
+        let mut table = self.fd_table.lock().await;
         table.get_mut(fd)
              .and_then(|opt| opt.take())
     }
 
     /// 激活用户的内存空间。
-    pub fn activate_user_memoryset(&self) {
-        self.memory_set.lock().activate();
+    pub async  fn activate_user_memoryset(&self) {
+        self.memory_set.lock().await.activate();
     }
 
     /// 获取用户栈顶地址。
@@ -216,8 +217,8 @@ impl ProcessControlBlock {
     /// # Arguments
     ///
     /// * `path`: 新的当前工作目录。
-    pub fn set_cwd(&self, path: String) {
-        let mut guard = self.cwd.lock();
+    pub async  fn set_cwd(&self, path: String) {
+        let mut guard = self.cwd.lock().await;
         *guard = path;
     }
 
@@ -278,8 +279,8 @@ impl ProcessControlBlock {
     }
 
     /// 分配一个文件描述符。
-    pub fn alloc_fd(&self) -> usize {
-        let mut fd_table = self.fd_table.lock();
+    pub async  fn alloc_fd(&self) -> usize {
+        let mut fd_table = self.fd_table.lock().await;
         if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
             fd
         } else {
@@ -289,8 +290,8 @@ impl ProcessControlBlock {
     }
 
     /// 获取应用程序页表的地址。
-    pub fn get_user_token(&self) -> usize {
-        self.memory_set.lock().token()
+    pub async  fn get_user_token(&self) -> usize {
+        self.memory_set.lock().await.token()
     }
 
     /// 插入一个 framed_area。
@@ -301,7 +302,7 @@ impl ProcessControlBlock {
     /// * `end_va`: 结束虚拟地址。
     /// * `permission`: 内存映射权限。
     /// * `area_type`: 内存区域类型。
-    pub fn insert_framed_area(
+    pub async  fn insert_framed_area(
         &self,
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -309,7 +310,7 @@ impl ProcessControlBlock {
         area_type: MapAreaType,
     ) {
         self.memory_set
-            .lock()
+            .lock().await
             .insert_framed_area(start_va, end_va, permission, area_type);
     }
 
@@ -327,7 +328,7 @@ impl ProcessControlBlock {
     /// # Returns
     ///
     /// * `(usize, usize)`: 分配的虚拟地址范围 (va_bottom, va_top)。
-    pub fn insert_framed_area_with_hint(
+    pub async  fn insert_framed_area_with_hint(
         &self,
         hint: usize,
         size: usize,
@@ -336,7 +337,7 @@ impl ProcessControlBlock {
     ) -> (usize, usize) {
         let hint_vpn= VirtAddr::from(hint).ceil();
         let npages = (size+ PAGE_SIZE - 1) / PAGE_SIZE;
-        let base_vpn= self.memory_set.lock().areatree.find_gap_from(hint_vpn, npages).unwrap();
+        let base_vpn= self.memory_set.lock().await.areatree.find_gap_from(hint_vpn, npages).unwrap();
         let top_vpn = VirtPageNum::from(base_vpn.0+npages);
 
         let start_va=VirtAddr::from(base_vpn);
@@ -346,22 +347,22 @@ impl ProcessControlBlock {
              end_va,
             map_perm,
             area_type,
-        );
+        ).await;
         (start_va.0, end_va.0)
     }
 
     /// 分配用户资源。
-    pub fn alloc_user_res(&self) {
+    pub async fn alloc_user_res(&self) {
         let (ustack_bottom, ustack_top) = self.insert_framed_area_with_hint(
             USER_STACK_TOP,
             USER_STACK_SIZE,
             MapPermission::R | MapPermission::W | MapPermission::U,
             MapAreaType::Stack,
-        );
+        ).await;
 
         self.set_user_stack_top(ustack_top);
         
-        // let memory_set: spin::MutexGuard<'_, MemorySet> = self.memory_set.lock();
+        // let memory_set: spin::MutexGuard<'_, MemorySet> = self.memory_set.lock().await;
         // assert!(memory_set
         //     .translate(VirtAddr::from(ustack_top).floor())
         //     .unwrap()
@@ -379,11 +380,11 @@ impl ProcessControlBlock {
     /// # Arguments
     ///
     /// * `another`: 另一个 `ProcessControlBlock` 的引用。
-    pub fn clone_user_res(&self, another: &ProcessControlBlock) {
-        self.alloc_user_res();
-        self.memory_set.lock().clone_area(
+    pub async fn clone_user_res(&self, another: &ProcessControlBlock) {
+        self.alloc_user_res().await;
+        self.memory_set.lock().await.clone_area(
             VirtAddr::from(self.user_stack_top() - USER_STACK_SIZE).floor(),
-            &another.memory_set.lock(),
+            another.memory_set.lock().await.deref(),
         );
     }
 
@@ -392,14 +393,18 @@ impl ProcessControlBlock {
     /// # Arguments
     ///
     /// * `new_ms`: 新的 `MemorySet`。
-    pub fn replace_memory_set(&self, new_ms: MemorySet) {
-        let mut guard = self.memory_set.lock();
+    pub async  fn replace_memory_set(&self, new_ms: MemorySet) {
+        let mut guard = self.memory_set.lock().await;
         let old_ms = core::mem::replace(&mut *guard, new_ms);
         drop(old_ms);
+        let new_token = guard.token();
+        for task in self.tasks.lock().await.iter(){
+             task.set_token(new_token);
+        }
     }
 }
 
-    //         let a= *(self.task_status.lock()) ;
+    //         let a= *(self.task_status.lock().await) ;
     //         a== TaskStatus::Zombie
 
     //     }
@@ -413,7 +418,7 @@ impl ProcessControlBlock {
 
     //     }
     // pub fn is_zombie(&self) -> bool {
-    //        *self.state_lock().lock() == TaskStatus::Zombie
+    //        *self.state_lock().await.lock().await == TaskStatus::Zombie
     //     }
     //  pub fn state_lock(&self) -> &Mutex<TaskStatus> {
     //         &self.task_status
@@ -422,10 +427,10 @@ impl ProcessControlBlock {
     //     /// temp
     //     /// TODO LOCK
     //     pub fn state_lock_manual(&self) -> ManuallyDrop<spin::MutexGuard<'_, TaskStatus>> {
-    //                 ManuallyDrop::new(self.task_status.lock())
+    //                 ManuallyDrop::new(self.task_status.lock().await)
     //     }
     //  pub fn set_state(&self, state: TaskStatus) {
-    //         let mut task_status = self.task_status.lock();
+    //         let mut task_status = self.task_status.lock().await;
     //         *task_status = state;
     //     }
     //   pub fn get_trap_cx(&self) ->Option<&mut TrapContext >{
@@ -438,10 +443,39 @@ impl ProcessControlBlock {
 
 
 impl ProcessControlBlock {
+    pub async  fn spawn (
+        parent: u64,
+        memory_set: Arc<Mutex<MemorySet>>,
+        heap_bottom: u64,
+        fd_table:FdTable ,
+        cwd: String,
+        main_task :Mutex<TaskRef>
+        // mask: Arc<AtomicI32>,
+    )->Self{
+        let pid =pid_alloc();
+       let  task_clone =main_task.lock().await.clone();
+        Self{
+            pid,
+            main_task:main_task,
+            tasks: Mutex::new(vec![task_clone]),
+            children: Mutex::new(Vec::new()),
+            memory_set,
+            user_stack_top: AtomicUsize::new(0),
+            is_init: AtomicBool::new(false),
+            base_size: AtomicUsize::new(0),
+            cwd: Mutex::new(cwd.clone()),
+            parent: AtomicUsize::new(parent as usize),
+            exit_code: AtomicI32::new(0),
+            heap_bottom: AtomicUsize::new(heap_bottom as usize),
+            program_brk: AtomicUsize::new(0),
+            fd_table: Arc::new(Mutex::new(fd_table)),
+        }
+
+    }
     /// Create a new process
     ///
     /// At present, it is only used for the creation of initproc
-    pub fn new(elf_data: &[u8], cwd: String, argv: &Vec<String>, env: &mut Vec<String>) -> Self {
+    pub async  fn new(elf_data: &[u8], cwd: String, argv: &Vec<String>, env: &mut Vec<String>) -> Self {
         // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
@@ -461,29 +495,14 @@ impl ProcessControlBlock {
             Box::new(TrapContext::new()),
         )));
 
-        let fd_vec: Vec<Option<FileDescriptor>> = vec![
-            Some(FileDescriptor {
-                flags: OpenFlags::O_RDONLY,
-                file: FileClass::Abs(Arc::new(Stdin)),
-            }),
-            // stdout: 只写
-            Some(FileDescriptor {
-                flags: OpenFlags::O_WRONLY,
-                file: FileClass::Abs(Arc::new(Stdout)),
-            }),
-            // stderr: 只写
-            Some(FileDescriptor {
-                flags: OpenFlags::O_WRONLY,
-                file: FileClass::Abs(Arc::new(Stdout)),
-            }),
-        ];
+        let fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
 
         let process_control_block = Self {
             pid: pid_handle,
             user_stack_top: AtomicUsize::new(0),
             is_init: AtomicBool::new(true),
             base_size: AtomicUsize::new(user_sp),
-            cwd: Spin::new(cwd),
+            cwd: Mutex::new(cwd),
             parent: AtomicUsize::new(0xDEADBEFF),
             children: Mutex::new(Vec::new()),
             exit_code: AtomicI32::new(0),
@@ -491,10 +510,10 @@ impl ProcessControlBlock {
             program_brk: AtomicUsize::new(user_sp),
             memory_set: Arc::new(Mutex::new(memory_set)),
             main_task: Mutex::new(new_task.clone()),
-            tasks: Mutex::new(Vec::new()),
+            tasks: Mutex::new(vec![new_task.clone()]),
             fd_table: Arc::new(Mutex::new(fd_vec)),
         };
-        process_control_block.alloc_user_res();
+        process_control_block.alloc_user_res().await;
         let mut user_sp = process_control_block.user_stack_top();
                //环境变量内容入栈
                let mut envp = Vec::new();
@@ -550,7 +569,7 @@ impl ProcessControlBlock {
                user_sp -= envp.len() * size_of::<usize>();
                let envp_base = user_sp;
                for i in 0..envp.len() {
-                   put_data(
+                   let _ = put_data(
                        token,
                        (user_sp + i * size_of::<usize>()) as *mut usize,
                        envp[i],
@@ -562,7 +581,7 @@ impl ProcessControlBlock {
                let argv_base = user_sp;
                //将参数指针数组放入栈中
                for i in 0..argvp.len() {
-                    put_data(
+                    let _ = put_data(
                        token,
                        (user_sp + i * size_of::<usize>()) as *mut usize,
                        argvp[i],
@@ -596,20 +615,20 @@ impl ProcessControlBlock {
     }
 
     /// Load a new elf to replace the original application address space and start execution
-    pub fn exec(&self, elf_data: &[u8], argv: &Vec<String>, env: &mut Vec<String>)->TemplateRet<()> {
+    pub async  fn exec(&self, elf_data: &[u8], argv: &Vec<String>, env: &mut Vec<String>)->GeneralRet{
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_heap_base, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
 
         // **** access current TCB exclusively
 
-        self.replace_memory_set(memory_set);
-        self.alloc_user_res();
+        self.replace_memory_set(memory_set).await;
+        self.alloc_user_res().await;
 
         let mut user_sp = self.user_stack_top();
         //环境变量内容入栈
         let mut envp = Vec::new();
-        let token = self.get_user_token();
+        let token = self.get_user_token().await;
         for env in env.iter() {
             user_sp -= env.len() + 1;
             envp.push(user_sp);
@@ -666,7 +685,7 @@ impl ProcessControlBlock {
                 token,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
                 envp[i],
-            ) ;
+            )? ;
         }
 
         // println!("arg pointers:");
@@ -678,7 +697,7 @@ impl ProcessControlBlock {
                 token,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
                 argvp[i],
-            ) ;
+            )? ;
         }
 
         //将argc放入栈中
@@ -693,7 +712,7 @@ impl ProcessControlBlock {
         // update trap_cx ppn
 
         info!("exec entry_point:{:#x}", entry_point);
-        let binding = self.main_task.lock();
+        let binding = self.main_task.lock().await;
         let trap_cx: &mut TrapContext = binding.get_trap_cx().unwrap();
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
@@ -715,8 +734,8 @@ impl ProcessControlBlock {
         flags: CloneFlags,
         user_stack: usize,
         ptid: usize,
-        tls: usize,
-        ctid: usize,
+        _tls: usize,
+        _ctid: usize,
     ) -> SyscallRet{
         // ---- hold parent PCB lock
         // alloc a pid and a kernel stack in kernel space
@@ -726,7 +745,7 @@ impl ProcessControlBlock {
             self.memory_set.clone()
         } else {
             Arc::new(Mutex::new(MemorySet::from_existed_user(
-                &self.memory_set.lock(),
+                self.memory_set.lock().await.deref(),
             )))
         };
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
@@ -739,9 +758,9 @@ impl ProcessControlBlock {
             task_pid_usize = self.pid.0;
             None
         } else {
-            let a = pid_alloc();
-            task_pid_usize = a.0;
-            Some(a)
+            let pidhandle = pid_alloc();
+            task_pid_usize = pidhandle.0;
+            Some(pidhandle)
         };
         let  trap_cx= Box::new(*current_task().get_trap_cx().unwrap());
 
@@ -749,12 +768,12 @@ impl ProcessControlBlock {
         let tcb = Arc::new(CFSTask::new(TaskControlBlock::new(
             false,
             task_pid_usize,
-            memory_set.lock().token(),
+            memory_set.lock().await.token(),
             fut,
             trap_cx,
         )));
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            let parent_token = self.memory_set.lock().token();
+            let parent_token = self.memory_set.lock().await.token();
             *translated_refmut(parent_token, ptid as *mut u32)? = tcb.id.0 as u32;
         }
         if flags.contains(CloneFlags::CLONE_SIGHAND) {
@@ -771,13 +790,13 @@ impl ProcessControlBlock {
         // trace!("flags:{:#?}",flags);
         //生成线程或者进程
         let res = if flags.contains(CloneFlags::CLONE_THREAD) {
-            self.tasks.lock().push(tcb.clone());
+            self.tasks.lock().await.push(tcb.clone());
 
             tcb.id.0 
         } else {
             // copy fd table
             let mut new_fd_table: Vec<Option<FileDescriptor>> = Vec::new();
-            for fd in self.fd_table.lock().iter() {
+            for fd in self.fd_table.lock().await.iter() {
                 if let Some(file) = fd {
                     new_fd_table.push(Some(file.clone()));//todo()
                 } else {
@@ -789,7 +808,7 @@ impl ProcessControlBlock {
                 pid: pid.unwrap(),
                 main_task: Mutex::new(tcb.clone()),
 
-                cwd: Spin::new(self.cwd.lock().clone()),
+                cwd: Mutex::new(self.cwd.lock().await.clone()),
                 is_init: AtomicBool::new(false),
                 base_size: AtomicUsize::new(self.base_size()),
                 memory_set,
@@ -805,16 +824,18 @@ impl ProcessControlBlock {
             });
             if user_stack==0{
                 if !flags.contains(CloneFlags::CLONE_VM)
-               { process_control_block.clone_user_res(self);}
+               { 
+                process_control_block.clone_user_res(self).await;
+            }
             }
             trace!(
                 "[kernel]:clone pid[{}] -> pid[{}]",
                 self.pid.0,
                 process_control_block.pid.0
             );
-            process_control_block.tasks.lock().push(tcb.clone());
+            process_control_block.tasks.lock().await.push(tcb.clone());
             // process_control_block.clone_user_res(&self);
-            self.children.lock().push(process_control_block.clone());
+            self.children.lock().await.push(process_control_block.clone());
             PID2PC
                 .lock()
                 .insert(process_control_block.pid.0, process_control_block.clone());
@@ -859,7 +880,7 @@ impl ProcessControlBlock {
     }
 
     /// change the location of the program break. return None if failed.
-    pub fn change_program_brk(&self, size: i32) -> Option<usize> {
+    pub async  fn change_program_brk(&self, size: i32) -> Option<usize> {
         let heap_bottom = self.heap_bottom();
         let old_break = self.program_brk();
         let new_brk = old_break as isize + size as isize;
@@ -869,11 +890,11 @@ impl ProcessControlBlock {
         }
         let result = if size < 0 {
             self.memory_set
-                .lock()
+                .lock().await
                 .shrink_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
         } else {
             self.memory_set
-                .lock()
+                .lock().await
                 .append_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
         };
         if result {
@@ -884,8 +905,8 @@ impl ProcessControlBlock {
         }
     }
     ///main task is_zombie
-    pub fn is_zombie(&self) -> bool {
-        self.main_task.lock().is_exited()
+    pub async  fn is_zombie(&self) -> bool {
+        self.main_task.lock().await.is_exited()
     }
 }
 
@@ -930,12 +951,12 @@ pub struct TaskControlBlock {
     pub state: Spin<TaskStatus>,
     // time: UnsafeCell<TimeStat>,
     exit_code: AtomicIsize,
-    set_child_tid: AtomicUsize,
-    clear_child_tid: AtomicUsize,
+    _set_child_tid: AtomicUsize,
+    _clear_child_tid: AtomicUsize,
     /// Whether the task needs to be rescheduled
     ///
     /// When the time slice is exhausted, it needs to be rescheduled
-    need_resched: AtomicBool,
+    _need_resched: AtomicBool,
     /// The disable count of preemption
     ///
     /// When the task get a lock which need to disable preemption, it
@@ -943,10 +964,9 @@ pub struct TaskControlBlock {
     /// decrease the count.
     ///
     /// Only when the count is zero, the task can be preempted.
-    preempt_disable_count: AtomicUsize,
+    _preempt_disable_count: AtomicUsize,
     /// 在内核中发生抢占或者使用线程接口时的上下文
     // stack_ctx: UnsafeCell<Option<StackCtx>>,
-
     /// 是否是所属进程下的主线程
     is_leader: AtomicBool,
     process_id: AtomicUsize,
@@ -954,6 +974,7 @@ pub struct TaskControlBlock {
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
+    
     pub fn new(
         is_init: bool,
         process_id: usize,
@@ -967,15 +988,16 @@ impl TaskControlBlock {
             exit_code: AtomicIsize::new(0),
             fut: UnsafeCell::new(fut),
             wait_wakers: UnsafeCell::new(VecDeque::new()),
-            set_child_tid: AtomicUsize::new(0),
-            clear_child_tid: AtomicUsize::new(0),
-            need_resched: AtomicBool::new(false),
-            preempt_disable_count: AtomicUsize::new(0),
+            _set_child_tid: AtomicUsize::new(0),
+            _clear_child_tid: AtomicUsize::new(0),
+            _need_resched: AtomicBool::new(false),
+            _preempt_disable_count: AtomicUsize::new(0),
             is_leader: AtomicBool::new(false),
             process_id: AtomicUsize::new(process_id),
             page_table_token: UnsafeCell::new(page_table_token),
             trap_cx: UnsafeCell::new(Some(trap_cx)),
             state: Spin::new(TaskStatus::Runable),
+            
         }
     }
     ///
@@ -1002,6 +1024,7 @@ impl TaskControlBlock {
     pub fn get_fut(&self) -> &mut Pin<Box<dyn Future<Output = i32> + 'static>> {
         unsafe { &mut *self.fut.get() }
     }
+    
     pub fn set_exit_code(&self, code: isize) {
         self.exit_code.store(code, Ordering::Relaxed);
     }
@@ -1036,4 +1059,28 @@ impl TaskControlBlock {
     pub fn is_leader(&self) -> bool {
         self.is_leader.load(Ordering::Relaxed)
     }
+    pub fn set_token(&self,token:usize){
+        unsafe {
+            *self.page_table_token.get() = token;
+        }
+    }
+}
+
+pub fn new_fd_with_stdio()->Vec<Option<FileDescriptor>>{
+    vec![
+            Some(FileDescriptor {
+                flags: OpenFlags::O_RDONLY,
+                file: FileClass::Abs(Arc::new(Stdin)),
+            }),
+            // stdout: 只写
+            Some(FileDescriptor {
+                flags: OpenFlags::O_WRONLY,
+                file: FileClass::Abs(Arc::new(Stdout)),
+            }),
+            // stderr: 只写
+            Some(FileDescriptor {
+                flags: OpenFlags::O_WRONLY,
+                file: FileClass::Abs(Arc::new(Stdout)),
+            }),
+        ]
 }
