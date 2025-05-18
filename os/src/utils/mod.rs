@@ -88,7 +88,7 @@ pub fn normalize_and_join_path(
 
     // 3. 分解组件，处理 "."、".."：
     //    - 空串("")：相当于多余的斜杠，忽略
-    //    - "."：当前目录，忽略
+    //    - "."：当前目录，
     //    - ".."：弹出上一级组件（如果存在），否则
     //         在相对路径开头保留 ".."；绝对路径在根目录多余的 ".." 忽略。
     let is_abs = path_str.starts_with('/');
@@ -96,8 +96,8 @@ pub fn normalize_and_join_path(
 
     for comp in path_str.split('/') {
         match comp {
-            "" => {  todo!()}
-            "." => {  todo!()/* @Heliosly. */  }
+            "" => {  }
+            "." => {  }
             ".." => {
                 if let Some(prev) = stack.pop() {
                     // 如果弹出的仍是 ".."，则需要保留两次

@@ -285,12 +285,12 @@ pub async fn user_task_top() -> i32 {
                 | Trap::Exception(Exception::LoadPageFault)
                 | Trap::Exception(Exception::InstructionPageFault) => {
                     //懒分配
-                    println!(
-                        "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                        scause.cause(),
-                        stval,
-                        sepc
-                    );
+                    // println!(
+                    //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                    //     scause.cause(),
+                    //     stval,
+                    //     sepc
+                    // );
                     handle_page_fault(tf, scause, stval).await;
                     
                 }

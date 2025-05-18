@@ -89,7 +89,7 @@ pub async  fn sys_sigprocmask(
 ) -> SyscallRet {
     trace!("[sys_sisgprocmask]");
     let current_task_arc = current_task();
-    let mut signal_state = current_task_arc.signal_state.lock();
+    let mut signal_state = current_task_arc.signal_state.lock().await;
     let token = current_task_arc.get_process().get_user_token().await;
     let old_mask = signal_state.sigmask;
 
