@@ -97,7 +97,7 @@ pub fn normalize_and_join_path(
     for comp in path_str.split('/') {
         match comp {
             "" => {  todo!()}
-            "." => {  todo!() }
+            "." => {  todo!()/* @Heliosly. */  }
             ".." => {
                 if let Some(prev) = stack.pop() {
                     // 如果弹出的仍是 ".."，则需要保留两次

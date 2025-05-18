@@ -28,6 +28,12 @@ const SYSCALL_FSTAT: usize = 80;
 const SYSCALL_EXIT: usize = 93;
 /// yield syscall
 const SYSCALL_YIELD: usize = 124;
+
+const SYSCALL_KILL: usize = 129;
+/// kill syscall
+const SYSCALL_TKILL: usize = 130;
+/// tkill syscall
+const SYSCALL_TGKILL: usize = 131;
 /// setpriority syscall
 const SYSCALL_SET_PRIORITY: usize = 140;
 /// gettime syscall
@@ -76,7 +82,7 @@ use fs::*;
 use process::*;
 use other::*;
 
-use crate::{fs::Kstat , timer::TimeVal, utils::error::SyscallRet};
+use crate::{fs::Kstat, signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
 
 
 use signal::*;
@@ -102,17 +108,17 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_SBRK => sys_sbrk(args[0] as i32).await,
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
-        // SYSCALL_SIGPROCMASK => sys_sigprocmask(
-        //     args[0] as usize,
-        //     args[1] as *const SigSet,
-        //     args[2] as *mut SigSet,
-        // ),
+        SYSCALL_SIGPROCMASK => sys_sigprocmask(
+            args[0] as i32,
+            args[1] as *const SigSet,
+            args[2] as *mut SigSet,
+        ).await,
     
-        // SYSCALL_RT_SIGACTION => sys_rt_sigaction(
-        //     args[0],
-        //     args[1] as *const SigAction,
-        //     args[2] as *mut SigAction,
-        // ),
+        SYSCALL_RT_SIGACTION => sys_sigaction(
+            args[0],
+            args[1] as *const SigAction,
+            args[2] as *mut SigAction,
+        ).await,
         SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_CLONE => sys_clone(
          args
@@ -134,6 +140,10 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]).await,
 SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
+        SYSCALL_SIGNALRET =>sys_sigreturn().await,
+        // SYSCALL_KILL => sys_kill(args[0] as isize, args[1]),
+        SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
+        // SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
     

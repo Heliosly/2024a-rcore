@@ -559,7 +559,7 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static m
 /// - The lifetime of the returned reference is tied to the underlying physical mapping.
 ///   Using `'static` here is very strong and implies the mapping is permanent.
 ///   Consider a shorter, more appropriate lifetime if possible.
-pub fn translated_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, TranslateRefError> {
+pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, TranslateRefError> {
     let va = VirtAddr::from(ptr as usize);
     let size = core::mem::size_of::<T>();
     if size == 0 {
@@ -584,7 +584,7 @@ pub fn translated_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
         return Err(TranslateRefError::DataCrossesPageBoundary);
     }
 
-    // TODO: Add permission checks (e.g., readability) from page table entry if possible.
+    // TODO: Add permission checks (e.g., readability) from page table entry if possible @Heliosly.
 
     // SAFETY: Caller ensures validity. We've checked translation and single-page constraint.
     // The lifetime 'a should be tied to the validity of the mapping.

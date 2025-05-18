@@ -3,7 +3,8 @@ use core::arch::asm;
 
 use riscv::register::{scause::{Exception, Interrupt, Trap}, sstatus::{self, Sstatus, SPP}};
 
-use crate::task::{current_stack_top, current_task, TaskStatus};
+use crate::{signal::{SigSet, SignalStack}, task::{current_stack_top, current_task, TaskStatus}};
+
 
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
 #[repr(usize)]
@@ -109,10 +110,33 @@ impl TrapContext {
             scause: 0,
             stval: 0,
         }
+    } 
+    pub fn set_arg1(&mut self,arg:usize){
+        self.regs.a1=arg;
     }
-    /// put the sp(stack pointer) into x\[2\] field of TrapContext
+    pub fn set_arg2(&mut self,arg:usize){
+        self.regs.a2=arg;
+    }
+    pub fn set_arg0(&mut self,arg:usize){
+        self.regs.a0=arg;
+    }
+    pub fn get_pc(&self)->usize{
+        self.sepc
+    }
+    ///set sepc
+    pub fn set_pc(&mut self, pc: usize) {
+        self.sepc = pc;
+    }
+    pub fn set_ra(&mut self, ra: usize){
+        self.regs.ra = ra;
+    }
+    /// put the user_sp(stack pointer) into x\[2\] field of TrapContext
     pub fn set_sp(&mut self, sp: usize) {
         self.regs.sp = sp;
+    }
+    ///get the user_sp 
+    pub fn get_sp(&self)->usize{
+        self.regs.sp
     }
     /// init the trap context of an application
     pub fn app_init_context(
@@ -187,6 +211,10 @@ impl TrapContext{
             );
         }
     }
+ /// 获取 ret
+ pub fn get_ret_code(&self) -> usize {
+    self.regs.a0
+}
 
     
 }

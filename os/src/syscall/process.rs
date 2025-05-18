@@ -13,7 +13,7 @@ use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
     fs::{open_file, OpenFlags, NONE_MODE},
     mm::{
-        flush_tlb, translated_byte_buffer, translated_ref, translated_refmut, translated_str,
+        flush_tlb, translated_byte_buffer, get_target_ref, translated_refmut, translated_str,
         MapArea, MapAreaType, MapPermission, MapType, VirtAddr, VirtPageNum,
     },
     syscall::flags::{MmapFlags, MmapProt},
@@ -184,7 +184,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
         if argv.is_null() {
             break;
         }
-        let argv_ptr = *translated_ref(token, argv)?;
+        let argv_ptr = *get_target_ref(token, argv)?;
         if argv_ptr == 0 {
             break;
         }
@@ -212,7 +212,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
         if envp.is_null() {
             break;
         }
-        let envp_ptr = *translated_ref(token, envp)?;
+        let envp_ptr = *get_target_ref(token, envp)?;
         if envp_ptr == 0 {
             break;
         }

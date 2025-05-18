@@ -19,7 +19,7 @@ kernel_guard = { path = "src/kernel_guard" ,features = ["preempt"]}
 lazy_init = { path = "vendor/lazy_init"}
 spin = "0.9"
 hashbrown = "0.12.0"
-intrusive-collections = { version = "0.9", default-features = false, features = ["alloc","nightly"] }
+linux-raw-sys = { version = "0.9.3", default-features = false, features = ["general", "no_std"] }
 num_enum = { version = "0.7.2", default-features = false }
 lwext4_rust = { path = "lwext4_rust" }
 [profile.release]

@@ -24,7 +24,7 @@ unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
     lock: &'a Mutex<T>,
     data_ptr: Option<*mut T>,
-    // todo：存储获取锁时当前任务的 ID，用于 drop 时验证 (可选，但更安全)
+    // todo：存储获取锁时当前任务的 ID，用于 drop 时验证 (可选，但更安全)  @Heliosly.
 }
 
 unsafe impl<'a, T: ?Sized + Send> Send for MutexGuard<'a, T> {}

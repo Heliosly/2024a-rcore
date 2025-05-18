@@ -22,7 +22,7 @@ pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
 pub use memory_set::{ MapPermission, MemorySet, MapAreaType,VmAreaTree,MapArea,MapType};
 use page_table::PTEFlags;
 pub use page_table::{
-    translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,get_target_ref_mut,
+    translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,get_target_ref_mut,
     PageTableEntry, UserBuffer, UserBufferIterator,fill_str
 };
 use riscv::register::satp;

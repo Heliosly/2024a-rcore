@@ -283,7 +283,6 @@ pub async fn load_trap_for_signal() -> bool {
             // 4. 拿到实际用于中断/异常的内核栈上的 TrapFrame 指针
             //    假设你有这样的方法：
             let now_trap_frame: &mut TrapFrame = task.utrap_frame().unwrap(); 
-            // TODO: 如果你的系统用别的名字或 API，请替换上面这一行
 
             // 5. 拷贝回去，恢复原先全部寄存器状态
             *now_trap_frame = saved_frame;

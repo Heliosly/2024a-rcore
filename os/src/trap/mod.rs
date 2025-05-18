@@ -15,6 +15,7 @@
 //use crate::config:: TRAP_CONTEXT_BASE;
 
 mod context;
+mod ucontext;
 use crate::mm::{MemorySet, VirtAddr};
 use crate::syscall::syscall;
 use crate::task::{
@@ -24,10 +25,10 @@ use crate::task::{
 use crate::timer::set_next_trigger;
 use crate::utils::{backtrace, bpoint};
 pub use context::user_return;
+
 pub use context::TrapStatus;
 use riscv::register::scause::Scause;
 use core::arch::global_asm;
-use core::fmt::Debug;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
@@ -38,6 +39,7 @@ use riscv::register::{
     sie, stval, stvec,
 };
 use riscv::register::{satp, sepc, sstatus};
+pub use ucontext::{MContext,UContext};
 global_asm!(include_str!("trap.S"));
 
 /// Initialize trap handling
@@ -77,7 +79,7 @@ fn set_trap_entry() {
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
     unsafe {
-        // sie::set_stimer();
+        sie::set_stimer();
     }
 }
 /// disable timer interrupt in supervisor mode

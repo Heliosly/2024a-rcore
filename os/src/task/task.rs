@@ -1,13 +1,13 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
-use super::{pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
+use super::{current_process, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
 use crate::config::{MAX_FD, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{ FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
      VirtAddr, VirtPageNum,
 };
-use crate::signal::{ProcessSignalSharedState, TaskSignalState};
+use crate::signal::{self, ProcessSignalSharedState, TaskSignalState};
 use crate::sync::MutexGuard;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
@@ -77,7 +77,7 @@ pub struct ProcessControlBlock {
     //     ///wait wakers
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     pub fd_table: Arc<Mutex<Vec<Option<FileDescriptor>>>>,
-    pub signal_shared_state: Mutex<ProcessSignalSharedState>,
+    pub signal_shared_state: Arc<Mutex<ProcessSignalSharedState>>,
     //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
@@ -436,7 +436,6 @@ impl ProcessControlBlock {
     //     }
     //  #[inline]
     //     /// temp
-    //     /// TODO LOCK
     //     pub fn state_lock_manual(&self) -> ManuallyDrop<spin::MutexGuard<'_, TaskStatus>> {
     //                 ManuallyDrop::new(self.task_status.lock().await)
     //     }
@@ -481,7 +480,7 @@ impl ProcessControlBlock {
             program_brk: AtomicUsize::new(0),
             fd_table: Arc::new(Mutex::new(fd_table)),
             
-            signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
+            signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
         }
 
     }
@@ -506,6 +505,7 @@ impl ProcessControlBlock {
             token,
             fut,
             Box::new(TrapContext::new()),
+            TaskSignalState::default(),
         )));
 
         let fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
@@ -526,7 +526,7 @@ impl ProcessControlBlock {
             tasks: Mutex::new(vec![new_task.clone()]),
             fd_table: Arc::new(Mutex::new(fd_vec)),
 
-            signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
+            signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
         };
         process_control_block.alloc_user_res().await;
         let mut user_sp = process_control_block.user_stack_top();
@@ -763,36 +763,28 @@ impl ProcessControlBlock {
                 self.memory_set.lock().await.deref(),
             )))
 
-            {
-                // 生成信号跳板
-                let signal_trampoline_vaddr: VirtAddr = (axconfig::SIGNAL_TRAMPOLINE).into();
-                let signal_trampoline_paddr =
-                    virt_to_phys((start_signal_trampoline as usize).into());
-                memory_set.lock().await.map_page_without_alloc(
-                    signal_trampoline_vaddr,
-                    signal_trampoline_paddr,
-                    MappingFlags::READ
-                        | MappingFlags::EXECUTE
-                        | MappingFlags::USER
-                        | MappingFlags::WRITE,
-                )?;
-            }
-            memory_set
+           
         };
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
             self.parent()
         } else {
             self.pid.0
         };
+        let new_sig_state= TaskSignalState::init(current_task().signal_state.lock().await.sigmask);
+        
+
         let task_pid_usize: usize;
         let pid = if flags.contains(CloneFlags::CLONE_THREAD) {
             task_pid_usize = self.pid.0;
             None
         } else {
+
             let pidhandle = pid_alloc();
             task_pid_usize = pidhandle.0;
             Some(pidhandle)
+
         };
+        
         let  trap_cx= Box::new(*current_task().get_trap_cx().unwrap());
 
         let fut = UTRAP_HANDLER();
@@ -802,15 +794,14 @@ impl ProcessControlBlock {
             memory_set.lock().await.token(),
             fut,
             trap_cx,
+            new_sig_state,
         )));
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
             let parent_token = self.memory_set.lock().await.token();
             *translated_refmut(parent_token, ptid as *mut u32)? = tcb.id.0 as u32;
         }
-        if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            // todo!();
-            //todo(Heliosly)
-        }
+              
+       
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
@@ -825,6 +816,15 @@ impl ProcessControlBlock {
 
             tcb.id.0 
         } else {
+                 let new_proc_sig_state =if 
+             flags.contains(CloneFlags::CLONE_SIGHAND){
+
+                   current_process().signal_shared_state.clone()
+             }
+             else{
+
+                 Arc::new( Mutex::new( ProcessSignalSharedState::clone_from_another(&*current_process().signal_shared_state.lock().await)))
+             };
             // copy fd table
             let mut new_fd_table: Vec<Option<FileDescriptor>> = Vec::new();
             for fd in self.fd_table.lock().await.iter() {
@@ -851,7 +851,7 @@ impl ProcessControlBlock {
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
                 user_stack_top: AtomicUsize::new(0),
 
-                signal_shared_state: Mutex::new(ProcessSignalSharedState::default()),
+                signal_shared_state:new_proc_sig_state,
                 tasks: Mutex::new(Vec::new()),
             });
             if user_stack==0{
@@ -1009,12 +1009,14 @@ pub struct TaskControlBlock {
 }
 impl TaskControlBlock {
     
+    
     pub fn new(
         is_init: bool,
         process_id: usize,
         page_table_token: usize,
         fut: Pin<Box<dyn Future<Output = i32> + 'static>>,
         trap_cx: Box<TrapContext>,
+        signal_state:TaskSignalState,
     ) -> Self {
         Self {
             id: TaskId::new(),
@@ -1031,7 +1033,7 @@ impl TaskControlBlock {
             page_table_token: UnsafeCell::new(page_table_token),
             trap_cx: UnsafeCell::new(Some(trap_cx)),
             state: Spin::new(TaskStatus::Runnable),
-            signal_state: Mutex::new(TaskSignalState::default()), 
+            signal_state: Mutex::new(signal_state), 
         }
     }
     ///
@@ -1098,6 +1100,8 @@ impl TaskControlBlock {
             *self.page_table_token.get() = token;
         }
     }
+    
+
 pub fn get_process(&self)->ProcessRef{
     Arc::clone(
         PID2PC
