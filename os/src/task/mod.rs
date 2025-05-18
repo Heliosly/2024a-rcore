@@ -147,10 +147,10 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 // static INITPROC_STR: &str =          "ch5b_initproc";
 // static INITPROC_STR: &str =          "ch2b_power_3";
 // static INITPROC_STR: &str =          "musl/basic/yield";
-//  static INITPROC_STR: &str =          "musl/busybox";
+ static INITPROC_STR: &str =          "musl/busybox";
 
 //  static INITPROC_STR: &str =          "cosmmap_clone";
- static INITPROC_STR: &str =          "ch5b_usertest";
+//  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
     /// Creation of initial process
     ///
@@ -167,7 +167,7 @@ pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
     
         // 1. 创建 PCB future
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
-        let binding = get_args("".as_bytes());
+        let binding = get_args("musl/busybox sh".as_bytes());
         let pcb_fut = ProcessControlBlock::new(
             data.as_slice(),
             "/".to_string(),

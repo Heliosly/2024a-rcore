@@ -21,6 +21,7 @@ use crate::{mm::{get_target_ref, get_target_ref_mut, put_data, translated_refmut
 // 通常由 trampoline 调用，用于从信号处理函数返回
 pub async  fn sys_sigreturn()-> SyscallRet {
  
+    trace!("[sys_sigreturn]");
     if load_trap_for_signal().await {
         // 说明确实存在着信号处理函数的trap上下文
         // 此时内核栈上存储的是调用信号处理前的trap上下文
@@ -31,7 +32,6 @@ pub async  fn sys_sigreturn()-> SyscallRet {
         // 此时直接返回EPERM
         Err(SysErrNo::EPERM)
     }
-    //
  
 }
 
@@ -44,6 +44,8 @@ pub async fn sys_sigaction(
     act_user_ptr: *const SigAction,
     oldact_user_ptr: *mut SigAction,
 ) -> SyscallRet {
+
+    trace!("[sys_sigaction]");
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -85,6 +87,7 @@ pub async  fn sys_sigprocmask(
     set_user_ptr: *const SigSet,
     oldset_user_ptr: *mut SigSet,
 ) -> SyscallRet {
+    trace!("[sys_sisgprocmask]");
     let current_task_arc = current_task();
     let mut signal_state = current_task_arc.signal_state.lock();
     let token = current_task_arc.get_process().get_user_token().await;
@@ -148,6 +151,8 @@ pub async  fn sys_sigprocmask(
 
 // int kill(pid_t pid, int sig); (或 tkill/tgkill)
 pub async  fn sys_tkill(target_tid: usize, signum_usize: usize) -> SyscallRet {
+    
+    trace!("[sys_tkill]");
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -177,6 +182,7 @@ pub async  fn sys_tkill(target_tid: usize, signum_usize: usize) -> SyscallRet {
 
 // int pause(void);
 pub async  fn sys_pause() -> SyscallRet {
+    trace!("[sys_pause]");
     let task_arc = current_task();
     // 1. 将当前任务的信号掩码保存起来 (old_mask = task.sigmask)。
     // 2. 将当前任务的信号掩码设置为空 (允许所有信号)。

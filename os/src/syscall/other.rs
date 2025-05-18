@@ -11,6 +11,7 @@ const RELEASE: &str = "0.1";
 const VERSION: &str = "0.1 (rcore)";
 const MACHINE: &str = "riscv64";
 pub async  fn sys_uname(buf: usize) -> SyscallRet {
+    trace!("[sys_name]");
     let token = current_token().await;
     // buf 是远端虚拟地址
     let remote = buf as *mut UtsName;
