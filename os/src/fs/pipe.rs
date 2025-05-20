@@ -1,9 +1,10 @@
 use core::{future::Future, pin::Pin, task::Poll};
 
 use alloc::{boxed::Box, sync::{Arc, Weak}};
+use async_trait::async_trait;
 use spin::Mutex;
 
-use crate::{mm::UserBuffer, task::yield_now, utils::error::{ASyncRet, ASyscallRet, SysErrNo}};
+use crate::{mm::UserBuffer, task::yield_now, utils::error::{ASyncRet, ASyscallRet, SysErrNo, TemplateRet}};
 
 use super::{File, OpenFlags};
 
@@ -122,15 +123,24 @@ pub async fn make_pipe(flags: OpenFlags) -> (Arc<Pipe>, Arc<Pipe>) {
     buffer.lock().set_write_end(&write_end);
     (read_end, write_end)
 }
+#[async_trait]
 impl File for Pipe{
-    fn readable(&self) ->ASyncRet<bool> {
-        Box::pin(async { Ok(self.readable) })
+    async fn readable<'a>(
+        &'a self
+    )               
+     -> Result<bool, SysErrNo>{
+       Ok(self.readable) 
     }
-    fn writable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(self.writable) })
+    async fn writable<'a>(&'a self) -> TemplateRet<bool> {
+         Ok(self.writable) 
     }
-    fn read(&self, mut  buf: UserBuffer) -> ASyscallRet{
-       Box::pin(async move {
+    async fn read<'a>( 
+        & self,                
+        mut buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo>
+   
+        {
+      
             assert!(self.readable);
             let want_to_read = buf.len();
             let mut buf_iter = buf.buffers.iter_mut();
@@ -172,13 +182,12 @@ impl File for Pipe{
                 }
             }
        
-    }
-)
+    
     
 }
 
-    fn write(&self, buf: crate::mm::UserBuffer) -> ASyscallRet {
-    Box::pin( async move {
+async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
+   
             info!("kernel: Pipe::write");
             assert!(self.writable);
             let want_to_write = buf.len();
@@ -215,7 +224,6 @@ impl File for Pipe{
                
                 return Ok(already_write);
             }
-        }
-    )  
+        
     }
 }

@@ -10,8 +10,7 @@ mod address;
 pub(crate) mod frame_allocator;
 pub mod heap_allocator;
 mod memory_set;
-mod page_table;
-
+pub mod page_table;
 use core::arch::asm;
 
 use alloc::sync::Arc;
@@ -23,7 +22,7 @@ pub use memory_set::{ MapPermission, MemorySet, MapAreaType,VmAreaTree,MapArea,M
 use page_table::PTEFlags;
 pub use page_table::{
     translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,get_target_ref_mut,
-    PageTableEntry, UserBuffer, UserBufferIterator,fill_str
+    PageTableEntry, UserBuffer, UserBufferIterator,fill_str,TranslateRefError
 };
 use riscv::register::satp;
 

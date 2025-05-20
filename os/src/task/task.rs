@@ -7,8 +7,7 @@ use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
      VirtAddr, VirtPageNum,
 };
-use crate::signal::{self, ProcessSignalSharedState, TaskSignalState};
-use crate::sync::MutexGuard;
+use crate::signal::{ ProcessSignalSharedState, TaskSignalState};
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;

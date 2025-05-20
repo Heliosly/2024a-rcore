@@ -65,6 +65,11 @@ const SYSCALL_GETUID :usize = 174;
 ///exit group
 const SYSCALL_EXITGROUP :usize=  94;
 ///
+const SYSCALL_LSEEK: usize = 62;
+const SYSCALL_READV: usize = 65;
+const SYSCALL_WRITEV: usize = 66;
+const SYSCALL_PREAD64: usize = 67;
+const SYSCALL_PWRITE64: usize = 68;
 const SYSCALL_SIGPROCMASK :usize =135;
 const SYSCALL_RT_SIGACTION :usize =134;
 const SYSCALL_GETPPID:usize = 173;
@@ -73,11 +78,14 @@ const SYSCALL_FSTATAT :usize =79;
 const SYSCALL_IOCTL :usize =29;
 const SYSCALL_FCNTL:usize =25;
 const SYSCALL_SIGNALRET:usize =139;
+const SYSCALL_GETEUID:usize=175;
+const SYSCALL_GETCWD:usize= 17;
 mod fs;
 mod process;
 mod signal;
 mod other;
 pub mod flags;
+use flags::IoVec;
 use fs::*;
 use process::*;
 use other::*;
@@ -138,11 +146,18 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_UNAME => sys_uname(args[0]).await,
         SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
         SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]).await,
-SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
+        SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_SIGNALRET =>sys_sigreturn().await,
         // SYSCALL_KILL => sys_kill(args[0] as isize, args[1]),
         SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
+        SYSCALL_WRITEV=>sys_writev(args[0] , args[1] as *const IoVec, args[2] as i32).await,
+        SYSCALL_READV=>sys_readv(args[0], args[1] as *const IoVec, args[2] as i32).await,
+        SYSCALL_PREAD64=>sys_pread64(args[0], args[1] as *mut u8, args[2], args[3] ).await,
+        SYSCALL_LSEEK=>sys_lseek(args[0], args[1] as isize, args[2] ).await, 
+        SYSCALL_PWRITE64=>sys_pwrite64(args[0], args[1] as *const u8, args[2], args[3]).await,
+        SYSCALL_GETEUID=> sys_geteuid() ,
+        SYSCALL_GETCWD =>sys_getcwd(args[0] as *mut u8, args[1]).await,
         // SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }

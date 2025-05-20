@@ -22,7 +22,10 @@ hashbrown = "0.12.0"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = ["general", "no_std"] }
 num_enum = { version = "0.7.2", default-features = false }
 lwext4_rust = { path = "lwext4_rust" }
+async-trait = { path="vendor/async-trait" }
+
 [profile.release]
+
 debug = true
 
 opt-level = 0
@@ -31,3 +34,8 @@ debug = true
 opt-level = 0
 [env]
 RUST_LOG = "debug,lwext4_rust=off"
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

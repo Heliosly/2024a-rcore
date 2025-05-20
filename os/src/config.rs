@@ -2,7 +2,14 @@
 
 #[allow(unused)]
 
+//  MAX_KERNEL_RW_BUFFER_SIZE
+pub const MAX_KERNEL_RW_BUFFER_SIZE: usize = 4096 * 4; 
+/// Signal information. Corresponds to `struct siginfo_t` in libc.
+pub const SS_DISABLE: u32 = 2;
+/// maximum number of readv/writev iovecs
+pub const UIO_MAXIOV: usize = 1024;
 
+pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
 pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16;
 /// kernel heap size

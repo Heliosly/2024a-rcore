@@ -10,7 +10,8 @@ mod pipe;
 
 use core::{any::Any, panic};
 use alloc::vec::Vec;
-use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet}};
+use async_trait::async_trait;
+use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet, TemplateRet}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use ext4::EXT4FS;
 use hashbrown::{HashMap, HashSet};
@@ -23,29 +24,40 @@ pub use vfs::vfs_ops::VfsOps;
 pub use stat::Kstat;
 pub use inode::OSInode;
 pub use fd::{FileClass,FileDescriptor};
+use alloc::boxed::Box;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
 
+#[async_trait]
 /// trait File for all file types
-pub trait File: Send + Sync +Any {
-    
-    fn read<'a>(&'a self, buf: UserBuffer) -> ASyscallRet<'a>{
-        unimplemented!();
-    }
-    /// For default file, data must be written to page cache first.
-    fn write<'a>(&'a self, buf: UserBuffer) -> ASyscallRet<'a>{
-         unimplemented!();
-    }
-     /// whether the file is readable
-     fn readable<'a>(&'a self) -> ASyncRet<'a,bool> {
-        unimplemented!();
+pub trait File: Send + Sync + Any {
+    /// Reads data from the file into the provided buffer.
+    /// The lifetime of the returned Future is bound by the lifetime of `buf`.
+    async fn read<'a>( 
+        &self,                 
+        mut buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo>{
+unimplemented!()
+
+    } 
+
+    /// Writes data from the provided buffer to the file.
+    /// The lifetime of the returned Future is bound by the lifetime of `buf`.
+    async fn write<'a>(
+        &self,
+        buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo>{
+        unimplemented!()
     }
 
     /// whether the file is writable
-    fn writable<'a>(&'a self) -> ASyncRet<'a,bool> {
+    async fn writable<'a>(&'a self) -> TemplateRet<bool> {
       unimplemented!();
     }
+    async fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        unimplemented!();
+      }
 
     fn clear(&self){
         panic!("d");

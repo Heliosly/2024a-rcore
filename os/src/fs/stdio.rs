@@ -1,29 +1,33 @@
 //!Stdin & Stdout
 
 use alloc::boxed::Box;
+use async_trait::async_trait;
 
 use super::File;
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task:: yield_now ;
-use crate::utils::error::{ASyncRet, ASyscallRet} ;
+use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo, TemplateRet} ;
 
 /// stdin file for getting chars from console
 pub struct Stdin;
 
 /// stdout file for putting chars to console
 pub struct Stdout;
-
+#[async_trait]
 impl File for Stdin {
-    fn readable(&self) ->ASyncRet<bool> {
-        Box::pin(async { Ok(true) })
+    async fn readable<'a>(&'a self) -> TemplateRet<bool> {
+      Ok(true) 
     }
-    fn writable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(false) })
+    async fn writable<'a>(&'a self) -> TemplateRet<bool> {
+         Ok(false) 
     }
-    fn read(&self, mut  user_buf: UserBuffer) -> ASyscallRet{
-        Box::pin(async move {
-            assert_eq!(user_buf.len(), 1);
+    async fn read<'a>( 
+        & self,                
+        mut buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo>{
+     
+            assert_eq!(buf.len(), 1);
     
             loop {
                 let c = console_getchar();
@@ -33,38 +37,41 @@ impl File for Stdin {
                 } else {
                     let ch = c as u8;
         unsafe {
-            user_buf.buffers[0].as_mut_ptr().write_volatile(ch);
+            buf.buffers[0].as_mut_ptr().write_volatile(ch);
         }
         
                     break Ok(1);  // 返回一个成功的结果，结果是 Ok(1)
                 }
             }
-        })
+       
     }
-    fn write(&self, _user_buf: UserBuffer) -> ASyscallRet {
+    async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo>{
         panic!("Cannot write to stdin!");
     }
     
 }
-
+#[async_trait]
 impl File for Stdout {
-    fn readable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(false) })
+    async fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        Ok(false) 
     }
-    fn writable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(true) })
+    async fn writable<'a>(&'a self) -> TemplateRet<bool>{
+        Ok(true) 
     }
-    fn read(&self, _user_buf: UserBuffer) -> ASyscallRet {
-        Box::pin(async { panic!("Cannot read from stdout!") })
+    async fn read<'a>( 
+        & self,                
+        mut buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo> {
+        panic!("Cannot read from stdout!") 
     }
-    fn write(&self, user_buf: UserBuffer) -> ASyscallRet {
-        Box::pin(async move {
-            for buffer in user_buf.buffers.iter() {
+    async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
+       
+            for buffer in buf.buffers.iter() {
                 
         // trace!("write ?t{}",core::str::from_utf8(*buffer).unwrap());
                 print!("{}", core::str::from_utf8(*buffer).unwrap());
             }
-            Ok(user_buf.len())
-        })
+            Ok(buf.len())
+     
     }
 }

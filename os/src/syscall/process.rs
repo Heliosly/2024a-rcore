@@ -13,8 +13,7 @@ use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
     fs::{open_file, OpenFlags, NONE_MODE},
     mm::{
-        flush_tlb, translated_byte_buffer, get_target_ref, translated_refmut, translated_str,
-        MapArea, MapAreaType, MapPermission, MapType, VirtAddr, VirtPageNum,
+        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, TranslateRefError, VirtAddr, VirtPageNum
     },
     syscall::flags::{MmapFlags, MmapProt},
     task::{
@@ -655,4 +654,80 @@ pub fn sys_set_priority(prio: isize) -> SyscallRet {
 
     set_priority(&(*current_task().0), prio);
     Ok(0)
+}
+pub fn sys_geteuid() -> SyscallRet {
+   
+        trace!(
+            "kernel:pid[{}] sys_getuid NOT IMPLEMENTED",
+            current_task().get_pid()
+        );
+        //todo(heliosly)
+        Ok(0)
+    
+}
+
+/// getcwd 系统调用实现
+/// buf: 用户空间缓冲区的指针，用于存储当前工作目录路径
+/// size: 用户缓冲区的大小
+/// 返回：成功时为实际写入用户缓冲区的字节数（包括末尾的 '\0'），
+///       如果 size 太小，返回 -ERANGE，
+///       如果 buf 无效，返回 -EFAULT，
+///       其他错误则返回相应错误码。
+/// POSIX getcwd 成功时返回 buf 指针，失败时返回 NULL。
+/// 我们这里调整为返回写入的长度或错误码。
+pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
+    // trace!("sys_getcwd(buf: {:p}, size: {})", buf_user_ptr, size);
+
+    if buf_user_ptr.is_null() && size != 0 { // POSIX 允许 buf 为 NULL 以查询所需大小，但我们这里简化
+        let len =current_process() .cwd.lock().await.as_bytes().len() + 1; // 包括 null terminator
+        return Ok(len);
+    }
+    if size == 0 && !buf_user_ptr.is_null() { // size 为0但buf非NULL，POSIX行为未明确，这里视为无效
+        return Err(SysErrNo::EINVAL);
+    }
+    if size == 0 && buf_user_ptr.is_null() { // POSIX 允许此情况动态分配，我们不支持
+        return Err(SysErrNo::EINVAL); // 或者 ERANGE，因为大小为0肯定不够
+    }
+    let proc_arc = current_process();
+    let cwd_kernel_string = proc_arc.cwd.lock().await.clone();
+    let token = proc_arc.get_user_token().await; // 或者 proc_arc.memory_set.lock().await.token();
+    let cwd_len_with_null = cwd_kernel_string.len() + 1;
+
+    if size < cwd_len_with_null {
+        return Err(SysErrNo::ERANGE);
+    }
+
+    // 1. 创建 buffer_to_copy，使其生命周期覆盖 copy_to_user_bytes 调用
+    let mut buffer_to_copy = Vec::with_capacity(cwd_len_with_null);
+    buffer_to_copy.extend_from_slice(cwd_kernel_string.as_bytes());
+    buffer_to_copy.push(0); // Null terminator
+
+    // 2.  bytes_to_copy_slice 借用一个仍然存活的 buffer_to_copy
+    let bytes_to_copy_slice: &[u8] = &buffer_to_copy;
+
+    // 3. 使用 copy_to_user_bytes
+    match unsafe {
+        copy_to_user_bytes(
+            token,
+            VirtAddr::from(buf_user_ptr as usize),
+            bytes_to_copy_slice,
+        )
+    } {
+        Ok(bytes_copied) => {
+            if bytes_copied != cwd_len_with_null {
+                // log::error!("sys_getcwd: copy_to_user_bytes copied {} bytes, expected {}", bytes_copied, cwd_len_with_null);
+                Err(SysErrNo::EFAULT)
+            } else {
+                Ok(bytes_copied )
+            }
+        }
+        Err(translate_error) => {
+            // log::warn!("sys_getcwd: copy_to_user_bytes failed: {:?}", translate_error);
+            match translate_error {
+                TranslateRefError::TranslationFailed(_) | TranslateRefError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
+                TranslateRefError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
+                _ => Err(SysErrNo::EFAULT),
+            }
+        }
+    }
 }

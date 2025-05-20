@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-use crate::config;
+use crate::config::{self, PAGE_SIZE};
 use crate::utils::error::{ SysErrNo, TemplateRet};
 use crate::utils::is_aligned_to;
 bitflags! {
@@ -175,6 +175,8 @@ impl PageTable {
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
     }
+
+    ///并不安全也许有部分位置是懒分配的页面，这样会触发内核错误todo
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
@@ -189,43 +191,52 @@ impl PageTable {
             (aligned_pa_usize + offset).into()
         })
     }
-    /// get the token from the page table
+
+    pub fn translate_va_with_perm(&self, va: VirtAddr, require_writable: bool) -> Result<PhysAddr, TranslateRefError> {
+        match self.find_pte(va.clone().floor())
+        {
+            Some(pte) => {
+              
+            if require_writable && !pte.writable() {
+                    return Err(TranslateRefError::PermissionDenied(va));
+            }
+            let aligned_pa: PhysAddr = pte.ppn().into();
+            let offset = va.page_offset();
+            let aligned_pa_usize: usize = aligned_pa.into();
+       
+             return  Ok((aligned_pa_usize + offset).into())
+                
+            },
+            None => {
+                return Err(TranslateRefError::PermissionDenied(va));
+            }
+        }
+          
+
+
+            }
+
+        
+        
+        
+        
+            
+
+        
+    
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
 }
 
-/// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
-pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
-    let page_table = PageTable::from_token(token);
-    let mut start = ptr as usize;
-    let end = start + len;
-    let mut v = Vec::new();
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        if end_va.page_offset() == 0 {
-            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
-        } else {
-            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
-        }
-        start = end_va.into();
-    }
-    v
-}
-
-
 /// An abstraction over a buffer passed from user space to kernel space
-pub struct UserBuffer {
+
+pub struct UserBuffer<'b> {
     /// A list of buffers
-    pub buffers: Vec<&'static mut [u8]>,
+    pub buffers: Vec<&'b mut [u8]>,
 }
 
-impl UserBuffer {
+impl<'b> UserBuffer<'b> {
     /// Constuct UserBuffer
     pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
         Self { buffers }
@@ -240,9 +251,9 @@ impl UserBuffer {
     }
 }
 
-impl IntoIterator for UserBuffer {
+impl<'b> IntoIterator for UserBuffer<'b> {
     type Item = *mut u8;
-    type IntoIter = UserBufferIterator;
+    type IntoIter = UserBufferIterator<'b>;
     fn into_iter(self) -> Self::IntoIter {
         UserBufferIterator {
             buffers: self.buffers,
@@ -253,13 +264,13 @@ impl IntoIterator for UserBuffer {
 }
 
 /// An iterator over a UserBuffer
-pub struct UserBufferIterator {
-    buffers: Vec<&'static mut [u8]>,
+pub struct UserBufferIterator<'b> {
+    buffers: Vec<&'b mut [u8]>,
     current_buffer: usize,
     current_idx: usize,
 }
 
-impl Iterator for UserBufferIterator {
+impl<'b> Iterator for UserBufferIterator<'b> {
     type Item = *mut u8;
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_buffer >= self.buffers.len() {
@@ -281,29 +292,7 @@ impl Iterator for UserBufferIterator {
 
 
 
-
-// /// 将数据 `data` 写入 `token` 地址空间 `ptr` 处，
-// /// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页
-// pub fn put_data<T: 'static>(token: usize, ptr: *mut T, data: T)->GeneralRet {
-//     let page_table = PageTable::from_token(token);
-//     let mut va = VirtAddr::from(ptr as usize);
-//     let pa = page_table.translate_va(va).unwrap();
-//     let size = core::mem::size_of::<T>();
-//     // 若数据跨页，则转换成字节数据写入
-//     if (pa + size - 1).floor() != pa.floor() {
-//         let bytes =
-//             unsafe { core::slice::from_raw_parts(&data as *const _ as usize as *const u8, size) };
-//         for i in 0..size {
-//             *(page_table.translate_va(va).unwrap().get_mut()) = bytes[i];
-//             va = va + 1;
-//         }
-//     } else {
-//         *translated_refmut(token, ptr)? = data;
-//     };
-//     Ok(())
-// }
-
-
+use core::mem::MaybeUninit;
 use core::{ptr,slice};
 #[derive(Debug)]
 pub enum PutDataError {
@@ -497,6 +486,10 @@ pub fn get_target_ref_mut<'a, T: 'static>(
 pub enum TranslateRefError {
     TranslationFailed(VirtAddr),
     DataCrossesPageBoundary,
+    UnexpectedEofOrFault,   
+    InternalBufferOverflow,  
+    LengthOverflow,          
+    PermissionDenied(VirtAddr)
     // Add other specific errors if needed, e.g., InsufficientPermissions
 }
 
@@ -505,6 +498,10 @@ impl From<TranslateRefError> for SysErrNo {
         match err {
             TranslateRefError::TranslationFailed(_) => SysErrNo::ENOMEM,
             TranslateRefError::DataCrossesPageBoundary => SysErrNo::EFAULT, // Or another appropriate error code
+            TranslateRefError::UnexpectedEofOrFault => SysErrNo::EFAULT,
+            TranslateRefError::InternalBufferOverflow => SysErrNo::EFAULT,
+            TranslateRefError::LengthOverflow => SysErrNo::EFAULT,
+            TranslateRefError::PermissionDenied(_)=> SysErrNo::EACCES,
         }
     }
 }
@@ -544,7 +541,29 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static m
 }
 
 
-/// Translates a virtual address `ptr` from the address space identified by `token`
+
+pub fn fill_str(token: usize, remote_buf: *mut u8, s: &str, max_len: usize) -> Result<(), PutDataError> {
+    let bytes = s.as_bytes();
+    // 限长：最多写 max_len-1 个字符，最后一个位置放 0
+    // Calculate the length of the write operation, ensuring it does not exceed the maximum allowed length.
+    // The length is capped at `max_len - 1` to leave space for a null terminator.
+    let write_len = core::cmp::min(bytes.len(), max_len - 1);
+    for i in 0..write_len {
+        // 写每个字符
+        unsafe {
+            let ptr = remote_buf.add(i);
+            put_data(token, ptr, bytes[i])?;
+        }
+    }
+    // 写终止符
+    unsafe {
+        let term_ptr = remote_buf.add(write_len);
+        put_data(token, term_ptr, 0u8)?;
+    }
+    Ok(())
+}
+
+// Translates a virtual address `ptr` from the address space identified by `token`
 /// and returns a reference to `T`.
 ///
 /// # Panics
@@ -592,23 +611,384 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
     Ok(unsafe { &*start_pa.get_ptr::<T>() }) // Assuming PhysAddr::as_ptr() returns *const T
 }
 
-pub fn fill_str(token: usize, remote_buf: *mut u8, s: &str, max_len: usize) -> Result<(), PutDataError> {
-    let bytes = s.as_bytes();
-    // 限长：最多写 max_len-1 个字符，最后一个位置放 0
-    // Calculate the length of the write operation, ensuring it does not exceed the maximum allowed length.
-    // The length is capped at `max_len - 1` to leave space for a null terminator.
-    let write_len = core::cmp::min(bytes.len(), max_len - 1);
-    for i in 0..write_len {
-        // 写每个字符
-        unsafe {
-            let ptr = remote_buf.add(i);
-            put_data(token, ptr, bytes[i])?;
-        }
+
+
+// 假设你的 PageTable, VirtAddr, PhysAddr, TranslateRefError 定义
+// 以及 PAGE_SIZE 常量
+// use crate::mm::{PageTable, VirtAddr, PhysAddr, TranslateRefError, PAGE_SIZE, page_offset};
+// fn page_offset(addr: usize) -> usize { addr % PAGE_SIZE } // 示例
+
+/// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内
+/// 最多 `max_len` 字节的连续内存区域的引用。
+///
+/// 返回 `Ok((&'a [u8], usize))`，其中 `&'a [u8]` 是物理连续内存的引用，
+/// `usize` 是这个引用实际包含的字节数（可能小于 `max_len`）。
+/// 返回 `Err(TranslateRefError)` 如果起始地址翻译失败。
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `va_start` 必须是有效的起始虚拟地址。
+/// - 返回的引用的生命周期 `'a` 必须小于等于物理页映射的实际生命周期。
+unsafe fn get_target_continuous_bytes_in_page<'a>(
+    token: usize,
+    va_start: VirtAddr,
+    max_len: usize,
+) -> Result<(&'a [u8], usize), TranslateRefError> {
+    if max_len == 0 {
+        return Ok((&[], 0));
     }
-    // 写终止符
-    unsafe {
-        let term_ptr = remote_buf.add(write_len);
-        put_data(token, term_ptr, 0u8)?;
+
+    let page_table = PageTable::from_token(token);
+    let pa_start = page_table
+        .translate_va(va_start)
+        .ok_or(TranslateRefError::TranslationFailed(va_start))?;
+
+    // TODO: 添加权限检查 (例如，可读性) from page table entry for pa_start
+
+    let start_offset_in_page = va_start.page_offset(); // va_start 在其虚拟页内的偏移
+                                                                // 或者 pa_start.as_usize() % PAGE_SIZE
+    let bytes_remaining_in_page = PAGE_SIZE - start_offset_in_page;
+    let len_to_get = max_len.min(bytes_remaining_in_page);
+
+    if len_to_get == 0 { // 例如 va_start 正好在页的末尾，而 max_len > 0
+        return Ok((&[], 0));
+    }
+
+    // pa_start.get_ptr::<u8>() 返回 *const u8，指向物理地址
+    // 我们确信从这个指针开始的 len_to_get 字节在物理上是连续的，
+    // 因为它们都在同一个物理页内。
+    let phys_ptr = pa_start.get_ptr::<u8>();
+    let byte_slice = slice::from_raw_parts(phys_ptr, len_to_get);
+
+    Ok((byte_slice, len_to_get))
+}
+
+
+
+
+
+/// 安全地从用户空间复制一个 `T` 类型的数组到内核。
+/// 处理跨页的用户源数据。
+///
+/// # Arguments
+/// * `token`: 用户地址空间的标识。
+/// * `user_src_ptr`: 指向用户空间数组起始位置的指针。
+/// * `count`: 数组中元素的数量。
+///
+/// # Returns
+/// `Ok(Vec<T>)` 如果成功复制。Vec 中的 T 保证已初始化。
+/// `Err(TranslateRefError)` 如果地址翻译失败或权限不足等。
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `user_src_ptr` 必须是有效的起始虚拟地址，且从该地址开始的 `count * size_of::<T>()` 字节是可读的。
+/// - `T` 必须是 `Copy` 或 `Pod` (Plain Old Data) 类型，才能安全地通过字节复制来构造。
+///   更通用的版本可能需要 `T: Default` 并逐个构造，或者返回 `Vec<MaybeUninit<T>>`。
+///   这里我们简化为返回 `Vec<T>`，并假设 `T` 可以从其字节表示安全地创建。
+pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安全地 assume_init
+    token: usize,
+    user_src_ptr: *const T,
+    count: usize,
+) -> Result<Vec<T>, TranslateRefError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let type_size = core::mem::size_of::<T>();
+    if type_size == 0 { // 处理 ZST 数组
+        // 对于 ZST，我们只需要 count 个默认实例。
+        // T: Copy 保证了 ZST 可以被复制。
+        // T 必须能被默认构造或零初始化。
+        // 如果 T 只是 Copy 而不能默认构造，这里会复杂。
+        // 假设 ZST 可以安全地用 `MaybeUninit::zeroed().assume_init()` 创建
+        let mut result_vec = Vec::with_capacity(count);
+        for _ in 0..count {
+            let zst_val: T = MaybeUninit::zeroed().assume_init();
+            result_vec.push(zst_val);
+        }
+        return Ok(result_vec);
+    }
+
+    let total_bytes_to_copy = count.checked_mul(type_size).ok_or(TranslateRefError::LengthOverflow)?; // 防止溢出
+
+    // 创建一个内核缓冲区来接收原始字节
+    // 使用 MaybeUninit 来避免初始化 Vec<T> 的元素，因为我们将直接写入字节
+    let mut kernel_buffer_uninit: Vec<MaybeUninit<T>> = Vec::with_capacity(count);
+    // SAFETY: Vec::with_capacity 后调用 set_len 是安全的，因为我们接下来会初始化所有元素
+    //         通过向其底层的 MaybeUninit<u8> 缓冲区写入。
+    kernel_buffer_uninit.set_len(count); // 扩展长度以匹配容量
+
+    // 获取指向 MaybeUninit<T> 底层字节缓冲区的可变 slice
+    let kernel_dest_byte_slice: &mut [MaybeUninit<u8>] = {
+        // SAFETY: MaybeUninit<T> 和 [MaybeUninit<u8>; size_of::<T>()] 布局兼容
+        //         MaybeUninit<[T; N]> 和 [MaybeUninit<T>; N] 布局兼容
+        //         slice_as_mut_ptr 返回 *mut T，然后转为 *mut MaybeUninit<T>
+        let ptr_maybe_uninit_t = kernel_buffer_uninit.as_mut_slice().as_mut_ptr();
+        // 将 *mut MaybeUninit<T> 转换为 *mut MaybeUninit<u8>
+        let ptr_maybe_uninit_u8 = ptr_maybe_uninit_t as *mut MaybeUninit<u8>;
+        slice::from_raw_parts_mut(ptr_maybe_uninit_u8, total_bytes_to_copy)
+    };
+    // 我们需要一个 &mut [u8] 给 copy_from_user_bytes
+    // MaybeUninit::slice_as_mut_ptr 可以得到 *mut T
+    // 我们需要 *mut u8
+    let kernel_dest_raw_u8_slice: &mut [u8] = {
+        // SAFETY: MaybeUninit<T> 与 T 具有相同的布局。
+        // 我们将 MaybeUninit<T> 的 slice 视为 u8 的 slice 来填充字节。
+        // 这是安全的，因为我们接下来会用 assume_init_vec。
+        let ptr_t = kernel_buffer_uninit.as_mut_ptr() as *mut T;
+        let ptr_u8 = ptr_t as *mut u8;
+        slice::from_raw_parts_mut(ptr_u8, total_bytes_to_copy)
+    };
+
+
+    // 执行字节复制
+    copy_from_user_bytes(
+        token,
+        kernel_dest_raw_u8_slice, // 目标是内核中 Vec<T> 的原始字节区域
+        VirtAddr::from(user_src_ptr as usize),
+        total_bytes_to_copy,
+    )?;
+
+    // 字节已复制到 kernel_buffer_uninit 的位置
+    // 现在可以安全地将 Vec<MaybeUninit<T>> 转换为 Vec<T>
+    // SAFETY: 我们已经从用户空间将 total_bytes_to_copy 填满了
+    //         kernel_buffer_uninit 的底层缓冲区，覆盖了所有 T 类型的实例。
+    //         由于 T: Copy，从其字节表示初始化是安全的。
+    let result_vec = kernel_buffer_uninit.into_iter().map(|mu| mu.assume_init()).collect();
+    // 或者，更直接（但也更 unsafe）的转换如果 Vec<MaybeUninit<T>> 和 Vec<T> 布局保证一致：
+    // let result_vec = mem::transmute::<Vec<MaybeUninit<T>>, Vec<T>>(kernel_buffer_uninit);
+    // 上面的 map + assume_init 更安全一些。
+
+    Ok(result_vec)
+}
+
+/// 安全地从用户空间复制 `len` 字节数据到内核提供的 `kernel_dest_buffer`。
+/// 处理跨页的用户源数据。
+///
+/// # Arguments
+/// * `token`: 用户地址空间的标识。
+/// * `kernel_dest_buffer`: 内核空间的目标缓冲区，必须至少有 `len` 字节的容量。
+/// * `user_src_va_start`: 用户空间的源虚拟地址。
+/// * `len`: 要复制的字节数。
+///
+/// # Returns
+/// `Ok(())` 如果成功复制了 `len` 字节。
+/// `Err(TranslateRefError)` 如果地址翻译失败或权限不足。
+/// `Err(CopyError::BufferTooSmall)` 如果 `kernel_dest_buffer` 不够大 (虽然这里签名是 &mut [u8])
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `user_src_va_start` 必须是有效的起始虚拟地址，且从该地址开始的 `len` 字节是可读的。
+/// - `kernel_dest_buffer` 必须指向有效的、可写的内核内存。
+pub unsafe fn copy_from_user_bytes(
+    token: usize,
+    kernel_dest_buffer: &mut [u8], // 目标是内核中的 slice
+    mut user_src_va: VirtAddr,
+    len_to_copy: usize,
+) -> Result<(), TranslateRefError> { // 可以定义一个更通用的 CopyError
+    if len_to_copy > kernel_dest_buffer.len() {
+        // return Err(CopyError::BufferTooSmall); // 或者 panic，或调整 API
+        // 对于 &mut [u8]，我们假设调用者保证了它足够大。
+        // 但最好还是检查一下。
+        if cfg!(debug_assertions) {
+            panic!("copy_from_user_bytes: kernel_dest_buffer too small");
+        }
+        // 或者返回一个错误，这里暂时简化为不处理这个特定错误
+    }
+
+    let mut bytes_copied: usize = 0;
+    let mut dest_slice_offset: usize = 0;
+
+    while bytes_copied < len_to_copy {
+        let remaining_len = len_to_copy - bytes_copied;
+        // 尝试从当前物理页获取尽可能多的字节
+        match get_target_continuous_bytes_in_page(token, user_src_va, remaining_len) {
+            Ok((user_page_slice, len_in_page)) => {
+                if len_in_page == 0 {
+                    // 这不应该发生，除非 remaining_len 也是0，或者 va 在页末尾且 remaining_len > 0
+                    // 如果 va 在页末尾，get_target_continuous_bytes_in_page 会返回 Ok((&[],0))
+                    // 但下一次循环 user_src_va 会增加，进入下一页。
+                    // 如果 len_in_page 为0但 remaining_len > 0，意味着无法读取更多数据，可能是 EFAULT。
+                    // 不过 get_target_continuous_bytes_in_page 本身会处理 TranslationFailed。
+                    // 这里表示一个逻辑问题或无法满足的读取。
+                    return Err(TranslateRefError::UnexpectedEofOrFault); // 需要定义这个错误
+                }
+
+                // 确定实际要复制的字节数（不能超过目标缓冲区的剩余容量）
+                let copy_now_len = len_in_page.min(kernel_dest_buffer.len() - dest_slice_offset);
+                if copy_now_len == 0 && remaining_len > 0 {
+                    // 内核目标缓冲区已满，但还有用户数据要读
+                    if cfg!(debug_assertions) {
+                        panic!("copy_from_user_bytes: kernel_dest_buffer became full unexpectedly");
+                    }
+                    return Err(TranslateRefError::InternalBufferOverflow); // 需要定义
+                }
+
+
+                kernel_dest_buffer[dest_slice_offset..dest_slice_offset + copy_now_len]
+                    .copy_from_slice(&user_page_slice[0..copy_now_len]);
+
+                bytes_copied += copy_now_len;
+                user_src_va = user_src_va + copy_now_len;
+                dest_slice_offset += copy_now_len;
+            }
+            Err(e) => return Err(e), // 传递翻译错误
+        }
     }
     Ok(())
 }
+
+
+
+
+
+
+/// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内
+/// 最多 `max_len` 字节的连续内存区域的可变引用。
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `va_start` 必须是有效的起始虚拟地址。
+/// - 返回的引用的生命周期 `'a` 必须小于等于物理页映射的实际生命周期。
+/// - 调用者必须确保对这块内存的独占可变访问，以避免数据竞争。
+unsafe fn get_target_continuous_writable_bytes_in_page<'a>(
+    token: usize,
+    va_start: VirtAddr,
+    max_len: usize,
+) -> Result<(&'a mut [u8], usize), TranslateRefError> {
+    if max_len == 0 {
+        return Ok((&mut [], 0));
+    }
+
+    let page_table = PageTable::from_token(token);
+    // 现在需要检查可写权限
+    let pa_start = page_table
+        .translate_va_with_perm(va_start, true /* require_writable */)?;
+      
+       
+
+
+    let start_offset_in_page = va_start.page_offset();
+    let bytes_remaining_in_page = PAGE_SIZE - start_offset_in_page;
+    let len_to_get = max_len.min(bytes_remaining_in_page);
+
+    if len_to_get == 0 {
+        return Ok((&mut [], 0));
+    }
+
+    // pa_start.get_mut_ptr::<u8>() 返回 *mut u8，指向物理地址
+    let phys_ptr_mut = pa_start.get_mut::<u8>();
+    let byte_slice_mut = slice::from_raw_parts_mut(phys_ptr_mut, len_to_get);
+
+    Ok((byte_slice_mut, len_to_get))
+}
+
+
+/// 安全地从内核缓冲区 `kernel_src_buffer` 复制数据到用户空间 `user_dest_va`。
+/// 处理用户空间目标地址可能跨页的情况。
+///
+/// # Arguments
+/// * `token`: 用户地址空间的标识。
+/// * `user_dest_va_start`: 用户空间的目标虚拟地址的起始。
+/// * `kernel_src_buffer`: 内核空间的源数据切片。
+/// * `len_to_copy`: 要复制的字节数。如果 `len_to_copy` 大于 `kernel_src_buffer.len()`，
+///                  则只会复制 `kernel_src_buffer.len()` 字节。
+///                  (或者可以设计为返回错误或 panic)。
+///                  这里我们假设 `len_to_copy <= kernel_src_buffer.len()` 由调用者保证，
+///                  或者我们只复制两者中较小的长度。
+///
+/// # Returns
+/// `Ok(usize)`: 成功复制的字节数。
+/// `Err(TranslateRefError)`: 如果地址翻译、权限或复制过程中发生错误。
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `user_dest_va_start` 必须是有效的起始虚拟地址，且从该地址开始的 `len_to_copy` 字节
+///   在用户空间中是有效的、可写的内存区域。
+/// - `kernel_src_buffer` 必须指向有效的、可读的内核内存。
+pub unsafe fn copy_to_user_bytes(
+    token: usize,
+    mut user_dest_va: VirtAddr,      // 用户空间目标虚拟地址
+    kernel_src_buffer: &[u8],       // 内核源数据
+    // len_to_copy: usize,          // 要复制的字节数，现在由 kernel_src_buffer.len() 决定
+) -> Result<usize, TranslateRefError> { // 返回实际复制的字节数
+    let len_to_copy = kernel_src_buffer.len();
+    if len_to_copy == 0 {
+        return Ok(0);
+    }
+
+    let mut bytes_copied: usize = 0;
+    let mut src_slice_offset: usize = 0; // 内核源缓冲区的偏移
+
+    while bytes_copied < len_to_copy {
+        let remaining_len_to_copy_from_kernel = len_to_copy - bytes_copied;
+
+        // 尝试获取用户空间当前物理页的可写字节区域
+        // get_target_continuous_writable_bytes_in_page 会限制长度到页尾
+        match get_target_continuous_writable_bytes_in_page(
+            token,
+            user_dest_va,
+            remaining_len_to_copy_from_kernel, // 最多复制剩余的字节
+        ) {
+            Ok((user_page_mut_slice, len_writable_in_page)) => {
+                if len_writable_in_page == 0 {
+                    // 无法在用户页获得可写空间，但仍有数据要复制。
+                    // 这可能意味着 user_dest_va 在页末尾，或者是一个错误。
+                    // get_target_continuous_writable_bytes_in_page 返回 Ok(&mut [], 0) 如果 va 在页尾且 max_len > 0
+                    // 如果 remaining_len_to_copy_from_kernel > 0，这不应该发生除非页本身就有问题。
+                    // 通常表示 EFAULT 或类似的页问题。
+                    // 如果是因为 va 在页末尾，下一次迭代 user_dest_va 会增加。
+                    // 但如果 max_len (即 remaining_len...) 也是0，则不会到这里。
+                    // 为了安全，如果 len_writable_in_page 是0但还有数据要写，则认为是错误。
+                    if remaining_len_to_copy_from_kernel > 0 {
+                        // log::warn!("copy_to_user: Got 0 writable bytes in user page {:?} but still have {} bytes to copy.", user_dest_va, remaining_len_to_copy_from_kernel);
+                        return Err(TranslateRefError::UnexpectedEofOrFault); // 或者 EFAULT
+                    } else {
+                        break; // 没有剩余数据要复制了
+                    }
+                }
+
+                // 从内核源缓冲区复制到用户页的可写切片
+                // 只复制实际能在当前用户页写入的，并且不超过内核缓冲区剩余的
+                let actual_bytes_this_pass = len_writable_in_page; // 已经被 min(remaining_len, bytes_in_page) 限制
+
+                user_page_mut_slice[0..actual_bytes_this_pass]
+                    .copy_from_slice(
+                        &kernel_src_buffer[src_slice_offset .. src_slice_offset + actual_bytes_this_pass]
+                    );
+
+                bytes_copied += actual_bytes_this_pass;
+                user_dest_va = user_dest_va + actual_bytes_this_pass;
+                src_slice_offset += actual_bytes_this_pass;
+            }
+            Err(e) => return Err(e), // 传递翻译或权限错误
+        }
+    }
+    Ok(bytes_copied)
+}
+
+
+
+/// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
+pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    let page_table = PageTable::from_token(token);
+    let mut start = ptr as usize;
+    let end = start + len;
+    let mut v = Vec::new();
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        if end_va.page_offset() == 0 {
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
+        } else {
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+        }
+        start = end_va.into();
+    }
+    v
+}
+

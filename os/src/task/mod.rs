@@ -144,7 +144,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     drop(task); 
 }
 
-// static INITPROC_STR: &str =          "ch5b_initproc";
+// static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
 // static INITPROC_STR: &str =          "musl/basic/yield";
  static INITPROC_STR: &str =          "musl/busybox";

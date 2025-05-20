@@ -1,16 +1,22 @@
 //! File and filesystem-related syscalls
 
+use core::slice;
+
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
+use alloc::vec:: Vec;
+use alloc::vec;
+use linux_raw_sys::general::{SEEK_CUR, SEEK_END, SEEK_SET};
 
 
-use crate::config::PATH_MAX;
+use crate::config::{MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
 use crate::fs::{ find_inode, open_file, File,  Kstat,  OpenFlags };
-use crate::mm::{put_data, translated_byte_buffer,  translated_str, UserBuffer};
+use crate::mm::{get_target_ref, put_data, translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_process, current_task, current_token};
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
-use super::flags::{ FstatatFlags, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
+use super::flags::{ FstatatFlags, IoVec, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
 
 
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -37,7 +43,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .write(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
                 .map_err(|_| SysErrNo::EIO)?;
-            Ok(bytes)
+            Ok(bytes )
         }
         None => Err(SysErrNo::EBADF),
     }
@@ -411,3 +417,421 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
         _ => Err(SysErrNo::EINVAL),
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+// 假设的类型和常量 (你需要根据你的项目调整)
+use crate::mm::{VirtAddr, TranslateRefError, PageTable}; // 你的内存管理类型
+
+// 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
+use crate::mm::page_table::{
+     // 你提供的，但主要用于单页、类型化数据
+    copy_from_user_array, copy_from_user_bytes, copy_to_user_bytes // 我们基于 copy_from_user_bytes 实现的
+    // 如果 TranslateRefError 需要扩展，确保也导入或定义
+};
+
+
+// --- 1. Syscall::Lseek (lseek) ---
+// lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量，所以改动不大
+pub async fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
+    // log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
+    let pcb_arc = current_process(); // 假设 current_process 是 async
+    let fd_table_guard = pcb_arc.fd_table.lock(); // 假设是同步锁
+
+    if fd < 0 || fd as usize >= fd_table_guard.len() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let file_descriptor = match fd_table_guard.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+        Some(f) => f.clone(), // 注意 FileDescriptor 的共享/生命周期
+        None => return Err(SysErrNo::EBADF),
+    };
+    // drop(fd_table_guard); // 可以在这里释放，如果 file_descriptor.seek 不依赖它
+
+   
+
+    // FileDescriptor 的 seek 方法本身可能是同步的
+    // 如果是 async fn seek(&self, ...) -> ... 则需要 .await
+    Ok(file_descriptor.file()?.lseek(offset, whence) ?)
+}
+
+// --- 2. Syscall::Pread64 (pread64) ---
+pub async fn sys_pread64(fd: usize, user_buf_ptr: *mut u8, count: usize, offset: usize) -> SyscallRet {
+    // log::trace!("sys_pread64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let fd_table_guard = pcb_arc.fd_table.lock();
+
+    if fd < 0 || fd as usize >= fd_table_guard.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file_descriptor = match fd_table_guard.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+        Some(f) => f.clone(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    drop(fd_table_guard); // 释放 fd_table 锁
+
+    if user_buf_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 在内核中创建一个临时缓冲区来接收数据
+    // FIXME: 对于大 count，避免大 Vec 分配。考虑使用页对齐的缓冲区池或直接操作用户页。
+    let mut kernel_buffer = vec![0u8; count.min(MAX_KERNEL_RW_BUFFER_SIZE)]; // 限制单次内核缓冲区大小
+    let actual_count_to_read_this_pass = kernel_buffer.len();
+
+    // FileDescriptor 的 read_at 方法本身可能是同步的
+   let bytes_read =file_descriptor.file()?.read_at(offset, &mut kernel_buffer[0..actual_count_to_read_this_pass]) ?;
+
+       
+            if bytes_read == 0 { // EOF
+                return Ok(0);
+            }
+            
+           
+               Ok( unsafe { copy_to_user_bytes(
+                    token,
+                    VirtAddr::from(user_buf_ptr as usize),
+                    &kernel_buffer[0..bytes_read],
+                ) }?
+            )
+            
+            
+            
+        }
+       
+    
+
+
+
+pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offset: usize) -> SyscallRet {
+    // log::trace!("sys_pwrite64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let fd_table_guard = pcb_arc.fd_table.lock();
+
+    if fd < 0 || fd as usize >= fd_table_guard.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file_descriptor = match fd_table_guard.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+        Some(f) => f.clone(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    drop(fd_table_guard);
+
+    if user_buf_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 从用户空间安全地复制数据到内核缓冲区
+    // FIXME: 考虑分块处理大 count
+    let mut kernel_buffer = vec![0u8; count.min(MAX_KERNEL_RW_BUFFER_SIZE)];
+    let actual_count_to_write_this_pass = kernel_buffer.len();
+
+     unsafe {
+        copy_from_user_bytes(
+            token,
+            &mut kernel_buffer[0..actual_count_to_write_this_pass],
+            VirtAddr::from(user_buf_ptr as usize),
+            actual_count_to_write_this_pass,
+        )
+    }?;
+      
+           file_descriptor.file()?.write_at(offset, &kernel_buffer[0..actual_count_to_write_this_pass])
+       
+}
+
+
+
+// --- 4. Syscall::Readv (readv) ---
+/// --- 4. Syscall::Readv (readv) ---
+pub async fn sys_readv(fd:  usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> SyscallRet {
+    if iovcnt <= 0 || iovcnt > UIO_MAXIOV as i32 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let iov_count = iovcnt as usize;
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let fd_table_guard = pcb_arc.fd_table.lock();
+
+    if fd < 0 || fd as usize >= fd_table_guard.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file_descriptor = match fd_table_guard.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+        Some(f) => f.clone(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    drop(fd_table_guard);
+
+    // 1. 从用户空间安全地复制 iovec 数组到内核
+    let kernel_iovs: Vec<IoVec> = match unsafe {
+        copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count)
+    } {
+        Ok(iovs) => iovs,
+        Err(_) => return Err(SysErrNo::EFAULT),
+    };
+
+    // 2. 校验每个 iovec 条目
+    let mut total_len_to_read_request: usize = 0;
+    for iov_entry in &kernel_iovs {
+        if iov_entry.base.is_null() && iov_entry.len > 0 {
+            return Err(SysErrNo::EFAULT);
+        }
+        total_len_to_read_request = total_len_to_read_request.saturating_add(iov_entry.len);
+    }
+    if total_len_to_read_request == 0 {
+        return Ok(0);
+    }
+
+    // 3. 循环读取每个 iovec 指定的缓冲区
+    let mut total_bytes_read: usize = 0;
+    // 内核中转缓冲区
+    let mut temp_kernel_chunk = Box::pin(vec![0u8; MAX_KERNEL_RW_BUFFER_SIZE.min(total_len_to_read_request)]);
+
+    let temp_chunk_len = temp_kernel_chunk.len();
+    for iov_entry in &kernel_iovs {
+        if iov_entry.len == 0 {
+            continue;
+        }
+
+        let mut bytes_read_for_this_iov: usize = 0;
+        let mut user_iov_offset: usize = 0;
+
+        while bytes_read_for_this_iov < iov_entry.len {
+          
+            let len_this_pass = (iov_entry.len - bytes_read_for_this_iov)
+                .min(temp_chunk_len);
+            if len_this_pass == 0 {
+                break;
+            }
+
+             let buf_slice = &mut temp_kernel_chunk[..len_this_pass];
+            let read_result = {
+                file_descriptor
+                    .file()?
+                    .read(UserBuffer { buffers: vec![buf_slice] })
+                    .await
+            };
+
+            match read_result {
+                Ok(0) => {
+                    // EOF
+                    return Ok(total_bytes_read);
+                }
+                Ok(bytes_read_into_chunk) => {
+                    // 复制到用户空间
+                    let user_dest_ptr = unsafe { iov_entry.base.add(user_iov_offset) };
+                    match unsafe {
+                        copy_to_user_bytes(
+                            token,
+                            VirtAddr::from(user_dest_ptr as usize),
+                            &temp_kernel_chunk[..bytes_read_into_chunk],
+                        )
+                    } {
+                        Ok(_) => {
+                            total_bytes_read += bytes_read_into_chunk;
+                            bytes_read_for_this_iov += bytes_read_into_chunk;
+                            user_iov_offset += bytes_read_into_chunk;
+
+                            if bytes_read_into_chunk < len_this_pass {
+                                // 读到的少于请求，提前返回
+                                return Ok(total_bytes_read);
+                            }
+                        }
+                        Err(_) => {
+                            if total_bytes_read > 0 {
+                                return Ok(total_bytes_read);
+                            } else {
+                                return Err(SysErrNo::EFAULT);
+                            }
+                        }
+                    }
+                }
+                Err(fs_error) => {
+                    if total_bytes_read > 0 {
+                        return Ok(total_bytes_read);
+                    } else {
+                        return Err(fs_error);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(total_bytes_read)
+}
+
+
+
+// --- 5. Syscall::Writev (writev) ---
+pub async fn sys_writev(fd:     usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> SyscallRet {
+    // log::trace!("sys_writev(fd: {}, iov_ptr: {:p}, iovcnt: {})", fd, iov_user_ptr, iovcnt);
+
+    if iovcnt <= 0 || iovcnt > UIO_MAXIOV as i32 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let iov_count = iovcnt as usize;
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let fd_table_guard = pcb_arc.fd_table.lock().await;
+
+    if fd < 0 || fd as usize >= fd_table_guard.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file_descriptor = match fd_table_guard.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+        Some(f) => f.clone(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    drop(fd_table_guard);
+
+    let kernel_iovs: Vec<IoVec> = match unsafe {
+        copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count)
+    } {
+        Ok(iovs) => iovs,
+        Err(_) => return Err(SysErrNo::EFAULT),
+    };
+
+    let mut total_len_to_write_request: usize = 0;
+    for iov_entry in kernel_iovs.iter() {
+        if iov_entry.base.is_null() && iov_entry.len > 0 {
+            return Err(SysErrNo::EFAULT);
+        }
+        total_len_to_write_request = total_len_to_write_request.saturating_add(iov_entry.len);
+    }
+    if total_len_to_write_request == 0 {
+        return Ok(0);
+    }
+
+    let mut total_bytes_written: usize = 0;
+    let mut temp_kernel_chunk = vec![0u8; MAX_KERNEL_RW_BUFFER_SIZE.min(total_len_to_write_request)];
+
+        let chunk_len= temp_kernel_chunk.len();
+    for iov_entry in kernel_iovs.iter() { // kernel_iovs 是内核的副本
+        if iov_entry.len == 0 {
+            continue;
+        }
+
+        let mut bytes_written_for_this_iov: usize = 0;
+        let mut user_iov_offset: usize = 0;
+        while bytes_written_for_this_iov < iov_entry.len {
+            let len_this_pass = (iov_entry.len - bytes_written_for_this_iov)
+                                .min(chunk_len);
+            if len_this_pass == 0 { break; }
+       
+            let slice = &mut temp_kernel_chunk[0..len_this_pass];
+            // 从用户 iovec 的当前部分复制数据到内核中转缓冲区
+            let user_src_ptr = unsafe { (iov_entry.base as *const u8).add(user_iov_offset) };
+            match unsafe {
+                copy_from_user_bytes(
+                    token,
+                    slice,
+                    VirtAddr::from(user_src_ptr as usize),
+                    len_this_pass,
+                )
+            } {
+                Ok(()) => {
+                    // 从内核中转缓冲区写入文件
+                    match file_descriptor.write(UserBuffer{buffers:vec![ slice]}
+                ).await{
+                        Ok(0) => { // 写入0字节但没有错误，通常意味着不能再写入 (例如管道另一端关闭)
+                            return Ok(total_bytes_written );
+                        }
+                        Ok(bytes_written_from_chunk) => {
+                            total_bytes_written += bytes_written_from_chunk;
+                            bytes_written_for_this_iov += bytes_written_from_chunk;
+                            user_iov_offset += bytes_written_from_chunk;
+
+                            if bytes_written_from_chunk < len_this_pass {
+                                // 文件提前结束写入 (例如磁盘满)
+                                return Ok(total_bytes_written );
+                            }
+                        }
+                        Err(fs_error) => {
+                            if total_bytes_written > 0 { return Ok(total_bytes_written ); }
+                            else { return Err(fs_error); }
+                        }
+                    }
+                }
+                Err(translate_error) => {
+                    // log::warn!("sys_writev: copy_from_user failed for iov: {:?}", translate_error);
+                    if total_bytes_written > 0 { return Ok(total_bytes_written); }
+                    else { return Err(SysErrNo::EFAULT); }
+                }
+            }
+        }
+    }
+    Ok(total_bytes_written )
+}
+
+
+// --- 依赖的辅助函数 (占位符，你需要提供实际实现) ---
+// mod crate::task {
+//     pub mod current {
+//         use alloc::sync::Arc;
+//         use super::{ProcessControlBlock, Task};
+//         pub async fn current_process() -> Arc<ProcessControlBlock> { unimplemented!() }
+//         // pub fn current_task_token() -> usize { unimplemented!() } // 或者通过 pcb.memory_set.lock().await.token()
+//     }
+//     // ... ProcessControlBlock, Task, TaskRef, SysErrNo ...
+// }
+// mod crate::fs {
+//     pub enum SeekWhence { SET, CUR, END }
+//     #[derive(Debug)] pub struct YourFsError;
+//     pub trait FileDescriptor: Send + Sync { // Send + Sync 如果要在 async 中安全共享
+//         fn seek(&self, offset: isize, whence: SeekWhence) -> Result<usize, YourFsError>;
+//         fn read(&self, buf: &mut [u8]) -> Result<usize, YourFsError>; // 同步方法
+//         fn write(&self, buf: &[u8]) -> Result<usize, YourFsError>;  // 同步方法
+//         fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, YourFsError>;
+//         fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, YourFsError>;
+//         // 如果你的文件操作也是 async, 那么这些方法签名会是 async fn ... -> Result<...>
+//         // 并且在调用处需要 .await
+//     }
+//     impl Clone for Box<dyn FileDescriptor> { /* ... */ } // 如果 FileDescriptor 是 dyn Trait
+// }
+// mod crate::mm {
+//     #[derive(Debug, Copy, Clone, PartialEq, Eq)] pub struct VirtAddr(usize);
+//     impl VirtAddr {
+//         pub fn from(v: usize) -> Self { Self(v) }
+//         pub fn as_usize(&self) -> usize { self.0 }
+//     }
+//     impl core::ops::Add<usize> for VirtAddr { type Output = Self; fn add(self, rhs: usize) -> Self::Output { Self(self.0.saturating_add(rhs)) } }
+
+//     #[derive(Debug)] pub enum TranslateRefError { TranslationFailed(VirtAddr), DataCrossesPageBoundary, UnexpectedEofOrFault, InternalBufferOverflow, LengthOverflow }
+//     pub mod user_mem {
+//         use super::*;
+//         pub unsafe fn get_target_ref<'a, T>(_token: usize, _ptr: *const T) -> Result<&'a T, TranslateRefError> { unimplemented!() }
+//         pub unsafe fn copy_from_user_bytes(_token: usize, _kernel_dest: &mut [u8], _user_src: VirtAddr, _len: usize) -> Result<(), TranslateRefError> { unimplemented!() }
+//         pub unsafe fn copy_to_user_bytes(_token: usize, _user_dest: VirtAddr, _kernel_src: &[u8], _len: usize) -> Result<(), TranslateRefError> { unimplemented!() }
+//         pub unsafe fn copy_from_user_array<T: Copy>(_token: usize, _user_src_ptr: *const T, _count: usize) -> Result<Vec<T>, TranslateRefError> { unimplemented!() }
+//     }
+// }
+// mod crate::syscall {
+//     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+//     pub enum SysErrNo { EINVAL, EBADF, EFAULT, EIO, /* ... */ }
+//     impl SysErrNo { pub fn from_fs_error(_err: crate::fs::YourFsError) -> Self { SysErrNo::EIO } }
+// }
+// mod libc {
+//     pub const EINVAL: i32 = 22; pub const EBADF: i32 = 9; pub const EFAULT: i32 = 14;
+//     pub const EIO: i32 = 5; pub const UIO_MAXIOV: usize = 1024;
+//     pub const SEEK_SET: i32 = 0; pub const SEEK_CUR: i32 = 1; pub const SEEK_END: i32 = 2;
+// }

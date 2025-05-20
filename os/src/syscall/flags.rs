@@ -62,3 +62,10 @@ pub const F_SETFD: usize = 2;
 pub const F_GETFL: usize = 3;
 pub const F_SETFL: usize = 4;
 pub const FD_CLOEXEC: usize = 1;
+
+#[repr(C)] // 与 C iovec 兼容
+#[derive(Debug, Copy, Clone)]
+pub struct IoVec {
+    pub base: *mut u8, // iov_base: Starting address of buffer
+    pub len: usize,    // iov_len: Number of bytes to transfer to/from buffer
+}

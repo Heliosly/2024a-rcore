@@ -4,8 +4,9 @@ use alloc::string::String;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use async_trait::async_trait;
 use bitflags::bitflags;
-use lwext4_rust::bindings::{SEEK_CUR, SEEK_END, SEEK_SET};
+use lwext4_rust::bindings::{off_t, SEEK_CUR, SEEK_END, SEEK_SET};
 
 use super::ext4::ops::FileWrapper;
 use super::stat::Kstat;
@@ -13,7 +14,7 @@ use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
-use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo};
+use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet, TemplateRet};
 use core::pin::Pin;
 use core::future::Future;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
@@ -94,6 +95,18 @@ impl OSInode {
         let inner =self.inner.exclusive_access();
         inner.inode.is_dir()
     }
+    pub fn read_at(&self,offset:usize, buf:&mut [u8])->SyscallRet{
+        let mut inner = self.inner.exclusive_access();
+        let n = inner.inode.read_at(offset as u64, buf)?;
+        inner.offset += n;
+        Ok(n)
+    }
+    pub fn write_at(&self,offset:usize, buf:&[u8])->SyscallRet{
+        let mut inner = self.inner.exclusive_access();
+        let n = inner.inode.write_at(offset as u64, buf)?;
+        inner.offset += n;
+        Ok(n)
+    }
 }
 
 impl OpenFlags {
@@ -165,7 +178,7 @@ impl InodeType {
         matches!(self, Self::Socket)
     }
 }
-
+#[async_trait]
 /// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OSInode {
     fn as_any(&self) -> &dyn core::any::Any {
@@ -175,39 +188,41 @@ impl File for OSInode {
         let _ = self.inner.exclusive_access().inode.truncate(0);
         
     }
-    fn readable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(self.readable) })  
+   async  fn readable(&self) -> TemplateRet<bool> {
+        Ok(self.readable)  
     }
 
-    fn writable(&self) -> ASyncRet<bool> {
-        Box::pin(async { Ok(self.writable) }) 
+   async fn writable(&self) -> TemplateRet<bool> {
+       Ok(self.writable) 
     }
-
-    fn read(&self, mut ub: UserBuffer) -> ASyscallRet {
-        Box::pin(async move {
+    async fn read<'a>( 
+        & self,                
+        mut buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo> {
+       
             let mut inner = self.inner.exclusive_access();
-            let mut total = 0;
-            for slice in ub.buffers.iter_mut() {
-                let n = inner.inode.read_at(inner.offset as u64, slice).unwrap();
+                let mut total = 0;
+            for slice in buf.buffers.iter_mut() {
+                let n = inner.inode.read_at(inner.offset as u64, slice)?;
                 if n == 0 { break; }
                 inner.offset += n;
                 total += n;
             }
             Ok(total)
-        })
+        
     }
 
-    fn write(&self, ub: UserBuffer) -> ASyscallRet {
-        Box::pin(async move {
+    async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
+      
             let mut inner = self.inner.exclusive_access();
             let mut total = 0;
-            for slice in ub.buffers.iter() {
-                let n = inner.inode.write_at(inner.offset as u64, *slice).unwrap();
+            for slice in buf.buffers.iter() {
+                let n = inner.inode.write_at(inner.offset as u64, *slice)?;
                 inner.offset += n;
                 total += n;
             }
             Ok(total)
-        })
+      
     }
     fn lseek(&self, offset: isize, whence: usize) -> crate::utils::error::SyscallRet {
         let whence = whence as u32;

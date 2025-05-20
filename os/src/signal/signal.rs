@@ -1,261 +1,28 @@
-use crate::task::exit_current_and_run_next;
+use core::mem;
 
-/// 仿照Linux signal实现
-pub const SIGHUP: usize = 1; /* Hangup.  */
-pub const SIGINT: usize = 2; /* Interactive attention signal.  */
-pub const SIGQUIT: usize = 3; /* Quit.  */
-pub const SIGILL: usize = 4; /* Illegal instruction.  */
-pub const SIGTRAP: usize = 5; /* Trace/breakpoint trap.  */
-// aka SIGIOT
-pub const SIGABRT: usize = 6; /* Abnormal termination.  */
-pub const SIGBUS: usize = 7; /* Bus error.  */
-pub const SIGFPE: usize = 8; /* Erroneous arithmetic operation.  */
-pub const SIGKILL: usize = 9; /* Killed.  */
-pub const SIGUSR1: usize = 10;
-pub const SIGSEGV: usize = 11; /* Invalid access to storage.  */
-pub const SIGUSR2: usize = 12;
-pub const SIGPIPE: usize = 13; /* Broken pipe.  */
-pub const SIGALRM: usize = 14; /* Alarm clock.  */
-pub const SIGTERM: usize = 15; /* Termination request.  */
-pub const SIGSTKFLT: usize = 16; /* Stack fault (obsolete).  */
-// aka SIGCLD
-pub const SIGCHLD: usize = 17; /* Child terminated or stopped.  */
-pub const SIGCONT: usize = 18; /* Continue.  */
-pub const SIGSTOP: usize = 19; /* Stop, unblockable.  */
-pub const SIGTSTP: usize = 20; /* Keyboard stop.  */
-pub const SIGTTIN: usize = 21; /* Background read from control terminal.  */
-pub const SIGTTOU: usize = 22; /* Background write to control terminal.  */
-pub const SIGURG: usize = 23; /* Urgent data is available at a socket.  */
-pub const SIGXCPU: usize = 24; /* CPU time limit exceeded.  */
-pub const SIGXFSZ: usize = 25; /* File size limit exceeded.  */
-pub const SIGVTALRM: usize = 26; /* Virtual timer expired.  */
-pub const SIGPROF: usize = 27; /* Profiling timer expired.  */
-pub const SIGWINCH: usize = 28; /* Window size change (4.3 BSD, Sun).  */
-// aka SIGPOLL
-pub const SIGIO: usize = 29; /* Pollable event occurred (System V).  */
-pub const SIGPWR: usize = 30; /* Power failure imminent.  */
-pub const SIGSYS: usize = 31; /* Bad system call.  */
-pub const SIGRTMIN: usize = 32;
-// User Custom
-pub const SIGRT_1: usize = SIGRTMIN + 1;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-bitflags! {
-    pub struct SigSet: usize {
-        const SIGHUP    = 1 << (SIGHUP -1);
-        const SIGINT    = 1 << (SIGINT - 1);
-        const SIGQUIT   = 1 << (SIGQUIT - 1);
-        const SIGILL    = 1 << (SIGILL - 1);
-        const SIGTRAP   = 1 << (SIGTRAP - 1);
-        const SIGABRT   = 1 << (SIGABRT - 1);
-        const SIGBUS    = 1 << (SIGBUS - 1);
-        const SIGFPE    = 1 << (SIGFPE - 1);
-        const SIGKILL   = 1 << (SIGKILL - 1);
-        const SIGUSR1   = 1 << (SIGUSR1 - 1);
-        const SIGSEGV   = 1 << (SIGSEGV - 1);
-        const SIGUSR2   = 1 << (SIGUSR2 - 1);
-        const SIGPIPE   = 1 << (SIGPIPE - 1);
-        const SIGALRM   = 1 << (SIGALRM - 1);
-        const SIGTERM   = 1 << (SIGTERM - 1);
-        const SIGSTKFLT = 1 << (SIGSTKFLT- 1);
-        const SIGCHLD   = 1 << (SIGCHLD - 1);
-        const SIGCONT   = 1 << (SIGCONT - 1);
-        const SIGSTOP   = 1 << (SIGSTOP - 1);
-        const SIGTSTP   = 1 << (SIGTSTP - 1);
-        const SIGTTIN   = 1 << (SIGTTIN - 1);
-        const SIGTTOU   = 1 << (SIGTTOU - 1);
-        const SIGURG    = 1 << (SIGURG - 1);
-        const SIGXCPU   = 1 << (SIGXCPU - 1);
-        const SIGXFSZ   = 1 << (SIGXFSZ - 1);
-        const SIGVTALRM = 1 << (SIGVTALRM - 1);
-        const SIGPROF   = 1 << (SIGPROF - 1);
-        const SIGWINCH  = 1 << (SIGWINCH - 1);
-        const SIGIO     = 1 << (SIGIO - 1);
-        const SIGPWR    = 1 << (SIGPWR - 1);
-        const SIGSYS    = 1 << (SIGSYS - 1);
-        const SIGRTMIN  = 1 << (SIGRTMIN- 1);
-        const SIGRT_1   = 1 << (SIGRT_1 - 1);
-    }
-}
+use crate::config::SS_DISABLE;
 
-impl SigSet {
-    pub fn default_op(&self) -> SigOp {
-        let terminate_signals = SigSet::SIGHUP
-            | SigSet::SIGINT
-            | SigSet::SIGKILL
-            | SigSet::SIGUSR1
-            | SigSet::SIGUSR2
-            | SigSet::SIGPIPE
-            | SigSet::SIGALRM
-            | SigSet::SIGTERM
-            | SigSet::SIGSTKFLT
-            | SigSet::SIGVTALRM
-            | SigSet::SIGPROF
-            | SigSet::SIGIO
-            | SigSet::SIGPWR;
-        let dump_signals = SigSet::SIGQUIT
-            | SigSet::SIGILL
-            | SigSet::SIGTRAP
-            | SigSet::SIGABRT
-            | SigSet::SIGBUS
-            | SigSet::SIGFPE
-            | SigSet::SIGSEGV
-            | SigSet::SIGXCPU
-            | SigSet::SIGXFSZ
-            | SigSet::SIGSYS;
-        let ignore_signals = SigSet::SIGCHLD | SigSet::SIGURG | SigSet::SIGWINCH;
-        let stop_signals = SigSet::SIGSTOP | SigSet::SIGTSTP | SigSet::SIGTTIN | SigSet::SIGTTOU;
-        let continue_signals = SigSet::SIGCONT;
-        if terminate_signals.contains(*self) {
-            SigOp::Terminate
-        } else if dump_signals.contains(*self) {
-            SigOp::CoreDump
-        } else if ignore_signals.contains(*self) || self.bits == 0 {
-            SigOp::Ignore
-        } else if stop_signals.contains(*self) {
-            SigOp::Stop
-        } else if continue_signals.contains(*self) {
-            SigOp::Continue
-        } else {
-            // println!("[kernel] signal {:?}: undefined default operation", self);
-            SigOp::Terminate
-        }
-    }
+use super::{sigact::SignalDefaultAction, NSIG};
 
-    pub fn from_sig(signo: usize) -> Self {
-        SigSet::from_bits(1 << (signo - 1)).unwrap()
-    }
-    pub fn peek_front(&self) -> Option<usize> {
-        if self.is_empty() {
-            None
-        } else {
-            // SigSet::from_bits(1 << (self.bits().trailing_zeros() as usize))
-            Some(self.bits().trailing_zeros() as usize + 1)
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct SigAction {
-    pub sa_handler: usize,
-    pub sa_flags: SigActionFlags,
-    pub sa_restore: usize,
-    pub sa_mask: SigSet,
-}
-
-impl SigAction {
-    pub fn new(signo: usize) -> Self {
-        let handler: usize = if signo == 0 {
-            1
-        } else {
-            match SigSet::from_sig(signo).default_op() {
-                SigOp::Continue | SigOp::Ignore => 1,
-                SigOp::Stop => 1, // TODO(ZMY): 添加Stop状态和相关函数
-                SigOp::Terminate | SigOp::CoreDump => exit_current_and_run_next as usize, //warn!对future不适用
-            }
-        };
-        Self {
-            sa_handler: handler,
-            sa_flags: SigActionFlags::empty(),
-            sa_restore: 0,
-            sa_mask: SigSet::empty(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct KSigAction {
-    pub act: SigAction,
-    pub customed: bool,
-}
-
-impl KSigAction {
-    pub fn new(signo: usize, customed: bool) -> Self {
-        Self {
-            act: SigAction::new(signo),
-            customed,
-        }
-    }
-    pub fn ignore() -> Self {
-        Self {
-            act: SigAction {
-                sa_handler: 1,
-                sa_flags: SigActionFlags::empty(),
-                sa_restore: 0,
-                sa_mask: SigSet::empty(),
-            },
-            customed: false,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SigOp {
-    Terminate,
-    CoreDump,
-    Ignore,
-    Stop,
-    Continue,
-}
-
-bitflags! {
-    /// Bits in `sa_flags' used to denote the default signal action.
-    pub struct SigActionFlags: usize{
-    /// Don't send SIGCHLD when children stop.
-        const SA_NOCLDSTOP = 1		   ;
-    /// Don't create zombie on child death.
-        const SA_NOCLDWAIT = 2		   ;
-    /// Invoke signal-catching function with three arguments instead of one.
-        const SA_SIGINFO   = 4		   ;
-    /// Use signal stack by using `sa_restorer'.
-        const SA_ONSTACK   = 0x08000000;
-    /// Restart syscall on signal return.
-        const SA_RESTART   = 0x10000000;
-    /// Don't automatically block the signal when its handler is being executed.
-        const SA_NODEFER   = 0x40000000;
-    /// Reset to SIG_DFL on entry to handler.
-        const SA_RESETHAND = 0x80000000;
-    /// Historical no-op.
-        const SA_INTERRUPT = 0x20000000;
-    /// Use signal trampoline provided by C library's wrapper function.
-        const SA_RESTORER  = 0x04000000;
-    }
-}
-
-bitflags! {
-    pub struct SignalStackFlags : u32 {
-        const ONSTACK = 1;
-        const DISABLE = 2;
-        const AUTODISARM = 0x80000000;
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct SignalStack {
-    pub sp: usize,
-    pub flags: u32,
-    pub size: usize,
-}
-
-impl SignalStack {
-    pub fn new(sp: usize, size: usize) -> Self {
-        SignalStack {
-            sp,
-            flags: SignalStackFlags::DISABLE.bits,
-            size,
-        }
-    }
-}
-
+/// ## 信号编号和元数据
+///
+/// `NSIG` 定义了支持的信号数量。
+/// `SigInfo` 结构体包含了信号的编号和代码，对应于 libc 中的 `siginfo_t` 结构体。
+/// `SignalStack` 结构体用于管理信号处理函数使用的栈。
+/// `SigMaskHow` 枚举定义了信号掩码的操作方式，如阻塞、解除阻塞和设置掩码。
+/// `Signal` 枚举定义了支持的信号类型，如 SIGHUP、SIGINT 等。
+/// `SignalDefaultAction` 枚举定义了信号的默认行为，如终止进程、忽略信号等。
+/// --- . 信号编号和元数据 ---
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SigInfo {
-    si_signo: u32,
-    si_errno: u32,
-    si_code: u32,
+    pub si_signo: u32,
+    pub si_errno: u32,
+    pub si_code: u32,
     // unsupported fields
-    __pad: [u8; 128 - 3 * core::mem::size_of::<u32>()],
+    pub __pad: [u8; 128 - 3 * core::mem::size_of::<u32>()],
 }
 
 impl SigInfo {
@@ -268,38 +35,142 @@ impl SigInfo {
         }
     }
 }
-/// 恢复被信号处理函数打断前的 TrapFrame，准备返回用户态。
-/// 如果存在 saved_trap，则返回 true（表示已装载），否则返回 false。
-#[no_mangle]
-pub async fn load_trap_for_signal() -> bool {
-    // 1. 找到当前任务
-    let task = current_task();
-    // 2. 拿到它的信号状态
-    let mut sig_state = task.signal_state.lock().await;
-
-    // 3. 如果之前有保存的 TrapFrame，就拿出来
-    if let Some(saved_frame) = sig_state.last_trap_frame.take() {
-        unsafe {
-            // 4. 拿到实际用于中断/异常的内核栈上的 TrapFrame 指针
-            //    假设你有这样的方法：
-            let now_trap_frame: &mut TrapFrame = task.utrap_frame().unwrap(); 
-
-            // 5. 拷贝回去，恢复原先全部寄存器状态
-            *now_trap_frame = saved_frame;
-
-            // 6. 如果当时用的是 SA_SIGINFO（sig_info = true），
-            //    需要从用户栈上的 SignalUserContext 里再拿一次 PC
-            if sig_state.sig_info {
-                // 用户态信号上下文结构在用户栈顶
-                let sp = now_trap_frame.get_sp();
-                let user_ctx = &*(sp as *const SignalUserContext);
-                let pc = user_ctx.get_pc();
-                now_trap_frame.set_pc(pc);
-            }
+impl Default for SigInfo {
+    fn default() -> Self {
+        Self {
+            si_signo: 0,
+            si_errno: 0,
+            si_code: 0,
+            __pad: [0; 128 - 3 * core::mem::size_of::<u32>()],
         }
-        true
-    } else {
-        // 没有未处理的信号上下文
-        false
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Debug, Copy)]
+pub struct SignalStack {
+    pub sp: usize,
+    pub flags: u32,
+    pub size: usize,
+}
+impl Default for SignalStack {
+    fn default() -> Self {
+        Self {
+            sp: 0,
+            flags: SS_DISABLE,
+            size: 0,
+        }
+    }
+}
+impl SignalStack {
+    pub fn new(sp: usize, size: usize) -> Self {
+        SignalStack {
+            sp,
+            flags: SS_DISABLE,
+            size,
+        }
+    }
+}
+
+impl SignalStack {
+    pub fn disabled(&self) -> bool {
+        self.flags == SS_DISABLE
+    }
+}
+
+// 需要与 SigSet 的大小匹配
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[repr(i32)] // libc::c_int 是 i32
+#[allow(non_camel_case_types)]
+pub enum SigMaskHow {
+    SIG_BLOCK = 0,   // 0
+    SIG_UNBLOCK = 1, // 1
+    SIG_SETMASK = 2, // 2
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, IntoPrimitive, TryFromPrimitive)]
+#[repr(usize)]
+pub enum Signal {
+    // POSIX.1-1990 Signals
+    SIGHUP = 1,
+    SIGINT = 2,
+    SIGQUIT = 3,
+    SIGILL = 4,
+    SIGTRAP = 5,
+    SIGABRT = 6, // Also SIGIOT
+    SIGBUS = 7,
+    SIGFPE = 8,
+    SIGKILL = 9,
+    SIGUSR1 = 10,
+    SIGSEGV = 11,
+    SIGUSR2 = 12,
+    SIGPIPE = 13,
+    SIGALRM = 14,
+    SIGTERM = 15,
+    SIGSTKFLT = 16, // Not in POSIX, but on Linux
+    SIGCHLD = 17,
+    SIGCONT = 18,
+    SIGSTOP = 19, // Cannot be caught or ignored
+    SIGTSTP = 20,
+    SIGTTIN = 21,
+    SIGTTOU = 22,
+    SIGURG = 23,
+    SIGXCPU = 24,
+    SIGXFSZ = 25,
+    SIGVTALRM = 26,
+    SIGPROF = 27,
+    SIGWINCH = 28,
+    SIGIO = 29,  // Also SIGPOLL
+    SIGPWR = 30, // Not in POSIX, but on Linux
+    SIGSYS = 31, // Also SIGUNUSED
+                 // Real-time signals could be added here (SIGRTMIN to SIGRTMAX)
+                 // For simplicity, we'll stick to standard signals for now.
+}
+
+impl Signal {
+    pub fn from_usize(signum: usize) -> Option<Self> {
+        if signum == 0 || signum >= NSIG {
+            // 0 不是有效信号
+            return None;
+        }
+        // SAFETY: 假设 Signal 枚举值与 usize 对应且在范围内
+        // 这种转换在 repr(usize) 和值正确时是安全的。
+        // 更安全的方式是使用 match 语句，但如果信号很多会很长。
+        if signum <= 31 {
+            // 假设我们只定义了到 31
+            Some(unsafe { mem::transmute(signum) })
+        } else {
+            None // 未定义的信号
+        }
+    }
+
+    pub fn default_action(&self) -> SignalDefaultAction {
+        match self {
+            Signal::SIGHUP
+            | Signal::SIGINT
+            | Signal::SIGQUIT
+            | Signal::SIGILL
+            | Signal::SIGTRAP
+            | Signal::SIGABRT
+            | Signal::SIGBUS
+            | Signal::SIGFPE
+            | Signal::SIGSEGV
+            | Signal::SIGPIPE
+            | Signal::SIGALRM
+            | Signal::SIGTERM
+            | Signal::SIGXCPU
+            | Signal::SIGXFSZ
+            | Signal::SIGVTALRM
+            | Signal::SIGPROF
+            | Signal::SIGSYS => SignalDefaultAction::Terminate,
+
+            Signal::SIGKILL | Signal::SIGSTOP => SignalDefaultAction::ForceTerminateOrStop, // 特殊处理
+
+            Signal::SIGCHLD | Signal::SIGURG | Signal::SIGWINCH | Signal::SIGCONT => {
+                SignalDefaultAction::Ignore
+            }
+
+            Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => SignalDefaultAction::Stop,
+            _ => SignalDefaultAction::Terminate, // 其他未明确列出的默认为 Terminate
+        }
     }
 }
