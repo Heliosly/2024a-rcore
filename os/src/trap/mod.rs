@@ -233,6 +233,7 @@ pub async fn user_task_top() -> i32 {
     loop {
         // debug!("into user_task_top");
         let curr = current_task();
+
         let tf = curr.get_trap_cx().unwrap();
         // debug!("trap_status:{:?}",tf.trap_status);
         if tf.trap_status == TrapStatus::Blocked {
@@ -327,7 +328,11 @@ pub async fn user_task_top() -> i32 {
                     );
                 }
             }
-
+{
+   //处理完系统调用过后，对应的信号处理和时钟更新
+            crate::signal::handle_pending_signals().await;
+            crate::task::sleeplist::process_timed_events();
+}
             tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end3");
             // 判断任务是否退出

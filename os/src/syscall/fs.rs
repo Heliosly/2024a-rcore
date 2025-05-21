@@ -1,18 +1,18 @@
 //! File and filesystem-related syscalls
 
-use core::slice;
-
+use crate::timer::TimeVal;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec:: Vec;
 use alloc::vec;
-use linux_raw_sys::general::{SEEK_CUR, SEEK_END, SEEK_SET};
 
-
-use crate::config::{MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
-use crate::fs::{ find_inode, open_file, File,  Kstat,  OpenFlags };
-use crate::mm::{get_target_ref, put_data, translated_byte_buffer, translated_str, UserBuffer};
+use crate::config::{FD_SETSIZE, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
+use crate::fs::{ find_inode, open_file, File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
+use crate::mm::{ put_data, translated_byte_buffer, translated_str, UserBuffer};
+use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
+use crate::timer::current_time;
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
@@ -783,55 +783,84 @@ pub async fn sys_writev(fd:     usize, iov_user_ptr: *const IoVec, iovcnt: i32) 
     Ok(total_bytes_written )
 }
 
+// --- sys_poll 系统调用实现 ---
+pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -> SyscallRet {
+    if nfds == 0 {
+        if timeout_ms > 0 {
+            let deadline = current_time().add_milliseconds(timeout_ms as usize);
+            sleep_until(Some(deadline)).await; // sleep_until 现在接受 Option
+            return Ok(0);
+        } else if timeout_ms == 0 {
+            return Ok(0);
+        } else { // timeout_ms < 0 (无限等待)
+            // 对于 nfds = 0 且无限等待，任务应该挂起直到被信号中断。
+            // 我们可以 await 一个永不超时的 SleepFuture。
+            // 当它被信号或其他方式唤醒时，SleepFuture 会 Ready。
+            // POSIX poll 此时返回 -EINTR。
+            sleep_until(None).await; // 等待，直到被唤醒（例如信号）
+            return Err(SysErrNo::EINTR); // 假设被信号中断
+        }
+    }
 
-// --- 依赖的辅助函数 (占位符，你需要提供实际实现) ---
-// mod crate::task {
-//     pub mod current {
-//         use alloc::sync::Arc;
-//         use super::{ProcessControlBlock, Task};
-//         pub async fn current_process() -> Arc<ProcessControlBlock> { unimplemented!() }
-//         // pub fn current_task_token() -> usize { unimplemented!() } // 或者通过 pcb.memory_set.lock().await.token()
-//     }
-//     // ... ProcessControlBlock, Task, TaskRef, SysErrNo ...
-// }
-// mod crate::fs {
-//     pub enum SeekWhence { SET, CUR, END }
-//     #[derive(Debug)] pub struct YourFsError;
-//     pub trait FileDescriptor: Send + Sync { // Send + Sync 如果要在 async 中安全共享
-//         fn seek(&self, offset: isize, whence: SeekWhence) -> Result<usize, YourFsError>;
-//         fn read(&self, buf: &mut [u8]) -> Result<usize, YourFsError>; // 同步方法
-//         fn write(&self, buf: &[u8]) -> Result<usize, YourFsError>;  // 同步方法
-//         fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, YourFsError>;
-//         fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, YourFsError>;
-//         // 如果你的文件操作也是 async, 那么这些方法签名会是 async fn ... -> Result<...>
-//         // 并且在调用处需要 .await
-//     }
-//     impl Clone for Box<dyn FileDescriptor> { /* ... */ } // 如果 FileDescriptor 是 dyn Trait
-// }
-// mod crate::mm {
-//     #[derive(Debug, Copy, Clone, PartialEq, Eq)] pub struct VirtAddr(usize);
-//     impl VirtAddr {
-//         pub fn from(v: usize) -> Self { Self(v) }
-//         pub fn as_usize(&self) -> usize { self.0 }
-//     }
-//     impl core::ops::Add<usize> for VirtAddr { type Output = Self; fn add(self, rhs: usize) -> Self::Output { Self(self.0.saturating_add(rhs)) } }
+    if nfds > FD_SETSIZE as usize { // 使用你配置的 FD_SETSIZE
+        return Err(SysErrNo::EINVAL);
+    }
 
-//     #[derive(Debug)] pub enum TranslateRefError { TranslationFailed(VirtAddr), DataCrossesPageBoundary, UnexpectedEofOrFault, InternalBufferOverflow, LengthOverflow }
-//     pub mod user_mem {
-//         use super::*;
-//         pub unsafe fn get_target_ref<'a, T>(_token: usize, _ptr: *const T) -> Result<&'a T, TranslateRefError> { unimplemented!() }
-//         pub unsafe fn copy_from_user_bytes(_token: usize, _kernel_dest: &mut [u8], _user_src: VirtAddr, _len: usize) -> Result<(), TranslateRefError> { unimplemented!() }
-//         pub unsafe fn copy_to_user_bytes(_token: usize, _user_dest: VirtAddr, _kernel_src: &[u8], _len: usize) -> Result<(), TranslateRefError> { unimplemented!() }
-//         pub unsafe fn copy_from_user_array<T: Copy>(_token: usize, _user_src_ptr: *const T, _count: usize) -> Result<Vec<T>, TranslateRefError> { unimplemented!() }
-//     }
-// }
-// mod crate::syscall {
-//     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-//     pub enum SysErrNo { EINVAL, EBADF, EFAULT, EIO, /* ... */ }
-//     impl SysErrNo { pub fn from_fs_error(_err: crate::fs::YourFsError) -> Self { SysErrNo::EIO } }
-// }
-// mod libc {
-//     pub const EINVAL: i32 = 22; pub const EBADF: i32 = 9; pub const EFAULT: i32 = 14;
-//     pub const EIO: i32 = 5; pub const UIO_MAXIOV: usize = 1024;
-//     pub const SEEK_SET: i32 = 0; pub const SEEK_CUR: i32 = 1; pub const SEEK_END: i32 = 2;
-// }
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+
+    let user_pollfds_kernel_copy: Vec<PollFd> = if user_fds_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    } else {
+        match unsafe { copy_from_user_array::<PollFd>(token, user_fds_ptr, nfds) } {
+            Ok(fds) => fds,
+            Err(_) => return Err(SysErrNo::EFAULT),
+        }
+    };
+
+    let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
+    let fd_table_guard = pcb_arc.fd_table.lock().await;
+
+    for (idx, user_pfd) in user_pollfds_kernel_copy.iter().enumerate() {
+        let mut fd_arc_opt: Option< FileDescriptor> = None;
+        let mut effective_events = user_pfd.events;
+        if user_pfd.fd >= 0 {
+            if let Some(fd_instance_opt_in_table) = fd_table_guard.get(user_pfd.fd as usize) {
+                if let Some(fd_instance_arc_in_table) = fd_instance_opt_in_table.as_ref() {
+                    // 假设 fd_table 存储的是 Arc<dyn FileDescriptor>
+                    fd_arc_opt = Some(fd_instance_arc_in_table.clone());
+                }
+            }
+        } else {
+            effective_events = PollEvents::empty();
+        }
+        parsed_requests.push(PollRequest ::new(
+            idx,
+            user_pfd.fd,
+            fd_arc_opt,
+            effective_events,
+        ));
+    }
+    drop(fd_table_guard);
+
+    // 计算传递给 PollFuture::new 的 Option<TimeVal>
+    let poll_future_timeout: Option<TimeVal> = if timeout_ms == 0 {
+        // 不等待，但 PollFuture 仍然需要被 poll 一次以检查即时就绪的 FD
+        // 我们可以传递 Some(current_time())，这样 SleepFuture 会立即超时。
+        Some(current_time())
+    } else if timeout_ms > 0 {
+        Some(current_time().add_milliseconds(timeout_ms as usize))
+    } else { // timeout_ms < 0 (无限等待)
+        None // 传递 None 给 PollFuture，它会创建一个 deadline 为 None 的 SleepFuture
+    };
+
+    let poll_future = PollFuture::new(
+        token,
+        parsed_requests,
+        user_fds_ptr,
+        nfds,
+        poll_future_timeout, // 传递计算好的 Option<TimeVal>
+    );
+
+    poll_future.await
+}

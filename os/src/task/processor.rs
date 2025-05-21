@@ -9,6 +9,7 @@ use super::task::TaskControlBlock;
 use super::{schedule, TaskStatus};
 use crate::mm::activate_by_token;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
+use crate::task::sleeplist::init_sleeper_queue;
 use crate::task::{put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
 use alloc::boxed::Box;
@@ -159,4 +160,5 @@ pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>)
     //     Mutex::new(task),
     // ));
     // KERNEL_IDLE_PROCESS.init_by(pcb);
+    init_sleeper_queue();
 }

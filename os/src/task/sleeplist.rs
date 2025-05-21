@@ -1,38 +1,35 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::collections:: LinkedList;
+use alloc::collections::LinkedList;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use core::cmp::Ordering;
 
 use spin::mutex::Mutex;
-use lazy_init::LazyInit; 
+use lazy_init::LazyInit;
 
-use crate::timer::{TimeVal, current_time};
-use crate::task::{Task, TaskStatus, TaskRef,  TID2TC}; 
-use crate::task::waker::waker_from_task ; 
-use super::current_task_id;
+use crate::timer::{TimeVal, current_time}; // 假设 TimeVal 可比较, Ord
+use crate::task::{Task, TaskStatus, TaskRef, TID2TC};
+use crate::task::waker::waker_from_task;
+use super::current_task_id; // 假设 current_task_id() -> usize
 
 // --- 全局睡眠队列 ---
 pub static GLOBAL_SLEEPER_QUEUE: LazyInit<Mutex<SleeperList>> = LazyInit::new();
 
-// 初始化函数，
 pub fn init_sleeper_queue() {
     GLOBAL_SLEEPER_QUEUE.init_by(Mutex::new(SleeperList::new()));
 }
 
-
-/// 1. 睡眠节点：存储唤醒时间、Waker 和 Task ID
+/// 1. 睡眠节点：存储唤醒时间 (可选)、Waker 和 Task ID
 pub struct SleepNode {
-    deadline: TimeVal,
-    waker: Waker,     
-    task_id: usize,   // 存储任务 ID，用于比较、排序和 Drop 时识别
+    deadline: Option<TimeVal>, // 改为 Option<TimeVal>
+    waker: Waker,
+    task_id: usize,
 }
 
 impl SleepNode {
-    /// 创建一个新的睡眠节点
-    pub fn new(deadline: TimeVal, waker: Waker, task_id: usize) -> Self {
+    pub fn new(deadline: Option<TimeVal>, waker: Waker, task_id: usize) -> Self {
         Self {
             deadline,
             waker,
@@ -41,7 +38,10 @@ impl SleepNode {
     }
 }
 
-// SleepNode 的比较逻辑主要基于 deadline，然后是 task_id
+// SleepNode 的比较逻辑：
+// None (永不超时) 被视为比任何 Some(TimeVal) 都大 (排在最后)
+// 两个 None deadline 根据 task_id 比较
+// 两个 Some(TimeVal) deadline 根据 TimeVal 然后 task_id 比较
 impl PartialEq for SleepNode {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline && self.task_id == other.task_id
@@ -57,15 +57,19 @@ impl PartialOrd for SleepNode {
 
 impl Ord for SleepNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.deadline.cmp(&other.deadline)
-            .then_with(|| self.task_id.cmp(&other.task_id))
+        match (self.deadline, other.deadline) {
+            (Some(d1), Some(d2)) => d1.cmp(&d2).then_with(|| self.task_id.cmp(&other.task_id)),
+            (Some(_), None) => Ordering::Less,    // Some is "earlier" than None (infinite)
+            (None, Some(_)) => Ordering::Greater, // None is "later" than Some
+            (None, None) => self.task_id.cmp(&other.task_id), // Both infinite, order by task_id
+        }
     }
 }
 
 
-/// 2. 睡眠列表：使用 alloc::collections::LinkedList 存储 Arc<SleepNode>
+/// 2. 睡眠列表：存储 Arc<SleepNode>
 pub struct SleeperList {
-    list: LinkedList<Arc<SleepNode>>,
+    list: LinkedList<Arc<SleepNode>>, // 内部仍然按上述 Ord 规则排序
 }
 
 impl SleeperList {
@@ -78,32 +82,46 @@ impl SleeperList {
         loop {
             match cursor.current() {
                 Some(current_node_arc) => {
+                    // 使用 SleepNode 的 Ord 实现进行比较
                     if **current_node_arc > *new_node_arc {
-                        break;
+                        break; // new_node_arc 应该在 current_node_arc 之前
                     }
                 }
-                None => break,
+                None => break, // 到达末尾，new_node_arc 是最大的，或列表为空
             }
             cursor.move_next();
         }
-        cursor.insert_before(new_node_arc);
+        cursor.insert_before(new_node_arc); // 在找到的位置之前插入
     }
 
     pub fn pop_expired(&mut self, now: TimeVal) -> Vec<Arc<SleepNode>> {
         let mut expired_nodes = Vec::new();
-        while let Some(front_node_arc) = self.list.front() {
-            if (**front_node_arc).deadline <= now {
-                if let Some(expired_node) = self.list.pop_front() {
-                    expired_nodes.push(expired_node);
+        while let Some(front_node_arc_ref) = self.list.front() { // front() 返回 &Arc<SleepNode>
+            match front_node_arc_ref.deadline { // front_node_arc_ref 是 &Arc<SleepNode>
+                Some(deadline_val) => {
+                    if deadline_val <= now {
+                        // 队首已到期，弹出
+                        if let Some(expired_node) = self.list.pop_front() {
+                            expired_nodes.push(expired_node);
+                        } else {
+                            break; // 不应发生，因为 front() 刚才是 Some
+                        }
+                    } else {
+                        // 队首未到期 (Some(deadline) > now)，由于列表有序，后续节点也不会到期
+                        break;
+                    }
                 }
-            } else {
-                break;
+                None => {
+                    // 队首是永不超时的节点，由于列表有序，它和它后面的都不会因时间到期
+                    break;
+                }
             }
         }
         expired_nodes
     }
 
     pub fn remove_sleeper(&mut self, node_to_remove_arc: &Arc<SleepNode>) -> Option<Arc<SleepNode>> {
+        // ... (与之前版本相同，使用 Arc::ptr_eq)
         let mut current_idx = 0;
         let mut found_idx = None;
         for node_in_list_arc in self.list.iter() {
@@ -125,20 +143,20 @@ impl SleeperList {
 }
 
 
-/// 4. `sleep_until` 异步函数
+/// 4. `sleep_until` 异步函数，现在接受 Option<TimeVal>
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub fn sleep_until(deadline: TimeVal) -> SleepFuture {
+pub fn sleep_until(deadline: Option<TimeVal>) -> SleepFuture {
     SleepFuture {
         deadline,
-        task_id_at_creation: current_task_id(), // 捕获当前任务的 ID
+        task_id_at_creation: current_task_id(),
         registered_node_arc: None,
     }
 }
 
 /// 5. SleepFuture 实现
 pub struct SleepFuture {
-    deadline: TimeVal,
-    task_id_at_creation: usize, // 创建此 Future 时当前任务的 ID
+    pub deadline: Option<TimeVal>, // 改为 Option
+    task_id_at_creation: usize,
     registered_node_arc: Option<Arc<SleepNode>>,
 }
 
@@ -148,59 +166,52 @@ impl Future for SleepFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = self.get_mut();
 
-        if current_time() >= mut_self.deadline {
-            if let Some(node_arc) = mut_self.registered_node_arc.take() {
-                GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc);
+        if let Some(deadline_val) = mut_self.deadline {
+            // 如果有截止时间，检查是否已到期
+            if current_time() >= deadline_val {
+                if let Some(node_arc) = mut_self.registered_node_arc.take() {
+                    GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc);
+                }
+                return Poll::Ready(());
             }
-            return Poll::Ready(());
         }
+        // 如果 deadline 是 None，则永不因时间到期，只有 Waker 被调用时才会 Ready
 
         if mut_self.registered_node_arc.is_some() {
+            // 已注册，现在被 poll。这通常意味着 Waker 被调用了。
+            // （超时情况已在上面处理，如果 deadline 是 Some）
             mut_self.registered_node_arc.take();
             return Poll::Ready(());
         }
 
-        // 未到期且尚未注册：这是首次 poll (且未超时)
+        // 未到期 (如果 deadline 是 Some) 或永不超时 (deadline 是 None)，且尚未注册
         let task_id_for_node = mut_self.task_id_at_creation;
 
-        // 1. 从 TID2TC 获取 Arc<Task> 以创建 Waker 和设置状态
-        let task_arc_for_waker_and_state: TaskRef = { // TaskRef is Arc<Task>
-            let tid2tc_map = TID2TC.lock(); // 你提供的全局任务表
+        let task_arc_for_waker_and_state: TaskRef = {
+            let tid2tc_map = TID2TC.lock();
             match tid2tc_map.get(&task_id_for_node) {
-                Some(task_ref) => task_ref.clone(), // 克隆 Arc 以便后续使用
-                None => {
-                    // 任务在 sleep_until 被 poll 之前就从 TID2TC 中移除了。
-                    // 这通常意味着任务已退出或被清理。
-                    // log::warn!("Task ID {} not found in TID2TC during SleepFuture::poll. Completing sleep early.", task_id_for_node);
-                    return Poll::Ready(()); // 任务不存在，睡眠无意义
-                }
+                Some(task_ref) => task_ref.clone(),
+                None => return Poll::Ready(()), // 任务不存在
             }
         };
 
-        // 2. 从 Arc<Task> 获取 *const Task 以创建 Waker
-        //    SAFETY: task_arc_for_waker_and_state 是一个有效的 Arc，所以其内部指针有效。
-        //    这个裸指针的生命周期与 Waker 的生命周期相关联。
-        //     Waker 实现不持有 Arc，所以由调用者（这里是 Waker 的使用者，即调度器）
-        //    保证在调用 wake() 时指针仍然有效（或者 wakeup_task 内部能安全处理）。
-        let task_ptr_for_waker: *const Task = Arc::as_ptr(&task_arc_for_waker_and_state);
-        let waker_for_sleepnode =  waker_from_task(task_ptr_for_waker) ;
+        let task_ptr_for_waker: *const Task = Arc::into_raw(task_arc_for_waker_and_state.clone());
+        let waker_for_sleepnode = unsafe { waker_from_task(task_ptr_for_waker) };
+        // Waker 的 Drop 实现需要能正确处理来自 Arc::into_raw 的指针
 
-        // 3. 创建 SleepNode
         let node = SleepNode::new(mut_self.deadline, waker_for_sleepnode, task_id_for_node);
         let node_arc = Arc::new(node);
 
-        // 4. 设置任务状态 (使用 task_arc_for_waker_and_state)
+        // 设置任务状态
         let mut state_guard = task_arc_for_waker_and_state.state_lock_manual();
         if **state_guard == TaskStatus::Running || **state_guard == TaskStatus::Runnable {
             **state_guard = TaskStatus::Blocked;
         } else if **state_guard == TaskStatus::Blocking {
-            // 根据 wakeup_task，Blocking 会变 Waked。如果希望它能被 add_task，则需 Blocked
             **state_guard = TaskStatus::Blocked;
         }
-        // 其他状态（Waked, Zombie）不应改变，或应报错。
         drop(core::mem::ManuallyDrop::into_inner(state_guard));
 
-        // 5. 加入全局睡眠队列
+
         GLOBAL_SLEEPER_QUEUE.lock().add_sleeper(node_arc.clone());
         mut_self.registered_node_arc = Some(node_arc);
 
@@ -211,7 +222,12 @@ impl Future for SleepFuture {
 impl Drop for SleepFuture {
     fn drop(&mut self) {
         if let Some(node_arc_to_remove) = self.registered_node_arc.take() {
-            GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc_to_remove);
+            // 尝试从队列移除，如果移除失败（例如已被 process_sleepers 弹出），也没关系
+            let _ = GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc_to_remove);
+            // 重要的：node_arc_to_remove (Arc<SleepNode>) 在这里 drop，
+            // 它内部的 Waker 会被 drop。
+            // Waker 的 drop 实现必须能正确处理来自 Arc::into_raw 的指针，
+            // 通常是调用 Arc::from_raw 使引用计数正确。
         }
     }
 }
@@ -222,17 +238,16 @@ pub fn process_timed_events() {
 }
 
 fn process_sleepers() {
-    // 确保队列已初始化
     if !GLOBAL_SLEEPER_QUEUE.is_init() {
-        log::warn!("GLOBAL_SLEEPER_QUEUE not initialized in process_sleepers");
+        // log::warn!("GLOBAL_SLEEPER_QUEUE not initialized in process_sleepers");
         return;
     }
     let now = current_time();
+    // pop_expired 只会弹出那些 deadline 是 Some(t) 且 t <= now 的节点
     let expired_nodes = GLOBAL_SLEEPER_QUEUE.lock().pop_expired(now);
 
     for node_arc in expired_nodes {
-       
-        node_arc.waker.clone().wake(); 
+        // 只有因时间到期的节点才会被唤醒
+        node_arc.waker.clone().wake();
     }
 }
-

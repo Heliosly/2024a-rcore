@@ -7,8 +7,8 @@ mod vfs;
 mod stat;
 mod fd;
 mod pipe;
-
-use core::{any::Any, panic};
+mod poll;
+use core::{any::Any, panic, task::Waker};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet, TemplateRet}};
@@ -19,16 +19,53 @@ use inode::InodeType;
 use lwext4_rust::{bindings::SEEK_END, InodeTypes};
 use spin::{Lazy, RwLock};
 pub use stat::Statfs;
+pub use poll::PollRequest;
 use vfs::vfs_ops::VfsNodeOps;
 pub use vfs::vfs_ops::VfsOps;
 pub use stat::Kstat;
 pub use inode::OSInode;
 pub use fd::{FileClass,FileDescriptor};
+pub use poll::{PollFuture};
 use alloc::boxed::Box;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
+bitflags! {
+    pub struct PollEvents: u16 {
+        /// 有数据可读（普通或优先级）
+        const POLLIN     = 0x0001;
 
+        /// 紧急数据可读（带外数据）
+        const POLLPRI    = 0x0002;
+
+        /// 可以写入数据而不会阻塞
+        const POLLOUT    = 0x0004;
+
+        /// 发生错误（无法恢复的错误）
+        const POLLERR    = 0x0008;
+
+        /// 对端关闭连接（挂断）
+        const POLLHUP    = 0x0010;
+
+        /// 请求的文件描述符不是一个打开的文件
+        const POLLNVAL   = 0x0020;
+
+        /// 读半关闭（对端关闭了写入），用于 epoll
+        const POLLRDHUP  = 0x2000;
+    }
+}
+#[repr(C)]
+#[derive(Debug, Clone,Copy)]
+pub struct PollFd {
+    /// 文件描述符
+    pub fd: i32,
+
+    /// 请求的事件（bitflags 结构）
+    pub events: PollEvents,
+
+    /// 实际返回的事件（bitflags 结构）
+    pub revents: PollEvents,
+}
 #[async_trait]
 /// trait File for all file types
 pub trait File: Send + Sync + Any {
@@ -74,6 +111,9 @@ unimplemented!()
 
     fn as_any(&self) -> &dyn Any {
         unimplemented!();
+    }
+    fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents{
+        unimplemented!()
     }
       
 }

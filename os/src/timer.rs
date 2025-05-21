@@ -38,6 +38,12 @@ pub fn current_time() -> TimeVal {
     }
 }
 impl TimeVal {
+    ///仅加法可用
+   pub  fn add_milliseconds(&self, ms: usize) -> TimeVal {
+        let sec = self.sec + ms / MSEC_PER_SEC;
+        let usec = self.usec + (ms % MSEC_PER_SEC) * 1000;
+        TimeVal::normalize(sec, usec)
+    }
     fn new(sec: usize, usec: usize) -> Self {
         Self { sec, usec }
     }

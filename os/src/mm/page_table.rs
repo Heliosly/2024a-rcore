@@ -489,7 +489,8 @@ pub enum TranslateRefError {
     UnexpectedEofOrFault,   
     InternalBufferOverflow,  
     LengthOverflow,          
-    PermissionDenied(VirtAddr)
+    PermissionDenied(VirtAddr),
+    PartialCopy,
     // Add other specific errors if needed, e.g., InsufficientPermissions
 }
 
@@ -502,6 +503,7 @@ impl From<TranslateRefError> for SysErrNo {
             TranslateRefError::InternalBufferOverflow => SysErrNo::EFAULT,
             TranslateRefError::LengthOverflow => SysErrNo::EFAULT,
             TranslateRefError::PermissionDenied(_)=> SysErrNo::EACCES,
+            TranslateRefError::PartialCopy => SysErrNo::EFAULT,
         }
     }
 }
@@ -992,3 +994,54 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     v
 }
 
+/// 安全地从内核缓冲区 `kernel_src_buffer` 将其**全部内容**复制到用户空间 `user_dest_va`。
+/// 如果未能复制所有字节，则返回错误。
+///
+/// # Arguments
+/// * `token`: 用户地址空间的标识。
+/// * `user_dest_va_start`: 用户空间的目标虚拟地址的起始。
+/// * `kernel_src_buffer`: 内核空间的源数据切片。其全部内容将被尝试复制。
+///
+/// # Returns
+/// `Ok(())` 如果成功复制了 `kernel_src_buffer.len()` 字节。
+/// `Err(TranslateRefError)` 如果地址翻译、权限或复制过程中发生错误，导致未能复制所有字节。
+///
+/// # Safety
+/// - `token` 必须有效。
+/// - `user_dest_va_start` 必须是有效的起始虚拟地址，且从该地址开始的
+///   `kernel_src_buffer.len()` 字节在用户空间中是有效的、可写的内存区域。
+/// - `kernel_src_buffer` 必须指向有效的、可读的内核内存。
+pub unsafe fn copy_to_user_bytes_exact(
+    token: usize,
+    user_dest_va: VirtAddr,
+    kernel_src_buffer: &[u8],
+) -> Result<(), TranslateRefError> {
+    let len_to_copy = kernel_src_buffer.len();
+    if len_to_copy == 0 {
+        return Ok(()); // 复制0字节总是成功的
+    }
+
+    // 调用你现有的 copy_to_user_bytes
+    match copy_to_user_bytes(token, user_dest_va, kernel_src_buffer) {
+        Ok(bytes_copied) => {
+            if bytes_copied == len_to_copy {
+                Ok(()) // 所有字节都成功复制了
+            } else {
+                // 未能复制所有请求的字节，这对于 "exact" 版本来说是错误
+                // log::warn!(
+                //     "copy_to_user_bytes_exact: Expected to copy {} bytes, but only copied {}. User VA: {:?}",
+                //     len_to_copy, bytes_copied, user_dest_va
+                // );
+                // 可能的原因是用户提供的缓冲区部分无效，或者 get_target_continuous_writable_bytes_in_page
+                // 返回的 len_writable_in_page 累加起来不足 len_to_copy。
+                // TranslateRefError::UnexpectedEofOrFault 比较适合这种情况。
+                Err(TranslateRefError::PartialCopy)
+            }
+        }
+        Err(e) => {
+            // 如果 copy_to_user_bytes 本身返回了错误（例如翻译失败、权限问题），
+            // 直接传递这个错误。
+            Err(e)
+        }
+    }
+}

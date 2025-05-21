@@ -26,7 +26,7 @@ mod schedule;
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
 pub(crate) mod waker;
-pub(crate) mod sleeplist;
+pub mod sleeplist;
 mod yieldfut;
 use alloc::boxed::Box;
 // mod timelist;

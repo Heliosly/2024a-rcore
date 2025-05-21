@@ -36,6 +36,7 @@
 mod sigact;
 mod signal;
 use alloc::sync::Arc;
+use alloc::task;
 pub use sigact::*;
 pub use signal::*;
 use crate::config::{ SS_DISABLE, USER_SIGNAL_PROTECT};
@@ -186,10 +187,12 @@ pub async fn send_signal_to_task(task_arc: &Arc<Task>, sig: Signal) -> Result<()
 
     Ok(())
 }
-pub fn handle_pending_signals(task_arc: &Arc<Task>, pcb_arc: &Arc<ProcessControlBlock>) {
+pub async  fn handle_pending_signals() {
+    let task_arc = current_task();
+    let pcb_arc=&task_arc.get_process();
     // 1. 获取线程和进程的信号状态锁
-    let mut task_state = task_arc.signal_state.lock();
-    let mut process_state = pcb_arc.signal_shared_state.lock();
+    let mut task_state = task_arc.signal_state.lock().await;
+    let mut process_state = pcb_arc.signal_shared_state.lock().await;
     let token = unsafe { *task_arc.page_table_token.get() };
     loop {
         // 可能有多个信号需要处理
@@ -277,7 +280,7 @@ pub fn handle_pending_signals(task_arc: &Arc<Task>, pcb_arc: &Arc<ProcessControl
             // -- 执行动作 --
             match action.handler {
                 SIG_DFL => {
-                    unsafe { perform_default_action_for_process(pcb_arc, task_arc, sig) };
+                    unsafe { perform_default_action_for_process(pcb_arc, &task_arc.0, sig) };
                     // 默认动作可能影响整个进程
                 }
                 SIG_IGN => { /* 忽略 */ }
@@ -294,7 +297,7 @@ pub fn handle_pending_signals(task_arc: &Arc<Task>, pcb_arc: &Arc<ProcessControl
 
                     // 读取当前的trap上下文
                     // let mut trap_frame = read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
-                    let mut task_state = task_arc.signal_state.lock();
+                    let mut task_state = task_arc.signal_state.lock().await;
 
                     let trap_frame = task_arc.get_trap_cx().unwrap();
 
@@ -357,22 +360,22 @@ pub fn handle_pending_signals(task_arc: &Arc<Task>, pcb_arc: &Arc<ProcessControl
                         sp = (sp - core::mem::size_of::<UContext>()) & !0xf;
 
                         let ucontext = UContext::init(old_pc, original_thread_mask);
-                        put_data(token, sp as *mut UContext, ucontext);
+                        put_data(token, sp as *mut UContext, ucontext).unwrap();
 
                         trap_frame.set_arg2(sp);
                     }
 
                     trap_frame.set_sp(sp);
                     if action.flags.contains(SigActionFlags::SA_RESETHAND) {
-                        let mut temp_proc_state = pcb_arc.signal_shared_state.lock();
+                        let mut temp_proc_state = pcb_arc.signal_shared_state.lock().await;
                         temp_proc_state.sigactions[sig as usize].handler = SIG_DFL;
                     }
                     return; // 信号已交付给用户处理程序，本次内核处理结束
                 }
             }
             // 如果执行到这里（例如 SIG_IGN 或某些不终止的 SIG_DFL），重新获取锁并继续循环
-            task_state = task_arc.signal_state.lock();
-            process_state = pcb_arc.signal_shared_state.lock();
+            task_state = task_arc.signal_state.lock().await;
+            process_state = pcb_arc.signal_shared_state.lock().await;
             task_state.sigmask = original_thread_mask; // 恢复掩码（如果没进用户处理函数）
         } else {
             // 没有需要处理的信号了
@@ -445,211 +448,3 @@ fn perform_default_action_for_process(
     }
 }
 
-// // --- 系统调用实现 (接口和核心逻辑) ---
-// // 这些函数是内核的入口点，需要进行参数校验（如指针有效性）
-
-// // int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
-// pub async fn sys_sigaction(
-//     signum_usize: usize,
-//     act_user_ptr: *const SigAction,
-//     oldact_user_ptr: *mut SigAction,
-// ) -> SyscallRet {
-//     let sig = match Signal::from_usize(signum_usize) {
-//         Some(s) => s,
-//         None => return Err(SysErrNo::EINVAL), // 无效信号
-//     };
-
-//     // SIGKILL 和 SIGSTOP 的动作不能被改
-//     if sig == Signal::SIGKILL || sig == Signal::SIGSTOP {
-//         return Err(SysErrNo::EINVAL);
-//     }
-
-//     let mut process = current_process();
-//     let mut shared_state = process.signal_shared_state.lock().await;
-
-//     // 如果 oldact 非空，保存旧的动作
-//     // let mut old_action_to_return: SigAction = SigAction::default();
-//     if !oldact_user_ptr.is_null() {
-//         // TODO: 实现从内核复制到用户空间 (copy_to_user)  @Heliosly.
-//         // 需要验证 oldact_user_ptr 的有效性
-//         // let old_action = signal_state.sigactions[sig as usize];
-//         // unsafe { copy_to_user(oldact_user_ptr, &old_action)? };
-//         // 简化：假设可以直接写，或此函数在内核中，不直接处理用户指针
-//         // 在OS比赛中，你可能需要实现 copy_to_user 和 copy_from_user
-//         // 暂时我们只在内核数据结构中操作
-//         // 返回值是旧的action，让用户空间处理复制
-//         *translated_refmut(process.get_user_token().await, oldact_user_ptr)? =
-//             shared_state.sigactions[sig as usize];
-//     }
-
-//     // 如果 act 非空，设置新的动作
-//     if !act_user_ptr.is_null() {
-//         // TODO: 实现从用户空间复制到内核 (copy_from_user) @Heliosly.
-//         // 需要验证 act_user_ptr 的有效性
-//         // let new_action = unsafe { copy_from_user(act_user_ptr)? };
-//         // 简化：假设可以直接读
-//         let new_action = unsafe { *act_user_ptr }; // 极度不安全，仅为结构示意
-
-//         // 校验 new_action 的合法性 (例如 handler 地址)
-//         // ...
-
-//         shared_state.sigactions[sig as usize] = new_action;
-//         // log::debug!("Task {} set action for signal {:?} to handler 0x{:x}", current_task_arc.id(), sig, new_action.handler);
-//     }
-
-//     // 如果 oldact_user_ptr 非空，需要将 old_action_to_return 写回用户空间
-//     // if !oldact_user_ptr.is_null() {
-//     //     // TODO: copy_to_user(oldact_user_ptr, &old_action_to_return)  @Heliosly.
-//     //     // 假设能直接写，这是不安全的：
-//     //     unsafe { *oldact_user_ptr = old_action_to_return; }
-//     // }
-
-//     Ok(0) // 成功
-// }
-
-// // int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
-// pub fn sys_sigprocmask(
-//     how: i32,
-//     set_user_ptr: *const SigSet,
-//     oldset_user_ptr: *mut SigSet,
-// ) -> SyscallRet {
-//     let current_task_arc = current_task();
-//     let mut signal_state = current_task_arc.signal_state.lock();
-
-//     let old_mask = signal_state.sigmask;
-
-//     if !set_user_ptr.is_null() {
-//         // TODO: copy_from_user for set
-//         let set = unsafe { *set_user_ptr }; // 不安全，仅为示意
-
-//         let enum_how = match SigMaskHow::try_from(how) {
-//             Ok(how) => how,
-//             Err(_) => return Err(SysErrNo::EINVAL),
-//         };
-//         match enum_how {
-//             SigMaskHow::SIG_BLOCK => {
-//                 signal_state.sigmask.union_with(&set);
-//             }
-//             SigMaskHow::SIG_UNBLOCK => {
-//                 // 不能解除 SIGKILL 或 SIGSTOP 的阻塞 (虽然它们通常不被计入掩码)
-//                 // 但 SigSet 的操作通常不关心具体信号的特殊性，这是更高层逻辑
-//                 let mut temp_set = set;
-//                 // Linux 不允许 SIGKILL 和 SIGSTOP 被阻塞，所以从 set 中移除它们
-//                 temp_set.remove(Signal::SIGKILL);
-//                 temp_set.remove(Signal::SIGSTOP);
-//                 // 然后从当前掩码中移除这些（解除阻塞）
-//                 // A = A & (~B) => A.intersect_with( !B )
-//                 // SigSet 需要实现 bitwise NOT 或者一个 remove_all_from_set 方法
-//                 // 简单做法：迭代 set 中的每一位，如果在 sigmask 中，则 remove
-//                 // (更正：SIG_UNBLOCK 是移除 set 中的位，所以是 sigmask &= ~set)
-//                 // sigmask = sigmask AND (NOT set)
-//                 // 我们需要一个 SigSet::complement() 或 SigSet::difference_with()
-//                 // 简化：直接迭代要解除阻塞的信号
-//                 for i in 1..NSIG {
-//                     if let Some(s) = Signal::from_usize(i) {
-//                         if set.contains(s) {
-//                             signal_state.sigmask.remove(s);
-//                         }
-//                     }
-//                 }
-//             }
-//             SigMaskHow::SIG_SETMASK => {
-//                 let mut new_mask = set;
-//                 // 不能阻塞 SIGKILL 或 SIGSTOP
-//                 new_mask.remove(Signal::SIGKILL);
-//                 new_mask.remove(Signal::SIGSTOP);
-//                 signal_state.sigmask = new_mask;
-//             }
-//         }
-//     }
-
-//     drop(signal_state); // 先释放锁，再复制到用户空间
-
-//     if !oldset_user_ptr.is_null() {
-//         // TODO: copy_to_user for old_mask
-//         unsafe {
-//             *oldset_user_ptr = old_mask;
-//         }
-//     }
-
-//     Ok(0) // 成功
-// }
-
-// // int kill(pid_t pid, int sig); (或 tkill/tgkill)
-// pub fn sys_kill(target_tid: usize, signum_usize: usize) -> SyscallRet {
-//     let sig = match Signal::from_usize(signum_usize) {
-//         Some(s) => s,
-//         None => return Err(SysErrNo::EINVAL), // 无效信号
-//     };
-
-//     if signum_usize == 0 {
-//         // 发送信号0是检查进程是否存在，不实际发送信号
-
-//         if TID2TC.lock().contains_key(&target_tid) {
-//             return Ok(0); // 存在
-//         } else {
-//             return Err(SysErrNo::ESRCH); // 不存在
-//         }
-//     }
-
-//     let target_task_arc = match TID2TC.lock().get(&target_tid) {
-//         Some(task_ref) => task_ref.clone(),
-//         None => return Err(SysErrNo::ESRCH), // No such process/task
-//     };
-
-//     // TODO: 权限检查 (例如，当前任务是否有权限向目标任务发送信号)  @Heliosly.
-//     // ...
-
-//     send_signal_to_task(&target_task_arc, sig);
-//     Ok(0) // 成功 (信号已加入挂起队列或被处理)
-// }
-
-// // int pause(void);
-// pub fn sys_pause() -> SyscallRet {
-//     let task_arc = current_task();
-//     // 1. 将当前任务的信号掩码保存起来 (old_mask = task.sigmask)。
-//     // 2. 将当前任务的信号掩码设置为空 (允许所有信号)。
-//     //    或者使用一个临时的空掩码。
-//     // 3. 使任务进入可中断的睡眠状态，直到一个信号被捕获并处理。
-//     //    这通常通过 `sigsuspend(empty_mask)` 实现。
-//     //    这里我们简化：
-//     //    - 检查是否有未阻塞的挂起信号，如果有，handle_pending_signals 会处理，pause 不会阻塞。
-//     //    - 如果没有，则阻塞，等待任何信号。
-//     //
-//     // loop {
-//     //     handle_pending_signals(&task_arc); // 处理已有的信号
-//     //     // 如果信号导致任务终止或停止，就不会到这里
-//     //
-//     //     // 让任务睡眠，等待被信号唤醒
-//     //     // 这需要一种机制，比如一个信号专用的条件变量或等待队列
-//     //     // task_arc.sleep_interruptible_until_signal();
-//     //     // 如果被唤醒，说明有信号传递，handle_pending_signals 会在返回用户态前再次运行。
-//     //     // pause 的返回值总是 -EINTR (被信号中断)。
-//     //     // 如果一个信号处理函数被执行了，pause 就返回了。
-//     //     // 如果信号的动作是终止，pause 就不会返回。
-//     //
-//     //     // 这里需要一个方法让当前任务阻塞，直到有信号处理。
-//     //     // 一个简单的方法是设置一个flag，然后yield，直到flag被信号处理机制改变。
-//     //     // 或者，使用一个 Waker，当有信号时被唤醒。
-//     //     // 这部分逻辑比较复杂，通常与 sigsuspend 紧密相关。
-//     // }
-//     // 对于OS比赛，pause 可以简化为：检查并处理当前挂起信号，
-//     // 如果没有导致返回的信号（例如，被忽略的或导致终止的），
-//     // 则让任务进入一个可被任何信号唤醒的阻塞状态。
-//     // `pause` 总是返回 -EINTR，除非被一个导致进程终止的信号打断。
-//     Err(SysErrNo::EINTR) // 表示被信号中断
-// }
-
-// // 你需要在你的 Task 结构中添加 `signal_state: Mutex<TaskSignalState>`
-// // 并在 Task 创建时初始化它：
-// // impl Task {
-// //     pub fn new(id: usize, /* ... other args ... */) -> Arc<Self> {
-// //         Arc::new(Self {
-// //             // ...
-// //             id,
-// //             status: Mutex::new(TaskStatus::Runnable),
-// //             signal_state: Mutex::new(TaskSignalState::default()),
-// //             // ...
-// //         })
-// //     }
-// // }

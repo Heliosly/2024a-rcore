@@ -80,6 +80,7 @@ const SYSCALL_FCNTL:usize =25;
 const SYSCALL_SIGNALRET:usize =139;
 const SYSCALL_GETEUID:usize=175;
 const SYSCALL_GETCWD:usize= 17;
+const SYSCALL_PPOLL:usize = 73;
 mod fs;
 mod process;
 mod signal;

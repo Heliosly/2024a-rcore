@@ -69,3 +69,10 @@ pub struct IoVec {
     pub base: *mut u8, // iov_base: Starting address of buffer
     pub len: usize,    // iov_len: Number of bytes to transfer to/from buffer
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct UserTimeSpec { // 对应 struct timespec
+    pub tv_sec: usize,  // seconds
+    pub tv_nsec: usize, // nanoseconds (long)
+}

@@ -2,6 +2,8 @@
 
 #[allow(unused)]
 
+///File descriptor set size
+pub const FD_SETSIZE:usize = 1024;
 //  MAX_KERNEL_RW_BUFFER_SIZE
 pub const MAX_KERNEL_RW_BUFFER_SIZE: usize = 4096 * 4; 
 /// Signal information. Corresponds to `struct siginfo_t` in libc.
