@@ -4,6 +4,7 @@ use core::ops::{Add, Sub};
 
 use crate::config::CLOCK_FREQ;
 use crate::sbi::set_timer;
+use crate::syscall::flags::UserTimeSpec;
 use riscv::register::time;
 
 /// The number of ticks per second
@@ -30,6 +31,7 @@ pub struct TimeVal {
     pub sec: usize,
     pub usec: usize,
 }
+
 pub fn current_time() -> TimeVal {
     let time_ns = get_time_ns();
     TimeVal {
@@ -56,6 +58,13 @@ impl TimeVal {
         }
         TimeVal { sec, usec }
     }
+
+        pub fn add_timespec(&self, ts: &UserTimeSpec) -> Self {
+            let sec = self.sec + ts.tv_sec as usize;
+            let usec = self.usec + ts.tv_nsec as usize / 1000;
+           TimeVal::normalize(sec,usec)
+        }
+    
 }
 
 impl Add for TimeVal {

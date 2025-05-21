@@ -188,11 +188,11 @@ impl File for OSInode {
         let _ = self.inner.exclusive_access().inode.truncate(0);
         
     }
-   async  fn readable(&self) -> TemplateRet<bool> {
+   fn readable(&self) -> TemplateRet<bool> {
         Ok(self.readable)  
     }
 
-   async fn writable(&self) -> TemplateRet<bool> {
+   fn writable(&self) -> TemplateRet<bool> {
        Ok(self.writable) 
     }
     async fn read<'a>( 

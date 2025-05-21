@@ -1045,3 +1045,15 @@ pub unsafe fn copy_to_user_bytes_exact(
         }
     }
 }
+
+
+pub unsafe fn copy_from_user_exact<T: Copy>(token: usize, user_src: *const T) -> Result<T, TranslateRefError> {
+    let mut kernel_val = core::mem::MaybeUninit::<T>::uninit();
+    copy_from_user_bytes(
+        token,
+        core::slice::from_raw_parts_mut(kernel_val.as_mut_ptr() as *mut u8, core::mem::size_of::<T>()),
+        VirtAddr::from(user_src as usize),
+        core::mem::size_of::<T>()
+    )?; 
+    Ok(kernel_val.assume_init())
+}

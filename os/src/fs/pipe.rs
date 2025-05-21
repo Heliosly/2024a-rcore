@@ -125,13 +125,13 @@ pub async fn make_pipe(flags: OpenFlags) -> (Arc<Pipe>, Arc<Pipe>) {
 }
 #[async_trait]
 impl File for Pipe{
-    async fn readable<'a>(
+     fn readable<'a>(
         &'a self
     )               
      -> Result<bool, SysErrNo>{
        Ok(self.readable) 
     }
-    async fn writable<'a>(&'a self) -> TemplateRet<bool> {
+     fn writable<'a>(&'a self) -> TemplateRet<bool> {
          Ok(self.writable) 
     }
     async fn read<'a>( 

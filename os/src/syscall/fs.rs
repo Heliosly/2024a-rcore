@@ -1,5 +1,6 @@
 //! File and filesystem-related syscalls
 
+use crate::signal::SigSet;
 use crate::timer::TimeVal;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -16,7 +17,7 @@ use crate::timer::current_time;
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
-use super::flags::{ FstatatFlags, IoVec, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
+use super::flags::{ FstatatFlags, IoVec, UserTimeSpec, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
 
 
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -33,7 +34,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     match &fd_table[fd] {
         Some(file) => {
             // 2. 检查是否可写
-            if !file.any().writable().await.map_err(|_| SysErrNo::EIO)? {
+            if !file.any().writable().map_err(|_| SysErrNo::EIO)? {
                 return Err(SysErrNo::EACCES);
             }
             let file = file.clone();
@@ -63,7 +64,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     match &fd_table[fd] {
         Some(file) => {
             // 2. 检查是否可读
-            if !file.any().readable().await.map_err(|_| SysErrNo::EIO)? {
+            if !file.any().readable().map_err(|_| SysErrNo::EIO)? {
                 return Err(SysErrNo::EACCES);
             }
             let file = file.clone();
@@ -436,7 +437,7 @@ use crate::mm::{VirtAddr, TranslateRefError, PageTable}; // 你的内存管理�
 // 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
 use crate::mm::page_table::{
      // 你提供的，但主要用于单页、类型化数据
-    copy_from_user_array, copy_from_user_bytes, copy_to_user_bytes // 我们基于 copy_from_user_bytes 实现的
+    copy_from_user_array, copy_from_user_bytes, copy_from_user_exact, copy_to_user_bytes // 我们基于 copy_from_user_bytes 实现的
     // 如果 TranslateRefError 需要扩展，确保也导入或定义
 };
 
@@ -864,3 +865,228 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
 
     poll_future.await
 }
+
+
+/// ppoll 系统调用实现
+/// fds_ptr: 用户空间 struct pollfd 数组的指针 (usize)
+/// nfds: pollfd 数组的元素数量 (usize)
+/// tmo_p: 用户空间 struct timespec 指针，或0 (NULL) 表示无限等待 (usize)
+/// sigmask_ptr: 用户空间 sigset_t 指针，或0 (NULL) 表示不改变信号掩码 (usize)
+/// 返回：SyscallRet
+pub async fn sys_ppoll(
+    fds_user_ptr: *mut PollFd, // 直接用 *mut PollFd 更类型安全
+    nfds: usize,
+    tmo_user_ptr: *const UserTimeSpec, // 指向用户空间的 timespec
+    sigmask_user_ptr: *const SigSet,   // 指向用户空间的 sigset_t
+) -> SyscallRet {
+    // log::trace!("sys_ppoll(fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
+    //             fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr);
+
+    // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
+    if nfds == 0 {
+        let mut old_sigmask_to_restore: Option<SigSet> = None;
+        if !sigmask_user_ptr.is_null() {
+            // 原子地设置新信号掩码，并保存旧掩码
+            // 这需要一个内部函数，我们称之为 sys_sigprocmask_internal
+            // 它不直接是系统调用，而是内核内部操作信号掩码的逻辑
+            // match sys_sigprocmask_internal(libc::SIG_SETMASK, sigmask_user_ptr, Some(&mut old_mask_for_restore)) {
+            //     Ok(old_mask) => old_sigmask_to_restore = Some(old_mask),
+            //     Err(e) => return Err(e), // 复制或设置掩码失败
+            // }
+            // 简化：假设我们有一个函数可以原子地交换掩码
+            // old_sigmask_to_restore = Some(swap_current_thread_sigmask_from_user(token, sigmask_user_ptr)?);
+            // 这里需要更底层的实现。我们将使用一个 RAII Guard 来确保恢复。
+            // 或者在 defer 块中恢复。
+            // 为了简化，我们假设我们有一个临时的内部函数
+            let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
+            let token_temp = pcb_arc_temp.memory_set.lock().await.token();
+            match set_temp_sigmask_from_user(token_temp, sigmask_user_ptr).await {
+                Ok(Some(old_mask)) => old_sigmask_to_restore = Some(old_mask),
+                Ok(None) => {} // sigmask_user_ptr is null
+                Err(e) => return Err(e),
+            }
+        }
+
+        // defer 恢复信号掩码 (RAII Guard 是更好的方式)
+        // struct SigmaskRestorer(Option<SigSet>);
+        // impl Drop for SigmaskRestorer { fn drop(&mut self) { if let Some(mask) = self.0 { restore_old_sigmask(mask); }}}
+        // let _restorer = SigmaskRestorer(old_sigmask_to_restore);
+
+        let result: SyscallRet;
+        if tmo_user_ptr.is_null() { // 无限等待
+            sleep_until(None).await;
+            result = Err(SysErrNo::EINTR); // 假设被信号中断
+        } else {
+            let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
+            let token_temp = pcb_arc_temp.memory_set.lock().await.token();
+            // 从用户空间复制 timespec
+            let timeout_spec = match unsafe { copy_from_user_exact::<UserTimeSpec>(token_temp, tmo_user_ptr) } {
+                Ok(ts) => ts,
+                Err(_) => {
+                    if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
+                    return Err(SysErrNo::EFAULT);
+                }
+            };
+            if  timeout_spec.tv_nsec >= 1_000_000_000 {
+                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+                return Err(SysErrNo::EINVAL); // 无效的 timespec
+            }
+            if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
+                result = Ok(0);
+            } else {
+                let deadline = current_time().add_timespec(&timeout_spec); // 假设 TimeVal 有此方法
+                sleep_until(Some(deadline)).await;
+                result = Ok(0); // 超时后返回0
+            }
+        }
+
+        if let Some(old_mask) = old_sigmask_to_restore {
+            restore_sigmask_internal(old_mask).await; // 恢复原始信号掩码
+        }
+        return result;
+    }
+
+
+    // 2. 检查 nfds 上限
+    if nfds > FD_SETSIZE as usize {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+
+    // 3. 原子地设置新的信号掩码 (如果提供了 sigmask_user_ptr) 并保存旧的
+    let mut old_sigmask_to_restore: Option<SigSet> = None;
+    if !sigmask_user_ptr.is_null() {
+        // 使用一个内部函数来原子地设置掩码并返回旧掩码
+        // 这个函数需要访问当前线程的信号状态
+        match set_temp_sigmask_from_user(token, sigmask_user_ptr).await {
+            Ok(Some(old_mask)) => old_sigmask_to_restore = Some(old_mask),
+            Ok(None) => {} // sigmask_user_ptr is null, no change
+            Err(e) => return Err(e),
+        }
+    }
+
+    // 使用 RAII Guard 或 defer 模式确保信号掩码在函数返回前被恢复
+    // struct SigmaskGuard(Option<SigSet>);
+    // impl Drop for SigmaskGuard { fn drop(&mut self) { if let Some(mask) = self.0.take() { restore_sigmask_internal(mask); }}}
+    // let _sigmask_guard = SigmaskGuard(old_sigmask_to_restore.clone()); // Clone Option<SigSet>
+
+    // 4. 从用户空间复制 PollFd 数组 (与 sys_poll 相同)
+    let user_pollfds_kernel_copy: Vec<PollFd> = if fds_user_ptr.is_null() {
+        if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
+        return Err(SysErrNo::EFAULT);
+    } else {
+        match unsafe { copy_from_user_array::<PollFd>(token, fds_user_ptr, nfds) } {
+            Ok(fds) => fds,
+            Err(_) => {
+                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
+                return Err(SysErrNo::EFAULT);
+            }
+        }
+    };
+
+    // 5. 构建 parsed_requests (与 sys_poll 相同)
+    let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
+    let fd_table_guard = pcb_arc.fd_table.lock().await; // 假设 fd_table 锁是 async
+
+    for (idx, user_pfd) in user_pollfds_kernel_copy.iter().enumerate() {
+        let mut fd_arc_opt: Option< FileDescriptor> = None;
+        let mut effective_events = user_pfd.events;
+        if user_pfd.fd >= 0 {
+            if let Some(fd_instance_opt_in_table) = fd_table_guard.get(user_pfd.fd as usize) {
+                if let Some(fd_instance_arc_in_table) = fd_instance_opt_in_table.as_ref() {
+                    fd_arc_opt = Some(fd_instance_arc_in_table.clone());
+                }
+            }
+        } else {
+            effective_events = PollEvents::empty();
+        }
+        parsed_requests.push(PollRequest {
+            fd_index: idx,
+            original_user_fd: user_pfd.fd,
+            file_descriptor: fd_arc_opt,
+            requested_events: effective_events,
+        });
+    }
+    drop(fd_table_guard);
+
+    // 6. 计算超时 deadline (从 timespec)
+    let poll_future_timeout_deadline: Option<TimeVal> = if tmo_user_ptr.is_null() {
+        None // 无限等待
+    } else {
+        let timeout_spec = match unsafe { copy_from_user_exact::<UserTimeSpec>(token, tmo_user_ptr) } {
+            Ok(ts) => ts,
+            Err(_) => {
+                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+                return Err(SysErrNo::EFAULT);
+            }
+        };
+        if  timeout_spec.tv_nsec >= 1_000_000_000 {
+            if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+            return Err(SysErrNo::EINVAL);
+        }
+        if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
+            Some(current_time()) // 立即超时
+        } else {
+            Some(current_time().add_timespec(&timeout_spec)) // 转换为绝对时间
+        }
+    };
+
+    // 7. 创建并等待 PollFuture
+    let poll_future = PollFuture::new(
+        token,
+        parsed_requests,
+        fds_user_ptr,
+        nfds,
+        poll_future_timeout_deadline,
+    );
+
+    let result = poll_future.await; // SyscallRet
+
+    // 8. 恢复原始信号掩码 (在所有路径上都应执行)
+    if let Some(old_mask) = old_sigmask_to_restore {
+        restore_sigmask_internal(old_mask).await;
+    }
+
+    result
+}
+
+
+// --- 内部辅助函数，用于原子地设置和恢复信号掩码 ---
+// 这些函数需要访问当前线程的 ThreadSignalState.sigmask
+// 它们不是系统调用，而是内核内部的辅助。
+
+/// 尝试从用户空间设置临时信号掩码，并返回旧的掩码。
+/// 如果 sigmask_user_ptr 为 NULL，则不改变掩码并返回 Ok(None)。
+async fn set_temp_sigmask_from_user(token: usize, sigmask_user_ptr: *const SigSet) -> Result<Option<SigSet>, SysErrNo> {
+    if sigmask_user_ptr.is_null() {
+        return Ok(None);
+    }
+
+    let new_sigmask_from_user = match unsafe { copy_from_user_exact::<SigSet>(token, sigmask_user_ptr) } {
+        Ok(s) => s,
+        Err(_) => return Err(SysErrNo::EFAULT),
+    };
+
+    let current_task_arc = current_task(); // 需要能获取当前任务的 Arc<Task>
+    let mut thread_signal_state = current_task_arc.signal_state.lock().await; // 假设 Task 有 signal_thread_state
+
+    let old_mask = thread_signal_state.sigmask;
+    
+    let mut new_mask_to_set = new_sigmask_from_user;
+    // SIGKILL 和 SIGSTOP 不能被阻塞
+    new_mask_to_set.remove(crate::signal::Signal::SIGKILL); // 假设 Signal 枚举路径
+    new_mask_to_set.remove(crate::signal::Signal::SIGSTOP);
+
+    thread_signal_state.sigmask = new_mask_to_set;
+    Ok(Some(old_mask))
+}
+
+/// 恢复旧的信号掩码。
+async fn restore_sigmask_internal(old_mask: SigSet) {
+    let current_task_arc = current_task();
+    let mut thread_signal_state = current_task_arc.signal_state.lock().await;
+    thread_signal_state.sigmask = old_mask;
+}
+

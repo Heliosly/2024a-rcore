@@ -86,12 +86,12 @@ mod process;
 mod signal;
 mod other;
 pub mod flags;
-use flags::IoVec;
+use flags::{IoVec, UserTimeSpec};
 use fs::*;
 use process::*;
 use other::*;
 
-use crate::{fs::Kstat, signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
+use crate::{fs::{Kstat, PollFd}, signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
 
 
 use signal::*;
@@ -160,6 +160,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETEUID=> sys_geteuid() ,
         SYSCALL_GETCWD =>sys_getcwd(args[0] as *mut u8, args[1]).await,
         // SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
+        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut PollFd, args[1] , args[2] as *const UserTimeSpec, args[3] as *const SigSet).await,
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
     

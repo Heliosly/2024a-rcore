@@ -19,10 +19,10 @@ use crate::task::sleeplist::{sleep_until, SleepFuture};
 
 /// 内核中表示一个 poll 请求的结构
 pub struct PollRequest {
-    fd_index: usize,                     // 在用户传入数组中的原始索引
-    original_user_fd: i32,             // 用户传入的原始 fd 值
-    file_descriptor: Option< FileDescriptor>, 
-    requested_events: PollEvents,          // 用户请求监视的事件
+   pub fd_index: usize,                     // 在用户传入数组中的原始索引
+   pub original_user_fd: i32,             // 用户传入的原始 fd 值
+   pub file_descriptor: Option< FileDescriptor>, 
+   pub requested_events: PollEvents,          // 用户请求监视的事件
 }
 impl PollRequest {
     pub fn new(

@@ -89,10 +89,10 @@ unimplemented!()
     }
 
     /// whether the file is writable
-    async fn writable<'a>(&'a self) -> TemplateRet<bool> {
+     fn writable<'a>(&'a self) -> TemplateRet<bool> {
       unimplemented!();
     }
-    async fn readable<'a>(&'a self) -> TemplateRet<bool> {
+     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         unimplemented!();
       }
 

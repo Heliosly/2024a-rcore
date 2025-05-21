@@ -509,7 +509,7 @@ pub async fn sys_mmap(
             None => return Err(SysErrNo::EBADF),
         };
         // 7.2 写映射需可写权限
-        if map_perm.contains(MapPermission::W) && !file.writable().await? {
+        if map_perm.contains(MapPermission::W) && !file.writable()? {
             return Err(SysErrNo::EACCES);
         }
         // 7.3 offset 超出文件长度？

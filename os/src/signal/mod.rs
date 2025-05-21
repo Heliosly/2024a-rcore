@@ -40,6 +40,7 @@ use alloc::task;
 pub use sigact::*;
 pub use signal::*;
 use crate::config::{ SS_DISABLE, USER_SIGNAL_PROTECT};
+use crate::mm::page_table::copy_from_user_exact;
 use crate::mm::put_data;
 use crate::task::current_task;
 use crate::task::{ProcessControlBlock, ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
@@ -422,7 +423,7 @@ pub async fn load_trap_for_signal() -> bool {
     }
 }
 
-fn perform_default_action_for_process(
+pub fn perform_default_action_for_process(
     pcb_arc: &ProcessRef,
     _current_task_arc: &TaskRef,
     sig: Signal,
@@ -447,4 +448,6 @@ fn perform_default_action_for_process(
         }
     }
 }
+
+
 
