@@ -14,10 +14,14 @@
 const SYSCALL_UNLINKAT: usize = 35;
 /// linkat syscall
 const SYSCALL_LINKAT: usize = 37;
+/// chdir syscall
+const SYSCALL_CHDIR: usize = 49;
 /// open syscall
 const SYSCALL_OPEN: usize = 56;
 /// close syscall
 const SYSCALL_CLOSE: usize = 57;
+/// getdents64 syscall
+const SYSCALL_GETDENTS64: usize = 61;
 /// read syscall
 const SYSCALL_READ: usize = 63;
 /// write syscall
@@ -82,6 +86,8 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_SBRK => sys_sbrk(args[0] as i32),
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
+        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
+        SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
 }
