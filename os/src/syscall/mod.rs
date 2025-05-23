@@ -81,6 +81,10 @@ const SYSCALL_SIGNALRET:usize =139;
 const SYSCALL_GETEUID:usize=175;
 const SYSCALL_GETCWD:usize= 17;
 const SYSCALL_PPOLL:usize = 73;
+const SYSCALL_CHDIR:usize = 49;
+const SYSCALL_GETDENTS64:usize=61;
+const SYSCALL_GETPGID :usize = 155;
+const SYSCALL_SETPGID :usize = 154;
 mod fs;
 mod process;
 mod signal;
@@ -161,6 +165,10 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETCWD =>sys_getcwd(args[0] as *mut u8, args[1]).await,
         // SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut PollFd, args[1] , args[2] as *const UserTimeSpec, args[3] as *const SigSet).await,
+        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8).await,
+        SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]).await,
+        SYSCALL_SETPGID => Ok(0),
+        SYSCALL_GETPGID => Ok(0),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
     

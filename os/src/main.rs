@@ -98,7 +98,8 @@ pub fn rust_main() -> ! {
 
     task::init(|| Box::pin(user_task_top()));
 
-    fs::list_app();
+    fs::init();
+    // fs::list_app();
     task::add_initproc();
     extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;

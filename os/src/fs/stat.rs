@@ -39,3 +39,14 @@ pub struct Statfs {
     pub f_flags: i64,      // Mount flags of filesystem
     pub f_spare: [i64; 4], // Padding bytes
 }
+bitflags! {
+    pub struct StMode: u32 {
+        const FIFO= 0x1000; //管道设备文件
+        const FCHR = 0x2000; //字符设备文件
+        const FDIR = 0x4000; //目录文件
+        const FBLK = 0x6000; //块设备文件
+        const FREG = 0x8000; //普通文件
+        const FLINK = 0xA000; //符号链接文件
+        const FSOCK = 0xC000; //套接字设备文件
+    }
+}

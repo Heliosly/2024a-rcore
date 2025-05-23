@@ -676,7 +676,7 @@ pub fn sys_geteuid() -> SyscallRet {
 /// POSIX getcwd 成功时返回 buf 指针，失败时返回 NULL。
 /// 我们这里调整为返回写入的长度或错误码。
 pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
-    // trace!("sys_getcwd(buf: {:p}, size: {})", buf_user_ptr, size);
+    trace!("[sys_getcwd](buf: {:p}, size: {})", buf_user_ptr, size);
 
     if buf_user_ptr.is_null() && size != 0 { // POSIX 允许 buf 为 NULL 以查询所需大小，但我们这里简化
         let len =current_process() .cwd.lock().await.as_bytes().len() + 1; // 包括 null terminator

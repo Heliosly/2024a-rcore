@@ -255,8 +255,9 @@ pub async fn user_task_top() -> i32 {
             match scause.cause() {
                 Trap::Exception(Exception::UserEnvCall) => {
                     enable_irqs();
-
                     let syscall_id = tf.regs.a7;
+
+                    trace!("[user_task_top]sys_call start syscall id = {}",syscall_id);
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
                     ];
@@ -269,7 +270,7 @@ pub async fn user_task_top() -> i32 {
                         Err(err) =>     {debug!("[Syscall]Err:{}",err.str());-(err as isize) as usize    }      ,
                     };
                     trace!("[user_task_top]sys_call end result:{}", result);
-
+                
                     tf.regs.a0 = result ;
 
                     // trace!("sys_call end1");

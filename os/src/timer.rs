@@ -112,6 +112,9 @@ pub fn get_time_ns() -> usize {
     time::read() * NANO_PER_SEC / CLOCK_FREQ
 }
 
+pub fn get_time_ticks() -> usize {
+    time::read()
+}
 /// Set the next timer interrupt
 pub fn set_next_trigger() {
     set_timer(get_time() + CLOCK_FREQ / TICKS_PER_SEC);

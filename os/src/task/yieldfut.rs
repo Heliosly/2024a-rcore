@@ -36,6 +36,8 @@ impl Future for YieldFuture {
                 IrqSave::release(this._irq_state);
                 Poll::Ready(())
             } else {
+                trace!("yield_now");
+                //第一次执行到这
                 this._has_polled = true;
                 Poll::Pending
             }

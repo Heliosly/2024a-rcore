@@ -204,7 +204,7 @@ impl<'a, T: ?Sized + 'a> Future for MutexGuard<'a, T> {
         }
 
         loop {
-            info!("into blocked");
+            // info!("into blocked");
             match guard_mut_ref.lock.owner_task_id.compare_exchange_weak(
                 0,
                 current_id,

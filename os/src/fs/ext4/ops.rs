@@ -1,6 +1,6 @@
 /// This file encapsulates the lwext4_rust interface and adapts it to the VFS.
 
-
+///不支持并发 TODO(Heliosly)
 use core::cell::RefCell;
 use crate::alloc::string::String;
 use crate::drivers::block::disk::Disk;
@@ -13,10 +13,12 @@ use crate::utils::error::{SysErrNo, SyscallRet};
 use alloc::ffi::CString;
 use alloc::string::ToString;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use log::*;
 use lwext4_rust::bindings::{
      ext4_atime_set, ext4_ctime_set, ext4_mode_get, ext4_mode_set, ext4_mtime_set, ext4_owner_set, EOK, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SEEK_SET
 };
+use lwext4_rust::file::OsDirent;
 use lwext4_rust::{Ext4BlockWrapper, Ext4File, InodeTypes};
 use virtio_drivers::transport::Transport;
 use virtio_drivers::Hal;
@@ -126,20 +128,20 @@ impl VfsNodeOps for FileWrapper {
 
         let vtype = file.file_type_get();
         let vtype = match vtype {
-            InodeTypes::EXT4_INODE_MODE_FIFO => VfsNodeType::Fifo,
-            InodeTypes::EXT4_INODE_MODE_CHARDEV => VfsNodeType::CharDevice,
-            InodeTypes::EXT4_INODE_MODE_DIRECTORY => VfsNodeType::Dir,
-            InodeTypes::EXT4_INODE_MODE_BLOCKDEV => VfsNodeType::BlockDevice,
-            InodeTypes::EXT4_INODE_MODE_FILE => VfsNodeType::File,
-            InodeTypes::EXT4_INODE_MODE_SOFTLINK => VfsNodeType::SymLink,
-            InodeTypes::EXT4_INODE_MODE_SOCKET => VfsNodeType::Socket,
+            InodeTypes::EXT4_INODE_MODE_FIFO => InodeType::Fifo,
+            InodeTypes::EXT4_INODE_MODE_CHARDEV => InodeType::CharDevice,
+            InodeTypes::EXT4_INODE_MODE_DIRECTORY => InodeType::Dir,
+            InodeTypes::EXT4_INODE_MODE_BLOCKDEV => InodeType::BlockDevice,
+            InodeTypes::EXT4_INODE_MODE_FILE => InodeType::File,
+            InodeTypes::EXT4_INODE_MODE_SOFTLINK => InodeType::SymLink,
+            InodeTypes::EXT4_INODE_MODE_SOCKET => InodeType::Socket,
             _ => {
                 warn!("unknown file type: {:?}", vtype);
-                VfsNodeType::File
+                InodeType::File
             }
         };
 
-        let size = if vtype == VfsNodeType::File {
+        let size = if vtype == InodeType::File {
             let path = file.get_path();
             let path = path.to_str().unwrap();
             file.file_open(path, O_RDONLY)
@@ -250,66 +252,59 @@ impl VfsNodeOps for FileWrapper {
         
 
     
-    /*
+    
     /// Read directory entries into `dirents`, starting from `start_idx`.
-    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> Result<usize, i32> {
-        let file = self.0.lock();
-        let (name, inode_type) = file.lwext4_dir_entries().unwrap();
-
-        let mut name_iter = name.iter().skip(start_idx);
-        let mut inode_type_iter = inode_type.iter().skip(start_idx);
-
-        for (i, out_entry) in dirents.iter_mut().enumerate() {
-            let iname = name_iter.next();
-            let itypes = inode_type_iter.next();
-
-            match itypes {
-                Some(t) => {
-                    let ty = if *t == InodeTypes::EXT4_DE_DIR {
-                        VfsNodeType::Dir
-                    } else if *t == InodeTypes::EXT4_DE_REG_FILE {
-                        VfsNodeType::File
-                    } else if *t == InodeTypes::EXT4_DE_SYMLINK {
-                        VfsNodeType::SymLink
-                    } else {
-                        error!("unknown file type: {:?}", itypes);
-                        unreachable!()
-                    };
-
-                    *out_entry =
-                        VfsDirEntry::new(core::str::from_utf8(iname.unwrap()).unwrap(), ty);
-                }
-                _ => return Ok(i),
+    fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
+        let file = &mut self.0.borrow();
+        let entries = file
+            .read_dir_from(off as u64)
+            .map_err(|e| SysErrNo::from(e))?;
+        let mut de: Vec<u8> = Vec::new();
+        let (mut res, mut f_off) = (0usize, usize::MAX);
+        for entry in entries {
+            let dirent = crate::fs::Dirent {
+                d_ino: entry.d_ino,
+                d_off: entry.d_off,
+                d_reclen: entry.d_reclen,
+                d_type: entry.d_type,
+                d_name: entry.d_name,
+            };
+            if res + dirent.len() > len {
+                break;
             }
+            res += dirent.len();
+            f_off = dirent.off();
+            de.extend_from_slice(dirent.as_bytes());
         }
-
-        Ok(dirents.len())
+        // (res != 0).then(|| (de, f_off as isize))
+        assert!(res != 0);
+        Ok((de, f_off as isize))
     }
 
-    /// Lookup the node with given `path` in the directory.
-    /// Return the node if found.
-    fn lookup(self: Arc<Self>, path: &str) -> Result<usize, i32> {
-        info!("lookup ext4fs: {:?}, {}", self.0.get_path(), path);
+    // /// Lookup the node with given `path` in the directory.
+    // /// Return the node if found.
+    // fn lookup(self: Arc<Self>, path: &str) -> Result<usize, i32> {
+    //     info!("lookup ext4fs: {:?}, {}", self.0.get_path(), path);
 
-        let fpath = self.path_deal_with(path);
-        let fpath = fpath.as_str();
-        if fpath.is_empty() {
-            return Ok(self.clone());
-        }
+    //     let fpath = self.path_deal_with(path);
+    //     let fpath = fpath.as_str();
+    //     if fpath.is_empty() {
+    //         return Ok(self.clone());
+    //     }
 
-        /////////
-        let mut file = self.0;
-        if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_DIR) {
-            debug!("lookup new DIR FileWrapper");
-            Ok(Arc::new(Self::new(fpath, InodeTypes::EXT4_DE_DIR)))
-        } else if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_REG_FILE) {
-            debug!("lookup new FILE FileWrapper");
-            Ok(Arc::new(Self::new(fpath, InodeTypes::EXT4_DE_REG_FILE)))
-        } else {
-            Err(VfsError::NotFound)
-        }
-    }
-    */
+    //     /////////
+    //     let mut file = self.0;
+    //     if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_DIR) {
+    //         debug!("lookup new DIR FileWrapper");
+    //         Ok(Arc::new(Self::new(fpath, InodeTypes::EXT4_DE_DIR)))
+    //     } else if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_REG_FILE) {
+    //         debug!("lookup new FILE FileWrapper");
+    //         Ok(Arc::new(Self::new(fpath, InodeTypes::EXT4_DE_REG_FILE)))
+    //     } else {
+    //         Err(VfsError::NotFound)
+    //     }
+    // }
+    
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
         // debug!("To read_at {}, buf len={}", offset, buf.len());

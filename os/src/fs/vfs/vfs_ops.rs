@@ -1,5 +1,5 @@
 
-use alloc::{string::String, sync::Arc};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use lwext4_rust::{bindings::ext4_direntry, InodeTypes};
 
 use crate::{fs::{stat::Kstat, OpenFlags}, utils::error::{SysErrNo, SyscallRet}};
@@ -114,10 +114,9 @@ pub trait VfsNodeOps: Send + Sync {
     }
 
     /// Read directory entries into `dirents`, starting from `start_idx`.
-    fn read_dir(&self, _start_idx: usize, _dirents: &mut [ext4_direntry]) -> Result<usize, i32> {
+    fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo>{
         unimplemented!()
     }
-
     /// Renames or moves existing file or directory.
     fn rename(&self, _src_path: &str, _dst_path: &str) -> Result<usize, i32> {
         unimplemented!()

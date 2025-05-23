@@ -107,7 +107,7 @@ impl Future for PollFuture {
         let mut ready_fd_count = 0;
         let mut current_results: Vec<(usize, PollEvents)> = Vec::with_capacity(this.requests.len());
 
-        // 1. 检查所有 FD (逻辑不变)
+        // 1. 检查所有 FD 
         for request in this.requests.iter() {
             let mut calculated_revents = PollEvents::empty();
             if request.original_user_fd < 0 {
@@ -155,6 +155,7 @@ impl Future for PollFuture {
                     }
                 }
                 Poll::Pending => {
+                    //让权
                     return Poll::Pending;
                 }
             }

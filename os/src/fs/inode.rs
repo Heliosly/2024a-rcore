@@ -12,6 +12,7 @@ use super::ext4::ops::FileWrapper;
 use super::stat::Kstat;
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
+use crate::fs::dirent::Dirent;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
 use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet, TemplateRet};
@@ -107,6 +108,11 @@ impl OSInode {
         inner.offset += n;
         Ok(n)
     }
+    pub fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
+        let file = &mut self.inner.exclusive_access().inode;
+        file.read_dentry(off, len)
+    }
+
 }
 
 impl OpenFlags {

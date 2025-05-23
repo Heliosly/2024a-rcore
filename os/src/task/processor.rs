@@ -38,9 +38,9 @@ pub fn run_task2(mut curr: CurrentTask) {
 
     // 拿到 future 的所有权，而不是引用！
 
-    debug!("poll");
+    // debug!("poll");
     let res = curr.get_fut().as_mut().poll(cx);
-    debug!("polled task res:{:#?}", res);
+    // debug!("polled task res:{:#?}", res);
     match res {
         Poll::Ready(exit_code) => {
             debug!("task exit: todo, exit_code={}", exit_code);

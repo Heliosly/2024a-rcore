@@ -9,6 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
 use crate::config::{self, PAGE_SIZE};
+use crate::timer::get_time_ticks;
 use crate::utils::error::{ SysErrNo, TemplateRet};
 use crate::utils::is_aligned_to;
 bitflags! {
@@ -248,6 +249,137 @@ impl<'b> UserBuffer<'b> {
             total += b.len();
         }
         total
+    }
+    /// 将内容数组返回
+    pub fn read(&mut self, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0; len];
+        let mut current = 0;
+        for sub_buff in self.buffers.iter_mut() {
+            let mut sblen = (*sub_buff).len();
+            if current + sblen > len {
+                sblen = len - current;
+            }
+            bytes[current..current + sblen].copy_from_slice(&(*sub_buff)[..sblen]);
+            current += sblen;
+            if current == len {
+                return bytes;
+            }
+        }
+        bytes
+    }
+    pub fn fill0(&mut self) -> usize {
+        for sub_buff in self.buffers.iter_mut() {
+            let sblen = (*sub_buff).len();
+            for j in 0..sblen {
+                (*sub_buff)[j] = 0;
+            }
+        }
+        self.len()
+    }
+
+    pub fn fillrandom(&mut self) -> usize {
+        //随机数生成方法： 线性计算+噪声+零特殊处理
+        let mut random: u8 = (get_time_ticks() % 256) as u8;
+        for sub_buff in self.buffers.iter_mut() {
+            let sblen = (*sub_buff).len();
+            for j in 0..sblen {
+                if random == 0 {
+                    random = (get_time_ticks() % 256) as u8;
+                }
+                random = (((random as usize) * (get_time_ticks() / 3 % 256) + 37) % 256) as u8; //生成一个字节大小的随机数
+                (*sub_buff)[j] = random;
+            }
+        }
+        self.len()
+    }
+
+    pub fn printbuf(&mut self, size: usize) {
+        if size == 0 {
+            return;
+        }
+        let mut count: usize = 0;
+        for sub_buff in self.buffers.iter_mut() {
+            let sblen = (*sub_buff).len();
+            for j in 0..sblen {
+                print!("{} ", (*sub_buff)[j]);
+                count += 1;
+                if count == size {
+                    println!("");
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn clear(&mut self) -> usize {
+        self.buffers.clear();
+        self.len()
+    }
+    /// 将一个Buffer的数据写入UserBuffer，返回写入长度
+    pub fn write(&mut self, buff: &[u8]) -> usize {
+        let len = self.len().min(buff.len());
+        if len == 0 {
+            return len;
+        }
+        let mut current = 0;
+        for sub_buff in self.buffers.iter_mut() {
+            let mut sblen = (*sub_buff).len();
+            if buff.len() > 10 {
+                if current + sblen > len {
+                    sblen = len - current;
+                }
+                (*sub_buff)[..sblen].copy_from_slice(&buff[current..current + sblen]);
+                current += sblen;
+                if current == len {
+                    return len;
+                }
+            } else {
+                for j in 0..sblen {
+                    (*sub_buff)[j] = buff[current];
+                    current += 1;
+                    if current == len {
+                        return len;
+                    }
+                }
+            }
+        }
+        return len;
+    }
+    //在指定位置写入数据
+    pub fn write_at(&mut self, offset: usize, buff: &[u8]) -> isize {
+        //未被使用，暂不做优化
+        let len = buff.len();
+        if offset + len > self.len() {
+            return -1;
+        }
+        let mut head = 0; // offset of slice in UBuffer
+        let mut current = 0; // current offset of buff
+
+        for sub_buff in self.buffers.iter_mut() {
+            let sblen = (*sub_buff).len();
+            if head + sblen < offset {
+                continue;
+            } else if head < offset {
+                for j in (offset - head)..sblen {
+                    (*sub_buff)[j] = buff[current];
+                    current += 1;
+                    if current == len {
+                        return len as isize;
+                    }
+                }
+            } else {
+                //head + sblen > offset and head > offset
+                for j in 0..sblen {
+                    (*sub_buff)[j] = buff[current];
+                    current += 1;
+                    if current == len {
+                        return len as isize;
+                    }
+                }
+            }
+            head += sblen;
+        }
+        0
     }
 }
 

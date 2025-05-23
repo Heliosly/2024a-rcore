@@ -2,7 +2,7 @@
 use super::schedule::TaskRef;
 use super::{current_process, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
 use crate::config::{MAX_FD, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
-use crate::fs::{ FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
+use crate::fs::{ open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
      VirtAddr, VirtPageNum,
@@ -507,7 +507,7 @@ impl ProcessControlBlock {
             TaskSignalState::default(),
         )));
 
-        let fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
+        let mut fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
 
         let process_control_block = Self {
             pid: pid_handle,
@@ -722,9 +722,12 @@ impl ProcessControlBlock {
         user_sp -= user_sp % size_of::<usize>();
         //println!("user_sp:{:#X}", user_sp);
 
+        
+
+        //TODO(Heliosly) 
+        // 关闭文件描述符
         //将设置了O_CLOEXEC位的文件描述符关闭 todo(heliosly)
         // update trap_cx ppn
-
         info!("exec entry_point:{:#x}", entry_point);
         let binding = self.main_task.lock().await;
         let trap_cx: &mut TrapContext = binding.get_trap_cx().unwrap();

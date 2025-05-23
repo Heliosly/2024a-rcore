@@ -161,11 +161,9 @@ pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
 
 
     pub fn add_initproc() {
-        // 打开 init 可执行文件，并读取所有字节
         let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY, 0o777).unwrap();
         let data = inode.file().unwrap().read_all();
     
-        // 1. 创建 PCB future
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args("musl/busybox sh".as_bytes());
         let pcb_fut = ProcessControlBlock::new(
@@ -175,14 +173,12 @@ pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
             &mut envs,
         );
     
-        // 2. Pin 到堆上
+        // . Pin 到堆上
         let mut pinned = Box::pin(pcb_fut);
     
-        // 3. 准备 waker 和 context
         let waker = custom_noop_waker();
         let mut ctx = Context::from_waker(&waker);
     
-        // 4. Poll 一次
         let pcb_inner = match pinned.as_mut().poll(&mut ctx) {
             Poll::Ready(pcb) => pcb,
             Poll::Pending => {
@@ -190,7 +186,7 @@ pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
             }
         };
     
-        // 5. 用结果初始化
+        //  用结果初始化
         let pcb = Arc::new(pcb_inner);
         INITPROC.init_by(pcb.clone());
         PID2PC.lock().insert(INITPROC.pid.0, pcb);

@@ -194,9 +194,10 @@ impl Future for SleepFuture {
                 None => return Poll::Ready(()), // 任务不存在
             }
         };
-
+        task_arc_for_waker_and_state.set_state(TaskStatus::Blocking);
         let task_ptr_for_waker: *const Task = Arc::into_raw(task_arc_for_waker_and_state.clone());
         let waker_for_sleepnode = unsafe { waker_from_task(task_ptr_for_waker) };
+         
         // Waker 的 Drop 实现需要能正确处理来自 Arc::into_raw 的指针
 
         let node = SleepNode::new(mut_self.deadline, waker_for_sleepnode, task_id_for_node);

@@ -2,11 +2,13 @@
 
 use crate::signal::SigSet;
 use crate::timer::TimeVal;
+use crate::utils::string::{get_abs_path, is_abs_path};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec:: Vec;
 use alloc::vec;
+use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 
 use crate::config::{FD_SETSIZE, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
 use crate::fs::{ find_inode, open_file, File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
@@ -76,11 +78,11 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .map_err(|_| SysErrNo::EIO)?;
             Ok(bytes)
         }
-        None => Err(SysErrNo::EBADF),
+        None => {print!("none");Err(SysErrNo::EBADF)},
     }
 }
 pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_open", current_task().get_pid());
+    trace!("kernel:pid[{}] sys_openat", current_task().get_pid());
 
     // 1. 获取当前进程
     let proc = current_process();
@@ -138,8 +140,7 @@ pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode
 
     // 7. 为打开的文件分配一个新的文件描述符 fd
     let new_fd = proc.alloc_fd().await;
-    proc.fd_table.lock().await.get(new_fd).replace(&Some(file_class_instance));
-
+    proc.fd_table.lock().await[new_fd] = Some(file_class_instance);
     // 返回新分配的 fd
     Ok(new_fd )
 }
@@ -149,7 +150,7 @@ pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode
 /// fd: 要关闭的文件描述符
 /// 返回: 成功时为 Ok(0), 失败时为 Err(SysErrNo)
 pub async  fn sys_close(fd: usize) -> SyscallRet {
-    // trace!("kernel:pid[{}] sys_close for fd {}", current_task().get_pid(), fd);
+    trace!(" [sys_close] for fd {}", fd);
     let proc = current_process();
     let mut fd_table = proc.fd_table.lock().await; // 获取文件描述符表的锁
 
@@ -200,6 +201,7 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
 
 pub   fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet{
     // 伪实现
+trace!("[sys_ioctl]");
    Ok(0)
 }
 
@@ -443,13 +445,13 @@ use crate::mm::page_table::{
 
 
 // --- 1. Syscall::Lseek (lseek) ---
-// lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量，所以改动不大
+// lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量
 pub async fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
     // log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
     let pcb_arc = current_process(); // 假设 current_process 是 async
-    let fd_table_guard = pcb_arc.fd_table.lock(); // 假设是同步锁
+    let fd_table_guard = pcb_arc.fd_table.lock().await; 
 
-    if fd < 0 || fd as usize >= fd_table_guard.len() {
+    if fd  >= fd_table_guard.len() {
         return Err(SysErrNo::EBADF);
     }
 
@@ -565,6 +567,8 @@ pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offs
 // --- 4. Syscall::Readv (readv) ---
 /// --- 4. Syscall::Readv (readv) ---
 pub async fn sys_readv(fd:  usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> SyscallRet {
+
+trace!("[sys_readv]");
     if iovcnt <= 0 || iovcnt > UIO_MAXIOV as i32 {
         return Err(SysErrNo::EINVAL);
     }
@@ -685,7 +689,7 @@ pub async fn sys_readv(fd:  usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
 
 // --- 5. Syscall::Writev (writev) ---
 pub async fn sys_writev(fd:     usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> SyscallRet {
-    // log::trace!("sys_writev(fd: {}, iov_ptr: {:p}, iovcnt: {})", fd, iov_user_ptr, iovcnt);
+    log::trace!("sys_writev(fd: {}, iov_ptr: {:p}, iovcnt: {})", fd, iov_user_ptr, iovcnt);
 
     if iovcnt <= 0 || iovcnt > UIO_MAXIOV as i32 {
         return Err(SysErrNo::EINVAL);
@@ -879,8 +883,8 @@ pub async fn sys_ppoll(
     tmo_user_ptr: *const UserTimeSpec, // 指向用户空间的 timespec
     sigmask_user_ptr: *const SigSet,   // 指向用户空间的 sigset_t
 ) -> SyscallRet {
-    // log::trace!("sys_ppoll(fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
-    //             fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr);
+    log::trace!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
+                fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr );
 
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
     if nfds == 0 {
@@ -928,7 +932,7 @@ pub async fn sys_ppoll(
                 }
             };
             if  timeout_spec.tv_nsec >= 1_000_000_000 {
-                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
                 return Err(SysErrNo::EINVAL); // 无效的 timespec
             }
             if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
@@ -1018,12 +1022,12 @@ pub async fn sys_ppoll(
         let timeout_spec = match unsafe { copy_from_user_exact::<UserTimeSpec>(token, tmo_user_ptr) } {
             Ok(ts) => ts,
             Err(_) => {
-                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
                 return Err(SysErrNo::EFAULT);
             }
         };
         if  timeout_spec.tv_nsec >= 1_000_000_000 {
-            if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask); }
+            if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
             return Err(SysErrNo::EINVAL);
         }
         if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
@@ -1051,6 +1055,28 @@ pub async fn sys_ppoll(
 
     result
 }
+
+pub async fn sys_chdir(path: *const u8) -> SyscallRet {
+    trace!("[sys_chdir] path_ptr={:p}", path);
+    // 获取当前进程的访问令牌
+    let token = current_token().await;
+    let path_str = translated_str(token, path);
+
+   open_file(path_str.as_str(), OpenFlags::O_RDONLY, 0)?;
+       
+            let proc = current_process();
+            // 如果给定的是绝对路径，则直接使用；否则基于当前工作目录拼接
+            let new_path = if is_abs_path(&path_str) {
+                path_str.clone()
+            } else {
+                get_abs_path(&proc.cwd.lock().await, &path_str)
+            };
+            // 更新进程的 cwd
+            proc.set_cwd(new_path).await;
+            Ok(0)
+       
+}
+
 
 
 // --- 内部辅助函数，用于原子地设置和恢复信号掩码 ---
@@ -1090,3 +1116,40 @@ async fn restore_sigmask_internal(old_mask: SigSet) {
     thread_signal_state.sigmask = old_mask;
 }
 
+pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
+    let proc = current_process();
+
+    debug!(
+        "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
+        fd, buf as usize, len
+    );
+    let token = proc.memory_set.lock().await.token();
+    let fd_table = proc.fd_table.lock().await;
+    if fd >= fd_table.len()  {
+        return Err(SysErrNo::EINVAL);
+    }
+    let file =  match fd_table.get(fd) {
+        Some(file_option) => {
+            match file_option {
+                Some(file) => file.clone(),
+                None => return Err(SysErrNo::EBADF),
+            }
+        }
+        None => return Err(SysErrNo::EBADF),
+    };
+    let inode=file.file()?;
+    let mut buffer =
+        UserBuffer::new(translated_byte_buffer(token, buf, len));
+
+    let off;
+    let check_off = file.lseek(0, SEEK_CUR as usize);
+    if let Err(_) = check_off {
+        return Ok(0);
+    } else {
+        off = check_off.unwrap();
+    }
+    let (de, off) = inode.read_dentry(off, len)?;
+    buffer.write(de.as_slice());
+    let _ = file.lseek(off as isize, SEEK_SET as usize)?;
+    return Ok(de.len());
+}

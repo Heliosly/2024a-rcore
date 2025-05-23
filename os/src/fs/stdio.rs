@@ -53,20 +53,14 @@ impl File for Stdin {
    
     fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents {
         let mut revents = PollEvents::empty();
-        let mut needs_to_register_waker = false;
-
         
-        //TODO(Heliosly)
-        // if events.contains(PollEvents::POLLIN) {
-        //     if self.readable().unwrap(){ // 检查是否立即有数据可读
-        //         revents.insert(PollEvents::POLLIN);
-        //     } else {
-        //         // 如果现在不可读，但用户请求了POLLIN，则需要注册waker等待可读事件
-        //         self.register_waker_for_read_event(&internal_state, waker_to_register.clone());
-        //         needs_to_register_waker = true; // 只是标记，实际注册在上面
-        //     }
-        // }
-
+        
+        if events.contains(PollEvents::POLLIN) {
+            if self.readable().unwrap(){ 
+                revents.insert(PollEvents::POLLIN);
+            
+        }
+    }
       
 
        
