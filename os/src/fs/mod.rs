@@ -117,7 +117,6 @@ unimplemented!()
     fn as_any(&self) -> &dyn Any {
         unimplemented!();
     }
-     /// 为 stdin 文件描述符轮询指定的事件。
     ///
     /// # 参数
     /// * `requested_events`: 一个 `PollEvents` 位掩码，指定用户感兴趣的事件 (例如 `POLLIN`)。
@@ -255,7 +254,7 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     
     let abs_path = &fix_path(abs_path);
 
-    println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
+    // println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
     let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
     // 同一个路径对应一个Inode
     if has_inode(abs_path) {
