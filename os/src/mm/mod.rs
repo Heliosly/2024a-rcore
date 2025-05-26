@@ -10,6 +10,7 @@ mod address;
 pub(crate) mod frame_allocator;
 pub mod heap_allocator;
 mod memory_set;
+mod area;
 pub mod page_table;
 use core::arch::asm;
 
@@ -18,10 +19,10 @@ use lazy_init::LazyInit;
 pub use page_table::put_data;
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,KernelAddr,VPNRange};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
-pub use memory_set::{ MapPermission, MemorySet, MapAreaType,VmAreaTree,MapArea,MapType};
-use page_table::PTEFlags;
+pub use memory_set::  MemorySet ;
+pub use area::{ MapPermission,  MapAreaType,VmAreaTree,MapArea,MapType,MmapFile,MmapFlags};
 pub use page_table::{
-    translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,get_target_ref_mut,
+    translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,
     PageTableEntry, UserBuffer, UserBufferIterator,fill_str,TranslateRefError
 };
 use riscv::register::satp;

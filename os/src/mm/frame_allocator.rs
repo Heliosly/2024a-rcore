@@ -4,6 +4,7 @@ use super::{PhysAddr, PhysPageNum};
 use crate::config::MEMORY_END;
 use crate::mm::address::KernelAddr;
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
 use core::fmt::{self, Debug, Formatter};
@@ -11,9 +12,10 @@ use core::panic;
 use lazy_static::*;
 
 /// tracker for physical page frame allocation and deallocation
+#[derive(Clone)]
 pub struct FrameTracker {
     /// physical page number
-     ppn: PhysPageNum,
+     pub ppn: PhysPageNum,
 }
 
 impl FrameTracker {
@@ -147,11 +149,12 @@ pub fn init_frame_allocator() {
 }
 
 /// Allocate a physical page frame in FrameTracker style
-pub fn frame_alloc() -> Option<FrameTracker> {
+pub fn frame_alloc() -> Option<Arc<FrameTracker>> {
     FRAME_ALLOCATOR
         .lock()
         .alloc()
         .map(FrameTracker::new)
+        .map(Arc::new)
 }
 
 /// Deallocate a physical page frame with a given ppn
@@ -167,7 +170,7 @@ pub fn frame_dealloc(ppn: PhysPageNum) {
 #[allow(unused)]
 /// a simple test for frame allocator
 pub fn frame_allocator_test() {
-    let mut v: Vec<FrameTracker> = Vec::new();
+    let mut v: Vec<Arc<FrameTracker>> = Vec::new();
     for i in 0..5 {
         let frame = frame_alloc().unwrap();
         println!("{:#?}", frame);

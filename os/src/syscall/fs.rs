@@ -1,8 +1,9 @@
 //! File and filesystem-related syscalls
 
 use crate::signal::SigSet;
-use crate::timer::TimeVal;
-use crate::utils::string::{get_abs_path, is_abs_path};
+use crate::syscall::flags::FaccessatMode;
+use crate::timer::{TimeVal,UserTimeSpec};
+use crate::utils::string::{get_abs_path, get_parent_path_and_filename, is_abs_path};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -10,8 +11,8 @@ use alloc::vec:: Vec;
 use alloc::vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 
-use crate::config::{FD_SETSIZE, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
-use crate::fs::{ find_inode, open_file, File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
+use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
+use crate::fs::{ find_inode, open_file,  File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
 use crate::mm::{ put_data, translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
@@ -19,7 +20,7 @@ use crate::timer::current_time;
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
-use super::flags::{ FstatatFlags, IoVec, UserTimeSpec, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
+use super::flags::{ FstatatFlags, IoVec,  AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
 
 
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -81,7 +82,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         None => {print!("none");Err(SysErrNo::EBADF)},
     }
 }
-pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
+pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
     trace!("kernel:pid[{}] sys_openat", current_task().get_pid());
 
     // 1. 获取当前进程
@@ -110,7 +111,7 @@ pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode
     if path.starts_with('/') {
         // 如果路径是绝对路径（以 / 开头），就忽略 dirfd
         base_abs_path = "/".to_string(); // 根目录作为起点
-    } else if dirfd == AT_FDCWD {
+    } else if dirfd == AT_FDCWD  {
         // 如果 dirfd 是 AT_FDCWD，表示相对于当前工作目录
         base_abs_path = proc.cwd.lock().await.clone();
     } else {
@@ -149,20 +150,20 @@ pub async  fn sys_openat(dirfd: isize, path_ptr: *const u8, flags_u32: u32, mode
 /// 关闭一个文件描述符
 /// fd: 要关闭的文件描述符
 /// 返回: 成功时为 Ok(0), 失败时为 Err(SysErrNo)
-pub async  fn sys_close(fd: usize) -> SyscallRet {
+pub async  fn sys_close(fd: i32) -> SyscallRet {
     trace!(" [sys_close] for fd {}", fd);
     let proc = current_process();
     let mut fd_table = proc.fd_table.lock().await; // 获取文件描述符表的锁
-
+    let fd_usize= fd as usize;
     // 1. 检查 fd 是否有效
-    if fd >= fd_table.len() || fd_table[fd].is_none() {
+    if fd_usize >= fd_table.len() || fd_table[fd_usize].is_none() {
         return Err(SysErrNo::EBADF); // 无效的文件描述符
     }
 
     // 2. 从表中移除 FileClass (通过 Option::take)
     // 当 Arc<FileClass> 的最后一个引用被移除时 (如果 FileClass 是 Arc'd),
     // 它的 drop 方法会被调用，触发 VFS 层的清理。
-    let _removed_file = fd_table[fd].take(); // Option::take 将 Some(v) 变为 None 并返回 v
+    let _removed_file = fd_table[fd_usize].take(); // Option::take 将 Some(v) 变为 None 并返回 v
 
     // _removed_file (一个 Option<Arc<FileClass>>) 在这里超出作用域并被 drop。
     // 如果这是 Arc 的最后一个引用, FileClass 的 Drop trait (如果实现) 将被调用。
@@ -206,7 +207,7 @@ trace!("[sys_ioctl]");
 }
 
 pub async  fn sys_fstatat(
-    dirfd: isize,
+    dirfd: i32,
     path_ptr: *const u8,
     kst: *mut Kstat,
     flags: usize,
@@ -446,7 +447,7 @@ use crate::mm::page_table::{
 
 // --- 1. Syscall::Lseek (lseek) ---
 // lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量
-pub async fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
+pub async fn sys_lseek(fd: usize, offset: isize, whence: u32) -> SyscallRet {
     // log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
     let pcb_arc = current_process(); // 假设 current_process 是 async
     let fd_table_guard = pcb_arc.fd_table.lock().await; 
@@ -469,8 +470,8 @@ pub async fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
 }
 
 // --- 2. Syscall::Pread64 (pread64) ---
-pub async fn sys_pread64(fd: usize, user_buf_ptr: *mut u8, count: usize, offset: usize) -> SyscallRet {
-    // log::trace!("sys_pread64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: usize) -> SyscallRet {
+    log::trace!("sys_pread64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
     if count == 0 {
         return Ok(0);
     }
@@ -807,7 +808,7 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
         }
     }
 
-    if nfds > FD_SETSIZE as usize { // 使用你配置的 FD_SETSIZE
+    if nfds > FD_SETSIZE as usize { 
         return Err(SysErrNo::EINVAL);
     }
 
@@ -1058,22 +1059,23 @@ pub async fn sys_ppoll(
 
 pub async fn sys_chdir(path: *const u8) -> SyscallRet {
     trace!("[sys_chdir] path_ptr={:p}", path);
+   
+    let proc = current_process();
     // 获取当前进程的访问令牌
-    let token = current_token().await;
+    let token = proc.get_user_token().await;
     let path_str = translated_str(token, path);
-
-   open_file(path_str.as_str(), OpenFlags::O_RDONLY, 0)?;
-       
-            let proc = current_process();
-            // 如果给定的是绝对路径，则直接使用；否则基于当前工作目录拼接
-            let new_path = if is_abs_path(&path_str) {
+// 如果给定的是绝对路径，则直接使用；否则基于当前工作目录拼接
+    let new_path = if is_abs_path(&path_str) {
                 path_str.clone()
             } else {
                 get_abs_path(&proc.cwd.lock().await, &path_str)
             };
+   open_file(&new_path.as_str(), OpenFlags::O_RDONLY, 0)?;
+       
+            
             // 更新进程的 cwd
-            proc.set_cwd(new_path).await;
-            Ok(0)
+    proc.set_cwd(new_path).await;
+    Ok(0)
        
 }
 
@@ -1142,7 +1144,7 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
         UserBuffer::new(translated_byte_buffer(token, buf, len));
 
     let off;
-    let check_off = file.lseek(0, SEEK_CUR as usize);
+    let check_off = file.lseek(0, SEEK_CUR );
     if let Err(_) = check_off {
         return Ok(0);
     } else {
@@ -1150,6 +1152,281 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
     }
     let (de, off) = inode.read_dentry(off, len)?;
     buffer.write(de.as_slice());
-    let _ = file.lseek(off as isize, SEEK_SET as usize)?;
+    let _ = file.lseek(off , SEEK_SET )?;
     return Ok(de.len());
+}
+
+
+/// faccessat 系统调用实现
+/// dirfd: 目录文件描述符。可以是 AT_FDCWD 表示当前工作目录。
+/// path_user_ptr: 指向用户空间路径字符串的指针。
+/// mode: 要检查的访问模式 (R_OK, W_OK, X_OK 的组合，或 F_OK)。
+/// flags: AT_SYMLINK_NOFOLLOW 或 AT_EACCESS (此实现暂不处理 flags)。
+pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, _flags: usize) -> SyscallRet {
+    log::trace!("[sys_faccessat] dirfd: {}, path_ptr: {:p}, mode: {}, flags: {}",
+                dirfd, path_user_ptr, mode_u32, _flags);
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let fd_usize = dirfd as usize;
+    // 1. 校验参数
+    if path_user_ptr.is_null() { // path_user_ptr == 0 或 < 0 都是无效地址
+        return Err(SysErrNo::EFAULT);
+    }
+    // mode_u32 是 u32，不会 < 0。检查是否包含有效位。
+    // FaccessatMode::from_bits 会处理无效位，如果它返回 None 或 Err。
+    let mode = match FaccessatMode::from_bits(mode_u32) {
+        Some(m) => m,
+        None => { // 如果 from_bits 返回 None 表示 mode_u32 中有未定义的位
+            if mode_u32 == 0 { // mode == 0 (F_OK) 是合法的
+                FaccessatMode::empty() // 代表 F_OK
+            } else {
+                return Err(SysErrNo::EINVAL); // 无效的 mode 位
+            }
+        }
+    };
+    // POSIX: If mode is F_OK, permissions are not checked.
+    // Your code checks R_OK, W_OK, X_OK based on mode bits.
+    // If mode_u32 == 0 (F_OK), then mode.contains(R_OK) etc. will be false.
+    // This implicitly handles F_OK by not doing permission checks, only existence (via open).
+
+    // 2. 从用户空间复制路径字符串
+    // copy_from_user_str_until_null 需要 token, ptr, max_len
+    let path_kernel_str =  translated_str(token, path_user_ptr);
+ 
+    
+    if !path_kernel_str.starts_with('/') { return Err(SysErrNo::EINVAL); }
+
+    // 4. 解析得到最终的、已规范化的绝对路径 abs_path
+    let abs_path= pcb_arc.resolve_path_from_fd(  fd_usize, &path_kernel_str, false)
+    .await?;
+
+    // 4. 检查挂载点只读 (如果请求写权限)
+    if mode.contains(FaccessatMode::W_OK) {
+       
+        if let Some(mount_entry) = crate::fs::mount::MNT_TABLE.lock().get_mount_info_by_dir(&abs_path) {
+            let mountflags = mount_entry.flags;
+            if (mountflags & 1) != 0 { // 假设 bit 0 是只读标志
+                return Err(SysErrNo::EROFS);
+            }
+        }
+    }
+
+    // 5. 获取目标 inode 以检查其存在性和权限
+    //    用 O_PATH 或类似的标志来表示只获取元数据而不真正打开。
+    //    对于 faccessat，如果文件不存在，应该返回 ENOENT。
+    //    faccessat 的权限检查是基于 mode 参数，而不是打开时的权限。
+
+    let target_inode_arc = match find_inode(&abs_path,OpenFlags::O_PATH){ // 假设有异步 lookup_inode
+        Ok(inode) => inode,
+        Err(SysErrNo::ENOENT) => return Err(SysErrNo::ENOENT), // 文件或路径组件不存在
+        Err(e) => return Err(e), // 其他查找错误
+    };
+
+    // 如果 mode 是 F_OK (mode_u32 == 0)，并且我们成功 find_inode，说明文件存在。
+    if mode_u32 == 0 { // F_OK check
+        return Ok(0); // 文件存在，权限检查被跳过
+    }
+
+    // 6. 检查父目录的执行权限 (search permission)
+    //    这通常是必需的，除非检查的是 AT_FDCWD 下的非斜杠开头路径的顶层组件。
+    //    Linux access() 会检查路径中所有目录组件的执行权限。
+    if abs_path != "/" { 
+        let( parent_path,_) = get_parent_path_and_filename(&abs_path); // 假设有这样的辅助函数
+
+        if !parent_path.is_empty() && parent_path != "/" { // 避免对根目录的父目录（它自己）进行不必要的检查
+            let parent_inode_arc =  find_inode(&parent_path.to_string(),OpenFlags::O_DIRECTORY)?;
+          
+            if !parent_inode_arc.is_dir() {
+                return Err(SysErrNo::ENOTDIR); // 路径中的一个组件不是目录
+            }
+            // 检查父目录的执行权限 (S_IXUSR, S_IXGRP, S_IXOTH)
+            // 需要从 pcb_arc 获取 uid, gid
+            // let uid=0;//TODO(Heliosly) UID
+            // let gid=0;//TODO(Heliosly) GID
+            // if !parent_inode_arc.access(uid, gid, FaccessatMode::X_OK) { // 假设 OSInode 有 access 方法
+            //     return Err(SysErrNo::EACCES);
+            // }
+        }
+    }
+
+
+    // 7. 根据请求的 mode 和目标 inode 的权限进行检查
+    //    需要从 pcb_arc 获取 uid, gid
+    // let uid=0;//TODO(Heliosly) UID
+    //         let gid=0;//TODO(Heliosly) GID
+    // if !target_inode_arc.access(uid, gid, mode) { // OSInode::access 应该处理 R_OK, W_OK, X_OK
+    //     return Err(SysErrNo::EACCES);
+    // }
+
+    // 如果所有检查都通过
+    Ok(0)
+
+
+   
+}
+
+pub async  fn sys_mkdirat(dirfd: usize, path: *const u8, mode: u32) -> SyscallRet {
+    let proc = current_process();
+    
+    let token = proc.get_user_token().await;
+    let path = translated_str(token, path);
+
+   trace!(
+        "[sys_mkdirat] dirfd is {},path is {},mode is {}",
+        dirfd as isize, path, mode
+    );
+
+    if dirfd as isize != -100 && dirfd  >= proc.fd_table.lock().await.len() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let abs_path =proc.resolve_path_from_fd(dirfd, &path,false).await?;
+    if let Ok(_) = open_file(&abs_path, OpenFlags::O_RDWR, 0) {
+        return Err(SysErrNo::EEXIST);
+    }
+    if let Ok(_) = open_file(
+        &abs_path,
+        OpenFlags::O_RDWR | OpenFlags::O_CREATE | OpenFlags::O_DIRECTORY,
+        mode,
+    ) {
+        return Ok(0);
+    }
+    return Err(SysErrNo::ENOENT);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+// --- sys_dup2 实现 ---
+/// dup2 系统调用：复制文件描述符
+/// oldfd: 要复制的源文件描述符
+/// newfd: 目标文件描述符
+/// 返回：成功时为 newfd，失败时为 -错误码
+pub async fn sys_dup(oldfd: i32) -> SyscallRet {
+    trace!("sys_dup(oldfd: {})",oldfd  );
+
+    let pcb_arc = current_process();
+    let mut fd_table = pcb_arc.fd_table.lock().await; 
+
+    // 1. 校验 oldfd 和 newfd 的范围
+    if oldfd < 0 || oldfd as usize >= MAX_FD_NUM 
+      {
+        // log::warn!("sys_dup2: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
+        return Err(SysErrNo::EBADF);
+    }
+
+    let oldfd_usize = oldfd as usize;
+
+   
+    // 3. 检查 oldfd 是否是一个有效的、打开的文件描述符,此处返回oldfd的clone
+    let file_to_dup = match fd_table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
+        Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
+        None => {
+            // log::warn!("sys_dup2: oldfd({}) is not a valid open file descriptor.", oldfd);
+            return Err(SysErrNo::EBADF);
+        }
+    };
+   let newfd_usize = if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
+        fd
+    } else {
+        fd_table.push(None);
+        fd_table.len() - 1
+    };
+    // 6. 将克隆的 FileDescriptor 放入 newfd 的位置
+    //    dup2 创建的 fd 默认不设置O_CLOEXEC标志。
+    //    你需要确保 file_to_dup.flags 中不包含 O_CLOEXEC (或者如果它有，在这里清除它)
+    //    或者，FileDescriptor 有一个方法 fd.set_cloexec(false)。
+    //    POSIX: "The close-on-exec flag (FD_CLOEXEC) for the new descriptor is off."
+    let mut new_fd_instance = file_to_dup;
+    new_fd_instance.unset_cloexec();
+    fd_table[newfd_usize] = Some(new_fd_instance);
+
+    // log::debug!("sys_dup2: Duplicated fd {} to {} successfully.", oldfd, newfd);
+    Ok(newfd_usize)
+}
+
+
+// --- sys_dup3 实现 ---
+/// dup3 系统调用：带标志的文件描述符复制
+/// oldfd: 要复制的源文件描述符
+/// newfd: 目标文件描述符
+/// flags: 标志 (目前只支持 O_CLOEXEC)
+/// 返回：成功时为 newfd，失败时为 -错误码
+pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
+    log::trace!("sys_dup3(oldfd: {}, newfd: {}, flags: 0x{:x})", oldfd, newfd, flags_u32);
+
+    // 1. 校验 flags (目前只关心 O_CLOEXEC)
+    //    如果包含 O_CLOEXEC 之外的其他位，POSIX 要求返回 EINVAL。
+    let creation_flags = OpenFlags::from_bits_truncate(flags_u32); // 获取传入的标志
+    if !creation_flags.is_empty() && !creation_flags.contains(OpenFlags::FD_CLOEXEC) {
+        // log::warn!("sys_dup3: Invalid flags 0x{:x} provided. Only O_CLOEXEC is supported.", flags_u32);
+        return Err(SysErrNo::EINVAL); // 只允许 O_CLOEXEC 或没有标志
+    }
+
+    let pcb_arc = current_process();
+    let mut fd_table_guard = pcb_arc.fd_table.lock().await;
+
+    // 2. 校验 oldfd 和 newfd 的范围
+    if oldfd < 0 || oldfd as usize >= MAX_FD_NUM ||
+       newfd < 0 || newfd as usize >= MAX_FD_NUM {
+        // log::warn!("sys_dup3: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
+        return Err(SysErrNo::EBADF);
+    }
+
+    let oldfd_usize = oldfd as usize;
+    let newfd_usize = newfd as usize;
+
+    // 3. 如果 oldfd 等于 newfd，dup3 要求返回 EINVAL
+    if oldfd == newfd {
+        // log::warn!("sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.", oldfd, newfd);
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 4. 检查 oldfd 是否是一个有效的、打开的文件描述符
+    let file_to_dup = match fd_table_guard.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
+        Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
+        None => {
+            // log::warn!("sys_dup3: oldfd({}) is not a valid open file descriptor.", oldfd);
+            return Err(SysErrNo::EBADF);
+        }
+    };
+
+    // 5. 如果 newfd 已经打开，则先关闭它
+    if newfd_usize < fd_table_guard.len() && fd_table_guard[newfd_usize].is_some() {
+        // log::trace!("sys_dup3: Closing already open newfd({}).", newfd);
+        fd_table_guard[newfd_usize] = None;
+    }
+
+    // 6. 确保 fd_table 足够大以容纳 newfd
+    if newfd_usize >= fd_table_guard.len() {
+        fd_table_guard.resize(newfd_usize + 1, None);
+    }
+
+    // 7. 将克隆的 FileDescriptor 放入 newfd 的位置，并根据 flags 设置 FD_CLOEXEC
+    let mut new_fd_instance = file_to_dup; // file_to_dup 是 FileDescriptor
+
+    // new_fd_instance.flags 是从 oldfd 复制过来的，它可能已经有或没有 FD_CLOEXEC
+    // dup3 的 flags 参数是用来 *设置* newfd 的 FD_CLOEXEC 状态，而不是从 oldfd 继承。
+    if creation_flags.contains(OpenFlags::FD_CLOEXEC) {
+        new_fd_instance.flags.insert(OpenFlags::FD_CLOEXEC);
+        // log::trace!("sys_dup3: Setting FD_CLOEXEC for newfd({}).", newfd);
+    } else {
+        new_fd_instance.flags.remove(OpenFlags::FD_CLOEXEC);
+        // log::trace!("sys_dup3: Clearing FD_CLOEXEC for newfd({}).", newfd);
+    }
+
+    fd_table_guard[newfd_usize] = Some(new_fd_instance);
+
+    // log::debug!("sys_dup3: Duplicated fd {} to {} successfully with flags 0x{:x}.",
+    //             oldfd, newfd, flags_u32);
+    Ok(newfd_usize )
 }

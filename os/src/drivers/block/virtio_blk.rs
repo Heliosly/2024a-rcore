@@ -3,7 +3,7 @@ use core::{panic, ptr::NonNull};
 use crate::{mm::{frame_alloc, frame_dealloc, kernel_token, FrameTracker, KernelAddr, PageTable, PhysAddr, PhysPageNum, StepByOne, VirtAddr 
 }, sync::UPSafeCell};
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use virtio_drivers::{
     transport:: Transport,
     BufferDirection, Hal, PhysAddr as DMAPhysAddr
@@ -14,7 +14,7 @@ use lazy_static::lazy_static;
 
 
 lazy_static! {
-    static ref QUEUE_FRAMES: UPSafeCell<Vec<FrameTracker>> = unsafe { UPSafeCell::new(Vec::new()) };
+    static ref QUEUE_FRAMES: UPSafeCell<Vec<Arc<FrameTracker>>> = unsafe { UPSafeCell::new(Vec::new()) };
 }
 
 pub struct VirtioHal;
@@ -47,7 +47,6 @@ unsafe impl Hal for VirtioHal {
     /// 释放之前分配的 DMA 内存
     unsafe fn dma_dealloc(paddr: DMAPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
         let mut ppn: PhysPageNum = paddr.into();
-        panic!("s");
         for _ in 0..pages {
             frame_dealloc(ppn);
             ppn.step();

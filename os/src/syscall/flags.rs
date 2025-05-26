@@ -1,24 +1,4 @@
-bitflags! {
-    /// Mmap flags
-    pub struct MmapFlags: u32 {
-        /// Share changes
-        const MAP_SHARED = 1;
-        /// Changes are private
-        const MAP_PRIVATE = 1 << 1;
-        /// Interpret addr exactly
-        const MAP_FIXED = 1 << 4;
-        /// Don't use a file
-        const MAP_ANONYMOUS = 1 << 5;
-        /// Don't permit write
-        const MAP_DENYWRITE = 1 << 11;
-        /// Populate (prefault) page tables 
-        const MAP_POPULATE = 1 << 13;
-        /// Region grows down (like a stack)
-        const MAP_STACK = 1 << 17;
-        /// MAP_FIXED_NOREPLACE: Don't replace existing mapping
-        const MAP_FIXED_NOREPLACE = 1 << 16;
-    }
-}
+
 
 // For Mmap
 bitflags! {
@@ -42,16 +22,9 @@ bitflags! {
         const REMOVEDIR       = 0x200;  // 仅用于 unlinkat
     }
 }
-#[repr(C)]
-pub struct UtsName {
-    pub sysname: [u8; 65],
-    pub nodename: [u8; 65],
-    pub release: [u8; 65],
-    pub version: [u8; 65],
-    pub machine: [u8; 65],
-}
 
-pub const  AT_FDCWD :isize =  -100;
+
+pub const  AT_FDCWD :i32=  -100;
 
 
 
@@ -70,9 +43,42 @@ pub struct IoVec {
     pub len: usize,    // iov_len: Number of bytes to transfer to/from buffer
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct UserTimeSpec { // 对应 struct timespec
-    pub tv_sec: usize,  // seconds
-    pub tv_nsec: usize, // nanoseconds (long)
+#[derive(Debug, Copy, Clone)]
+pub struct Utsname {
+    pub sysname: [u8; 65],
+    pub nodename: [u8; 65],
+    pub release: [u8; 65],
+    pub version: [u8; 65],
+    pub machine: [u8; 65],
+    pub domainname: [u8; 65],
+}
+
+bitflags! {
+    pub struct FaccessatFileMode : u32 {
+        const S_ISUID = 0o04000;
+        const S_ISGID = 0o02000;
+        const S_ISVTX = 0o01000;
+
+        const S_IRUSR = 0o0400;
+        const S_IWUSR = 0o0200;
+        const S_IXUSR = 0o0100;
+        const S_IRWXU = 0o0700;
+        const S_IRGRP = 0o0040;
+        const S_IWGRP = 0o0020;
+        const S_IXGRP = 0o0010;
+        const S_IRWXG = 0o0070;
+        const S_IROTH = 0o0004;
+        const S_IWOTH = 0o0002;
+        const S_IXOTH = 0o0001;
+        const S_IRWXO = 0o0007;
+    }
+}
+
+bitflags! {
+    pub struct FaccessatMode: u32 {
+        const F_OK = 0;
+        const X_OK = 1;
+        const W_OK = 2;
+        const R_OK = 4;
+    }
 }

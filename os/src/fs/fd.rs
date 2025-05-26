@@ -9,7 +9,7 @@ use alloc::{
 
 use crate::utils::error::{TemplateRet, SysErrNo, SyscallRet};
 
-use super::{  File,OSInode, OpenFlags, Stdin, Stdout};
+use super::{  File,OsInode, OpenFlags, Stdin, Stdout};
 use core::ops::{Deref, DerefMut};
 pub struct FdTable {
     inner: UnsafeCell<FdTableInner>,
@@ -19,12 +19,12 @@ pub struct FdTable {
 /// 抽象文件Abs，抽象文件，只支持File trait的一些操作
 #[derive(Clone)]
 pub enum FileClass {
-    File(Arc<OSInode>),
+    File(Arc<OsInode>),
     Abs(Arc<dyn File>),
 }
 
 impl FileClass {
-    pub fn file(&self) -> Result<Arc<OSInode>, SysErrNo> {
+    pub fn file(&self) -> Result<Arc<OsInode>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
@@ -34,7 +34,7 @@ impl FileClass {
         match self {
             FileClass::File(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
-        }
+        } 
     }
     pub fn any(&self) -> Arc<dyn File> {
         match self {
@@ -71,7 +71,7 @@ impl DerefMut for FileDescriptor {
         unsafe {
             match &self.file {
                 FileClass::File(f) => {
-                    let arc_ptr = Arc::as_ptr(f) as *mut OSInode;
+                    let arc_ptr = Arc::as_ptr(f) as *mut OsInode;
                     &mut *arc_ptr
                 }
                 FileClass::Abs(f) => {
@@ -93,7 +93,7 @@ impl FileDescriptor {
             file,
         }
     }
-    pub fn file(&self) -> Result<Arc<OSInode>, SysErrNo> {
+    pub fn file(&self) -> Result<Arc<OsInode>, SysErrNo> {
         self.file.file()
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {

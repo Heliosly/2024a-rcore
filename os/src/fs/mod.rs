@@ -10,12 +10,13 @@ mod fd;
 mod pipe;
 mod dev;
 mod poll;
+pub mod mount;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 
-use crate::{mm::UserBuffer, task::{current_task, current_task_may_uninit, custom_noop_waker}, timer::get_time_ms, utils::error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}};
+use crate::{ mm::UserBuffer,  task::{ custom_noop_waker }, timer::get_time_ms, utils::{error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use ext4::EXT4FS;
 use hashbrown::{HashMap, HashSet};
@@ -27,11 +28,12 @@ pub use poll::PollRequest;
 use vfs::vfs_ops::VfsNodeOps;
 pub use vfs::vfs_ops::VfsOps;
 pub use stat::Kstat;
-pub use inode::OSInode;
+pub use inode::OsInode;
 pub use fd::{FileClass,FileDescriptor};
 pub use poll::{PollFuture};
 use alloc::boxed::Box;
 pub use dirent::Dirent;
+
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
@@ -110,7 +112,7 @@ unimplemented!()
       }
     
       /// 设置偏移量,并非所有文件都支持
-      fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+      fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
           unimplemented!("not support!");
       }
 
@@ -223,7 +225,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescri
     inode.set_owner(0, 0)?;
     inode.set_timestamps(None, Some((get_time_ms() / 1000) as u32), None)?;
     insert_inode_idx(abs_path, inode.clone());
-    let osinode = OSInode::new(readable, writable, inode);
+    let osinode = OsInode::new(readable, writable, inode);
     Ok(FileDescriptor::new(flags, FileClass::File(Arc::new(osinode))))
 }
 
@@ -233,6 +235,7 @@ pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
 }
 pub fn find_inode(abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
+      trace!("[find_inode] abs_path={}", abs_path);
       root_inode().find(abs_path, flags, 0)
 }
 ///open file
@@ -280,9 +283,9 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
             return Err(SysErrNo::ENOTDIR);
         }
         let (readable, writable) = flags.read_write();
-        let osfile = OSInode::new(readable, writable, inode.clone());
+        let osfile = OsInode::new(readable, writable, inode.clone());
         if flags.contains(OpenFlags::O_APPEND) {
-            osfile.lseek(0, SEEK_END as usize)?;
+            osfile.lseek(0, SEEK_END )?;
         }
         if flags.contains(OpenFlags::O_TRUNC) {
             inode.truncate(0)?;
@@ -353,7 +356,7 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/glibc/lib/dlopen_dso.so",
          "/glibc/lib/libc.so", 
          "/glibc/lib/tls_get_new-dtv_dso.so", 
-         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+         "/glibc/lib/ld-linux-riscv64-lp64.so.1",
           "/glibc/lib/tls_align_dso.so", 
           "/glibc/lib/tls_init_dso.so"
 
@@ -575,7 +578,7 @@ pub async  fn create_init_files() -> GeneralRet {
 
 
 
-pub   fn init(){
+pub fn init(){
 
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
@@ -590,3 +593,4 @@ pub   fn init(){
         };
     root_inode().set_timestamps(Some(0), Some(0), Some(0)).unwrap();
 }
+

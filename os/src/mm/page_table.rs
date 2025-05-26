@@ -5,6 +5,7 @@
 use super::{KernelAddr, KERNEL_PAGE_TABLE_PPN};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -75,7 +76,7 @@ impl PageTableEntry {
 pub struct PageTable {
 
     root_ppn: PhysPageNum,
-    frames: Vec<FrameTracker>,
+    frames: Vec<Arc<FrameTracker>>,
 }
 
 /// Assume that it won't oom when creating/mapping.
@@ -162,9 +163,13 @@ impl PageTable {
         }
         result
     }
+    
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        // if vpn.0==0x2fe7d46{
+        //     println!("map vpn:{:x},ppn:{:x},flags:{:?}",vpn.0,ppn.0,flags);
+        // }
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
@@ -177,7 +182,8 @@ impl PageTable {
         *pte = PageTableEntry::empty();
     }
 
-    ///并不安全也许有部分位置是懒分配的页面，这样会触发内核错误todo
+    
+    ///并不安全也许有部分页面是懒分配的页面，这样会触发内核错误todo(Heliosly)
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
@@ -564,55 +570,7 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
     Ok(())
 }
 
-// 辅助函数：获取目标地址空间中某虚拟地址对应的可变引用。
-// 这是 `translated_refmut` 可能的更完整版本，针对单页、对齐且权限已校验的写入。
-// 该版本仍不安全，且有假设。
-#[allow(dead_code)]
-pub fn get_target_ref_mut<'a, T: 'static>(
-    token: usize,
-    ptr: *mut T,
-) -> Result<&'a mut T, PutDataError> {
-    // 把传入的裸指针转成虚拟地址类型
-    let va = VirtAddr::from(ptr as usize);
-    // 计算类型 T 的大小
-    let size = core::mem::size_of::<T>();
-    // 根据传入的 token 创建页表对象
-    let page_table = PageTable::from_token(token);
 
-    // 1. Check alignment of the virtual address if T has alignment requirements > 1
-    // 1. 如果类型 T 的对齐要求大于 1，检查虚拟地址的对齐性
-    if core::mem::align_of::<T>() > 1 && !is_aligned_to(va.0,core::mem::align_of::<T>()) {
-        return Err(PutDataError::UnalignedAccess); // Or handle via unaligned write
-    }
-
-    // 2. Translate start and end addresses to ensure contiguous mapping (simplified check)
-    // 2. 翻译起始和结束虚拟地址，确保它们映射到连续的物理内存（简化检查）
-    let start_pa = page_table.translate_va(va).ok_or(PutDataError::TranslationFailed(va))?;
-    if size > 0 {
-        // 计算结束虚拟地址
-        let end_va = va + (size - 1);
-        let end_pa = page_table.translate_va(end_va).ok_or(PutDataError::TranslationFailed(end_va))?;
-        // 简单检查：如果起始和结束地址映射到同一物理页，且大小小于页面大小，则假设内存连续。
-        // 这里更严格的检查需要验证所有跨越的虚拟页，并确认物理地址连续。
-        if start_pa.floor() != end_pa.floor() {
-            // 如果跨越了物理页边界，当前函数不支持这种情况。
-            // 也可以当作错误处理。
-            return Err(PutDataError::TranslationFailed(va)); // 或者更具体的错误
-        }
-        // 如果跨越虚拟页但物理连续，做更好的物理连续性检查：
-        if end_pa.0 != start_pa.0 + size - 1 {
-            // 物理内存不连续，可能是虚拟页映射到不连续的物理帧
-            // return Err(PutDataError::NonContiguousPhysicalMemory);
-        }
-    }
-
-   
-    // 3. 待完成：检查页表权限（例如写权限）
-
-    // SAFETY: Caller ensures ptr is valid. We've done basic translation checks.
-    // 安全性说明：调用者确保 ptr 有效，这里已做了基本的地址转换检查。
-    Ok(&mut *(start_pa.get_mut::<T>()))
-}
 
 #[derive(Debug)]
 pub enum TranslateRefError {

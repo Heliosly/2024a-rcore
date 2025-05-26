@@ -16,22 +16,26 @@
 
 mod context;
 mod ucontext;
-use crate::mm::{MemorySet, VirtAddr};
+use crate::config::PAGE_SIZE;
+use crate::fs::File;
+use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, UserBuffer, VirtAddr};
+use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current_and_run_next,
     pick_next_task, run_task2, task_tick, CurrentTask,
 };
 use crate::timer::set_next_trigger;
-use crate::utils::{backtrace, bpoint};
+use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
 pub use context::TrapStatus;
-use riscv::register::scause::Scause;
 use core::arch::global_asm;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
+use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
+use riscv::register::scause::Scause;
 use riscv::register::{
     mstatus::FS,
     mtvec::TrapMode,
@@ -39,7 +43,7 @@ use riscv::register::{
     sie, stval, stvec,
 };
 use riscv::register::{satp, sepc, sstatus};
-pub use ucontext::{MContext,UContext};
+pub use ucontext::{MContext, UContext};
 global_asm!(include_str!("trap.S"));
 
 /// Initialize trap handling
@@ -111,7 +115,7 @@ pub fn wait_for_irqs() {
 /// Unimplement: traps/interrupts/exceptions from kernel mode
 
 pub fn trap_from_kernel() {
-    backtrace();
+    // backtrace();
     let stval = stval::read();
     let sepc = sepc::read();
     // let stval_vpn = VirtPageNum::from(stval);
@@ -185,46 +189,8 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
     );
     panic!();
 }
-/// 处理页错误陷阱（存储、加载、指令页错误）
-async fn handle_page_fault(tf: &mut TrapContext, scause: Scause, stval: usize) {
-   
-    // println!("{:#?}",tf);
-    let fault_va = VirtAddr::from(stval);
-    let proc = current_process();
-    let mut memset = proc.memory_set.lock().await;
-    let vpn = fault_va.floor();
 
-    // 先只查找不借用：拿到起始页号
-    let start = memset.areatree.find_area(vpn);
 
-    if let Some(start_va) = start {
-        let MemorySet {
-            areatree,
-            page_table,
-            ..
-        } = &mut *memset;
-
-        let area = areatree.get_mut(&start_va).unwrap();
-        if area.vpn_range.empty() || area.allocated(vpn) {
-            log_page_fault_error(scause, stval, tf.sepc);
-            exit_current_and_run_next(-2).await;
-        } else if area.vpn_range.contains(vpn) {
-            area.map(page_table);
-            trace!(
-                "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
-                area.vpn_range.get_start().0,
-                area.vpn_range.get_end().0,
-                stval
-            );
-        } else {
-            log_page_fault_error(scause, stval, tf.sepc);
-            exit_current_and_run_next(-2).await;
-        }
-    } else {
-        log_page_fault_error(scause, stval, tf.sepc);
-        exit_current_and_run_next(-2).await;
-    }
-}
 
 ///a future to handle user trap
 /// IMPO
@@ -257,7 +223,7 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    trace!("[user_task_top]sys_call start syscall id = {}",syscall_id);
+                    debug!("[user_task_top]sys_call start syscall id = {}", syscall_id);
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
                     ];
@@ -265,13 +231,16 @@ pub async fn user_task_top() -> i32 {
                     tf.sepc += 4;
                     let result = syscall(syscall_id, args).await;
 
-                    let result =match result {
-                        Ok(res) => res ,
-                        Err(err) =>     {debug!("[Syscall]Err:{}",err.str());-(err as isize) as usize    }      ,
+                    let result = match result {
+                        Ok(res) => res,
+                        Err(err) => {
+                            debug!("[Syscall]Err:{}", err.str());
+                            -(err as isize) as usize
+                        }
                     };
                     trace!("[user_task_top]sys_call end result:{}", result);
-                
-                    tf.regs.a0 = result ;
+
+                    tf.regs.a0 = result;
 
                     // trace!("sys_call end1");
                     // 判断任务是否退出
@@ -293,8 +262,10 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
-                    handle_page_fault(tf, scause, stval).await;
-                    
+                   if !curr.get_process().memory_set.lock().await.  handle_page_fault( scause.cause(), stval).await{
+                       exit_current_and_run_next(-2).await; log_page_fault_error(scause, stval, sepc)
+                        }
+                
                 }
                 Trap::Exception(Exception::StoreFault)
                 | Trap::Exception(Exception::InstructionFault)
@@ -329,11 +300,11 @@ pub async fn user_task_top() -> i32 {
                     );
                 }
             }
-{
-   //处理完系统调用过后，对应的信号处理和时钟更新
-            crate::signal::handle_pending_signals().await;
-            crate::task::sleeplist::process_timed_events();
-}
+            {
+                //处理完系统调用过后，对应的信号处理和时钟更新
+                crate::signal::handle_pending_signals().await;
+                crate::task::sleeplist::process_timed_events();
+            }
             tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end3");
             // 判断任务是否退出

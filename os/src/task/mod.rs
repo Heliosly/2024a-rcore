@@ -30,7 +30,7 @@ pub mod sleeplist;
 mod yieldfut;
 use alloc::boxed::Box;
 // mod timelist;
-use alloc::vec;
+use alloc::{format, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use alloc::string::{String, ToString};
 use lazy_init::LazyInit;
@@ -95,7 +95,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 
     let process = current_process();
 
-    println!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
+    debug!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
     // **** access current TCB exclusively
     // Change status to Zombie
     task.set_state(TaskStatus::Zombie);
@@ -146,12 +146,13 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 
 // static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
-// static INITPROC_STR: &str =          "musl/basic/yield";
+// static INITPROC_STR: &str =          "musl/basic/times";
  static INITPROC_STR: &str =          "musl/busybox";
 
 //  static INITPROC_STR: &str =          "cosmmap_clone";
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
+static  CWD:&str = "/musl/basic";
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
@@ -165,10 +166,13 @@ pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
         let data = inode.file().unwrap().read_all();
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
-        let binding = get_args("musl/busybox sh".as_bytes());
+        let binding = get_args(
+            format!("{} sh run-all.sh ",INITPROC_STR)
+            
+        .as_bytes());
         let pcb_fut = ProcessControlBlock::new(
             data.as_slice(),
-            "/".to_string(),
+            CWD.to_string(),
             &binding,
             &mut envs,
         );

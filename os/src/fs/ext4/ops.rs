@@ -3,6 +3,7 @@
 ///不支持并发 TODO(Heliosly)
 use core::cell::RefCell;
 use crate::alloc::string::String;
+use crate::config::MAX_SYMLINK_DEPTH;
 use crate::drivers::block::disk::Disk;
 use crate::fs::inode::InodeType;
 use crate::fs::stat::Kstat;
@@ -11,6 +12,7 @@ use crate::fs::{as_inode_type, fix_path, OpenFlags};
 use crate::utils::error::{SysErrNo, SyscallRet};
 
 use alloc::ffi::CString;
+use alloc::format;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -112,7 +114,11 @@ impl FileWrapper {
         info!("dealt with full path: {}", fpath.as_str());
         fpath
     }
-    
+    fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {
+        let file = &mut self.0.borrow_mut();
+        file.file_readlink(buf, bufsize)
+            .map_err(|e| SysErrNo::from(e))
+    }
 }
 
 /// The [`VfsNodeOps`] trait provides operations on a file or a directory.
@@ -283,8 +289,8 @@ impl VfsNodeOps for FileWrapper {
 
     // /// Lookup the node with given `path` in the directory.
     // /// Return the node if found.
-    // fn lookup(self: Arc<Self>, path: &str) -> Result<usize, i32> {
-    //     info!("lookup ext4fs: {:?}, {}", self.0.get_path(), path);
+    // fn lookup(self: Arc<Self>, path: &str) -> Result<Arc<FileWrapper>, i32> {
+    //     info!("lookup ext4fs: {:?}, {}", self.0.borrow().get_path(), path);
 
     //     let fpath = self.path_deal_with(path);
     //     let fpath = fpath.as_str();
@@ -380,28 +386,27 @@ impl VfsNodeOps for FileWrapper {
              }
              Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_REG_FILE)))
          } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
-            panic!("find symlink");
-            //  if flags.contains(OpenFlags::O_ASK_SYMLINK) {
-            //      return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
-            //  }
-            //  if loop_times >= MAX_LOOPTIMES {
-            //      debug!("error ELOOP!");
-            //      return Err(SysErrNo::ELOOP);
-            //  }
-            //  // 符号链接文件应该返回对应的真实的文件
-            //  let mut file_name = [0u8; 256];
-            //  let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
-            //  file.read_link(&mut file_name, 256)?;
-            //  let end = file_name.iter().position(|v| *v == 0).unwrap();
-            //  let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-            //  //log::info!("[Inode.find] file_path={}", file_path);
-            //  let (prefix, _) = path.rsplit_once("/").unwrap();
-            //  //log::info!("[Inode.find] prefix={}", prefix);
-            //  let abs_path = format!("{}/{}", prefix, file_path);
-            //  //debug!("[Inode.find] symlink abs_path={}", &abs_path);
-            //  return self.find(&abs_path, flags, loop_times + 1);
+             if flags.contains(OpenFlags::O_ASK_SYMLINK) {
+                 return Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK)));
+             }
+             if loop_times >= MAX_SYMLINK_DEPTH{
+                 debug!("error ELOOP!");
+                 return Err(SysErrNo::ELOOP);
+             }
+             // 符号链接文件应该返回对应的真实的文件
+             let mut file_name = [0u8; 256];
+             let file = FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK);
+             file.read_link(&mut file_name, 256)?;
+             let end = file_name.iter().position(|v| *v == 0).unwrap();
+             let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
+             //log::info!("[Inode.find] file_path={}", file_path);
+             let (prefix, _) = path.rsplit_once("/").unwrap();
+             //log::info!("[Inode.find] prefix={}", prefix);
+             let abs_path = format!("{}/{}", prefix, file_path);
+             //debug!("[Inode.find] symlink abs_path={}", &abs_path);
+             return self.find(&abs_path, flags, loop_times + 1);
  
-            //  // Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)))
+            //  Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK)))
          } else {
              Err(SysErrNo::ENOENT)
          }

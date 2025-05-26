@@ -2,6 +2,11 @@
 
 #[allow(unused)]
 
+///最大解析深度
+pub const          MAX_SYMLINK_DEPTH :usize =100;
+
+///
+pub const MNT_TABLE_MAX_ENTRIES: usize = 16;
 ///File descriptor set size
 pub const FD_SETSIZE:usize = 1024;
 //  MAX_KERNEL_RW_BUFFER_SIZE
@@ -75,7 +80,7 @@ pub const IS_ASYNC: usize = 0x5f5f5f5f;
 pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 
 ///Max Fd
-pub const MAX_FD:usize=1024;
+pub const MAX_FD_NUM:usize=1024;
 
 // Maximum path length
 pub const PATH_MAX: usize = 4096;

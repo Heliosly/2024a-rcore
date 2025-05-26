@@ -1,23 +1,26 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::schedule::TaskRef;
 use super::{current_process, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
-use crate::config::{MAX_FD, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
-use crate::fs::{ open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
+use crate::config::{MAX_FD_NUM, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
+use crate::fs::{ find_inode,  FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, 
      VirtAddr, VirtPageNum,
 };
 use crate::signal::{ ProcessSignalSharedState, TaskSignalState};
+use crate::syscall::flags::AT_FDCWD;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
 use crate::task::{add_task, current_task, PID2PC, TID2TC};
 use crate::trap::{TrapContext, TrapStatus};
+use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet };
+use crate::utils::string::normalize_absolute_path;
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -80,6 +83,7 @@ pub struct ProcessControlBlock {
     //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
+
 impl ProcessControlBlock {
 
     
@@ -125,7 +129,7 @@ impl ProcessControlBlock {
         let table_guard = self.fd_table.lock().await;
 
         // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上
-        for fd_candidate in min_fd..MAX_FD {
+        for fd_candidate in min_fd..MAX_FD_NUM {
             if fd_candidate < table_guard.len() {
                 // 如果 fd_candidate 在当前 fd_table 的范围内
                 if table_guard[fd_candidate].is_none() {
@@ -144,7 +148,40 @@ impl ProcessControlBlock {
         // (或者 min_fd >= PROCESS_MAX_FDS)
         None
     }
-
+    /// 向文件描述符表（fd_table）中添加一个文件描述符。
+    ///
+    /// 如果 `pos` 小于当前 `fd_table` 的长度，则替换该位置的文件句柄。
+    /// 否则，扩展 `fd_table` 到 `pos + 1` 的长度，并在 `pos` 位置插入文件句柄。
+    ///
+    /// # Arguments
+    ///
+    /// * `fd`: 要添加的文件句柄。
+    /// * `pos`: 要添加到的文件描述符位置。
+    ///
+    /// # Returns
+    ///
+    /// * `Some(FileDescriptor)`: 如果 `pos` 位置原来存在文件句柄，则返回原来的文件句柄。
+    /// * `None`: 如果 `pos` 位置原来没有文件句柄。
+    ///
+    /// # Panics
+    ///
+    /// 如果 `pos` 大于 `MAX_FD_NUM`，则会发生 panic。
+    ///
+    /// 注意：此函数内部持有 `fd_table` 的锁。
+    pub async  fn add_fd(&self, fd: FileDescriptor,pos:usize) ->Option<FileDescriptor>  {
+      
+        let mut table_guard = self.fd_table.lock().await;
+        if pos>MAX_FD_NUM{
+            panic!("fd out of range");
+        }
+        if pos<table_guard.len(){
+           table_guard[pos].replace(fd)
+         }
+         else{
+            table_guard.resize(pos+1, None);
+            table_guard[pos].replace(fd)
+         }
+    }
     /// “取出” fd_table[fd] 对应的文件句柄，
     /// 表中该项会被置为 None，相当于关闭/移除它。
     ///
@@ -507,7 +544,7 @@ impl ProcessControlBlock {
             TaskSignalState::default(),
         )));
 
-        let mut fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
+        let  fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
 
         let process_control_block = Self {
             pid: pid_handle,
@@ -762,8 +799,9 @@ impl ProcessControlBlock {
             self.memory_set.clone()
         } else {
             Arc::new(Mutex::new(MemorySet::from_existed_user(
-                self.memory_set.lock().await.deref(),
+                &mut *self.memory_set.lock().await,
             )))
+            
 
            
         };
@@ -914,26 +952,26 @@ impl ProcessControlBlock {
     }
 
     /// change the location of the program break. return None if failed.
-    pub async  fn change_program_brk(&self, size: i32) -> Option<usize> {
+    pub async  fn change_program_brk(&self, new_brk: usize) -> Option<usize> {
         let heap_bottom = self.heap_bottom();
         let old_break = self.program_brk();
-        let new_brk = old_break as isize + size as isize;
+        let size = new_brk as isize - old_break as isize;
         debug!("[BRK] old={:#x}, new={:#x}",  old_break, new_brk);
-        if new_brk < heap_bottom as isize {
+        if new_brk < heap_bottom {
             return None;
         }
         let result = if size < 0 {
             self.memory_set
                 .lock().await
-                .shrink_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
+                .shrink_to(VirtAddr(heap_bottom), VirtAddr(new_brk ))
         } else {
             self.memory_set
                 .lock().await
-                .append_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
+                .append_to(VirtAddr(heap_bottom), VirtAddr(new_brk ))
         };
         if result {
-            self.set_program_brk(new_brk as usize);
-            Some(old_break)
+            self.set_program_brk(new_brk );
+            Some(new_brk)
         } else {
             None
         }
@@ -942,6 +980,92 @@ impl ProcessControlBlock {
     pub async  fn is_zombie(&self) -> bool {
         self.main_task.lock().await.is_exited()
     }
+/// 解析路径，处理 dirfd、相对/绝对路径、"."、".." 和符号链接。
+/// 利用底层 VFS 的 find 方法（它已经处理了符号链接递归）。
+///
+/// # 参数
+/// * `proc_arc`: 当前进程的 `Arc<ProcessControlBlock>`。
+/// * `dirfd`: 目录文件描述符，或 AT_FDCWD。
+/// * `path_str`: 要解析的路径字符串 (已在内核空间)。
+/// * `follow_last_symlink`: 是否解析路径中最后一个组件如果是符号链接。
+///
+/// # 返回
+/// `Result<String, SysErrNo>`: 成功时为最终的、规范化的绝对路径，失败时为错误码。
+pub async fn resolve_path_from_fd(
+    &self,
+    dirfd: usize,
+    path_str: &str,
+    follow_last_symlink: bool,
+) -> Result<String, SysErrNo> {
+    // log::trace!(
+    //     "resolve_path_from_fd: dirfd={}, path='{}', follow_last={}",
+    //     dirfd, path_str, follow_last_symlink
+    // );
+
+    // 1. 确定基准绝对路径 (base_path_string)
+    let base_path_string: String;
+    if path_str.starts_with('/') {
+        base_path_string = "/".to_string();
+    } else if dirfd == AT_FDCWD as usize {
+        base_path_string = self.cwd.lock().await.clone();
+    } else {
+        let fd_table_guard = self.fd_table.lock().await;
+        let dir_file_desc_opt = fd_table_guard.get(dirfd as usize).and_then(|opt| opt.as_ref());
+        match dir_file_desc_opt {
+            Some(dir_file_desc) => {
+                // 从 FileDescriptor 获取其代表的 VfsNodeOps 
+                let dir_vfs_node = dir_file_desc.file()?; 
+                if !dir_vfs_node.is_dir() { // VfsNodeOps 需要 is_dir()
+                    return Err(SysErrNo::ENOTDIR);
+                }
+                base_path_string = dir_vfs_node.get_path(); 
+            }
+            None => return Err(SysErrNo::EBADF),
+        }
+    }
+
+    // 2. 拼接路径并进行初步的字符串规范化 (处理 ., .., //)
+    let initial_combined_path = if path_str.starts_with('/') {
+        path_str.to_string() // 如果已经是绝对路径，则不与 base_path 拼接
+    } else {
+        let mut combined = base_path_string;
+        if !combined.ends_with('/') && !path_str.is_empty() {
+            combined.push('/');
+        }
+        combined.push_str(path_str);
+        combined
+    };
+    let normalized_path_to_find = normalize_absolute_path(&initial_combined_path);
+    // log::trace!("Path to find after normalization: {}", normalized_path_to_find);
+
+
+    // 3. 准备传递给 VFS `find` 方法的 OpenFlags
+    let find_flags = OpenFlags::empty(); // 或者一个基础的查找模式，如 O_PATH
+    if follow_last_symlink {
+       match find_inode(&normalized_path_to_find, find_flags  ){
+            Ok(found_vfs_node) => {            // 5. 从找到的 VfsNodeOps 获取其最终的绝对路径
+                 return  Ok(found_vfs_node.path())// 返回 Result<String, SysErrNo>
+        }
+        Err(SysErrNo::ENOENT) => {
+            // 如果 find 返回 ENOENT，但我们不 follow 最后一个符号链接，
+            // 并且原始路径（规范化后）的父目录存在，
+            // 那么结果应该是这个符号链接本身的路径（如果它存在的话）。
+            //  find 方法在 O_ASK_SYMLINK 时，如果最后一个是符号链接，会直接返回它。
+            // 所以，如果到这里是 ENOENT，意味着路径（或其前缀）确实不存在。
+           return  Err(SysErrNo::ENOENT)
+        }
+        Err(e) =>return  Err(e), 
+    }
+
+
+    }
+    // faccessat 本身不打开文件，我们传递的 flags 主要是为了控制符号链接行为。
+
+    // info!("[resolve_path_from_fd] normal_path_str: {}",normalized_path_to_find);
+    Ok(normalized_path_to_find)
+
+     
+}
 }
 
 /// A unique identifier for a thread.

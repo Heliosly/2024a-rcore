@@ -8,23 +8,22 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
+use linux_raw_sys::general::AT_FDCWD;
 
 use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
-    fs::{open_file, OpenFlags, NONE_MODE},
+    fs::{open_file,  OpenFlags, NONE_MODE},
     mm::{
-        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, TranslateRefError, VirtAddr, VirtPageNum
+        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateRefError, VirtAddr, VirtPageNum
     },
-    syscall::flags::{MmapFlags, MmapProt},
+    syscall::flags:: MmapProt,
     task::{
         current_process, current_task, current_token, exit_current_and_run_next, set_priority,
         yield_now, CloneFlags, TaskStatus, PID2PC,
     },
     timer::{ get_time_us, TimeVal},
     utils::{
-        error::{SysErrNo, SyscallRet},
-        page_round_up,
-        string::get_abs_path,
+         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     },
 };
 
@@ -130,44 +129,14 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
 
     proc.clone_task(flags, user_stack, ptid, tls, ctid).await
 }
-// pub fn sys_fork() -> isize {
-//     trace!("kernel:pid[{}] sys_fork", current_task().get_pid());
-//     let current_process = current_process();
 
-//     let new_pro = current_process.fork();
-//     let new_pid = new_pro.get_pid();
-//     // debug!("new_pid:{}",new_pid);
 
-//     // modify trap context of new_task, because it returns immediately after switching
-//     // we do not have to move to next instruction since we have done it before
-//     // for child process, fork returns 0
-//     // add new task to scheduler
-//     // let inner = new_task.inner_exclusive_access();
-//     // for area in inner.memory_set.areas.iter(){
-//     //     for (_,ppn) in area.data_frames.iter(){
-//     //         if ppn.ppn().0==0x81901 {
-//     //             print!("\nfork in pid{}\n",new_pid);
-//     //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
-//     //             ppn.ppn().0,ppn as *const _ as usize);
-//     //         }
-//     //         if new_task.get_pid()==3 {
-//     //             println!("in fork pid =3 ,ppn={:#x},frametracker_ptr:{:#x}",
-//     //             ppn.ppn().0,ppn as *const _ as usize);
-//     //         }
-//     //     }
-//     // }
-//     // drop(inner);
-
-//     new_pid as isize
-// }
-
-/// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_exec", current_task().get_pid());
     let process = current_process();
 
     let token = process.get_user_token().await;
     let mut path = translated_str(token, path);
+    path = process.resolve_path_from_fd(AT_FDCWD as usize, path.as_str(),true).await?;
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     // if !argv.is_null() {
@@ -195,16 +164,18 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     if path.ends_with(".sh") {
         //.sh文件不是可执行文件，需要用busybox的sh来启动
         argv_vec.insert(0, String::from("sh"));
-        argv_vec.insert(0, String::from("busybox"));
-        path = String::from("/busybox");
+        argv_vec.insert(0, String::from("busybox "));
+        path = String::from("/musl/busybox");
     }
-
+    
+    
     // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
     //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
     //     argv_vec.insert(0, String::from("busybox"));
     //     path = String::from("/busybox");
     // }
 
+    // println!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
     loop {
@@ -486,6 +457,7 @@ pub async fn sys_mmap(
         "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
         addr, len, fd as isize, off, flags,mmap_prot, map_perm
     );
+    
     // 5. MAP_FIXED 且 addr == 0 禁止
     if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
         return Err(SysErrNo::EPERM);
@@ -499,10 +471,11 @@ pub async fn sys_mmap(
     let mut ms = proc.memory_set.lock().await;
 
     let fd_table = proc.fd_table.lock().await;
+    let mmap_flag= MmapFlags::empty();
     // ——————————————————————————————————————————
     // 7. 如果是文件映射，要检查文件权限和 off_file
 
-    let _file = if !anon {
+    let file = if !anon {
         // 7.1 拿到文件对象
         let file = match fd_table.get(fd) {
             Some(f) => f.clone().unwrap(),
@@ -516,9 +489,8 @@ pub async fn sys_mmap(
         if off > file.fstat().st_size as usize {
             return Err(SysErrNo::EINVAL);
         }
-
-        unimplemented!();
-        Some(file.clone())
+        
+        Some(file)
     } else {
         None
     };
@@ -571,6 +543,10 @@ pub async fn sys_mmap(
         map_perm,
         MapAreaType::Mmap, // Option<Arc<File>>
     );
+    area.mmap_flags=flags;
+    if let Some(file)=file{
+      area.set_fd(Some(MmapFile::new(file, off)));
+    }
 
     debug!("[sys_mmap]mmap ok,base:{:#x}", base.0);
 
@@ -579,6 +555,7 @@ pub async fn sys_mmap(
         // 立即为每页缺页、填充物理页
         area.map(&mut ms.page_table);
     }
+   
     // if flags.contains(MmapFlags::MAP_LOCKED) {
     //     // mlock：锁定这些物理页
     //     area.lock(&mut ms.page_table)?;
@@ -600,6 +577,7 @@ pub async fn sys_mmap(
 /// YOUR JOB: Implement munmap.
 pub async  fn sys_munmap(start: usize, len: usize) -> SyscallRet {
     trace!("kernel:pid[{}] sys_munmap ", current_task().get_pid());
+    
     let start_va = VirtAddr::from(start);
     let end_va = VirtAddr::from(start + len);
     current_process()
@@ -610,14 +588,22 @@ pub async  fn sys_munmap(start: usize, len: usize) -> SyscallRet {
 }
 
 /// change data segment size
-pub async  fn sys_sbrk(size: i32) -> SyscallRet {
+pub async  fn sys_brk(new_brk:usize) -> SyscallRet {
     trace!(
-        "kernel:pid[{}] sys_sbrk size:{:#x}",
-        current_task().get_pid(),
-        size
+        "[sys_brk] new_brk_addr:{}",
+       
+        new_brk
     );
-match current_process().change_program_brk(size).await {
-        Some(old_brk) => Ok(old_brk),
+    if new_brk==0{
+        return Ok(current_process().program_brk());
+    }
+    // 地址必须在 heap 合法范围内
+    if new_brk < current_process().heap_bottom() {
+        return  Err(SysErrNo::EINVAL);
+    }
+   
+match current_process().change_program_brk(new_brk).await {
+        Some(new_brk) => Ok(new_brk),
         None => Err(SysErrNo::ENOMEM),
     }
 }
@@ -730,4 +716,38 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
             }
         }
     }
+}
+pub fn sys_gettid() -> SyscallRet {
+    trace!("kernel:pid[{}] sys_gettid ", current_task().get_pid());
+ 
+    Ok(current_task().id.as_usize())
+}
+pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
+    // if len != crate::task::RobustList::HEAD_SIZE {
+    //     return Err(SysErrNo::EINVAL);
+    // }
+    // let task = current_task().unwrap();
+    // let mut task_inner = task.inner_lock();
+    // task_inner.robust_list.head = head;
+    // //inner.robust_list.len = len;
+    // Ok(0)
+
+    Ok(0)
+}
+
+pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
+    // let mut task = find_task_by_tid(pid);
+    // if task.is_none() && pid == 0 {
+    //     task = current_task();
+    // }
+    // if let Some(task) = task {
+    //     let task_inner = task.inner_lock();
+    //     let token = task_inner.user_token();
+    //     put_data(token, head_ptr, task_inner.robust_list.head);
+    //     put_data(token, len_ptr, task_inner.robust_list.len);
+    //     Ok(0)
+    // } else {
+    //     Err(SysErrNo::ESRCH)
+    // }
+    Ok(0)
 }

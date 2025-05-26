@@ -80,7 +80,7 @@ pub fn unregister_device(abs_path: &str) {
 
 pub fn find_device(abs_path: &str) -> bool {
    let a= DEVICES.lock().get(abs_path).is_some();
-    info!("find device {},{}", abs_path,a);
+    // info!("find device {},{}", abs_path,a);
     a
 }
 
@@ -155,7 +155,7 @@ impl File for DevZero {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
         Err(SysErrNo::ESPIPE)
     }
 }
@@ -215,7 +215,7 @@ impl File for DevNull {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence:u32) -> SyscallRet {
         Err(SysErrNo::ESPIPE)
     }
 }
@@ -314,7 +314,7 @@ impl File for DevRtc {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
         Err(SysErrNo::ESPIPE)
     }
 }
@@ -380,7 +380,7 @@ impl File for DevRandom {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence:u32) -> SyscallRet {
         Err(SysErrNo::ESPIPE)
     }
 }
@@ -445,7 +445,7 @@ impl File for DevTty {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
         Err(SysErrNo::ESPIPE)
     }
 }
@@ -535,7 +535,7 @@ impl File for DevCpuDmaLatency {
         revents
     }
 
-    fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
         // Seeking is not supported on this device
         Err(SysErrNo::ESPIPE)
     }

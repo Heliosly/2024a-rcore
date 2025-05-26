@@ -9,7 +9,6 @@ use core::task::{Context, Poll};
 
 use crate::sync::waitqueue::WaitQueue;
 use crate::task::{current_task_id, current_task_id_may_uninit};
-use crate::utils::bpoint;
 
 #[must_use = "If unused, the lock will be immediately unlocked"]
 pub struct Mutex<T: ?Sized> {
@@ -153,7 +152,6 @@ impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
             match self.data_ptr {
                 Some(ptr) => &mut *ptr, // 已加锁，返回可变引用
                 None => {
-                    bpoint();
                     panic!("MutexGuard: Mutable dereference before lock acquired")
                     // 未加锁时尝试可变访问，panic
                 }

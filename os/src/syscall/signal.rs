@@ -9,7 +9,7 @@
 //     Ok(0)
 // }
 
-use crate::{mm::{get_target_ref, get_target_ref_mut, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, TID2TC}, utils::error::{SysErrNo, SyscallRet}};
+use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, TID2TC}, utils::error::{SysErrNo, SyscallRet}};
 
 // pub fn sys_rt_sigaction(
 //     signo: usize,
@@ -140,10 +140,8 @@ pub async  fn sys_sigprocmask(
     drop(signal_state); // 先释放锁，再复制到用户空间
 
     if !oldset_user_ptr.is_null() {
-        // TODO: copy_to_user for old_mask
-        unsafe {
-            *oldset_user_ptr = old_mask;
-        }
+        *translated_refmut(token, oldset_user_ptr)?=old_mask;
+        
     }
 
     Ok(0) // 成功

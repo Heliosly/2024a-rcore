@@ -56,7 +56,7 @@ bitflags! {
 
 
 /// 在 OS 里再包装一层 Inode 以实现 File trait
-pub struct OSInode {
+pub struct OsInode {
     readable: bool,
     writable: bool,
     inner: UPSafeCell<OSInodeInner>,
@@ -67,9 +67,9 @@ pub struct OSInodeInner {
     inode: Arc<dyn VfsNodeOps>,
 }
 
-impl OSInode {
+impl OsInode {
     pub fn new(readable: bool, writable: bool, inode: Arc<dyn VfsNodeOps>) -> Self {
-        OSInode {
+        OsInode {
             readable,
             writable,
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
@@ -111,6 +111,9 @@ impl OSInode {
     pub fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
         let file = &mut self.inner.exclusive_access().inode;
         file.read_dentry(off, len)
+    }
+    pub fn offset(&self) -> usize {
+        self.inner.exclusive_access().offset
     }
 
 }
@@ -186,7 +189,7 @@ impl InodeType {
 }
 #[async_trait]
 /// 为 `crate::traits::File` 实现 read/write/clear
-impl File for OSInode {
+impl File for OsInode {
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
@@ -230,8 +233,7 @@ impl File for OSInode {
             Ok(total)
       
     }
-    fn lseek(&self, offset: isize, whence: usize) -> crate::utils::error::SyscallRet {
-        let whence = whence as u32;
+    fn lseek(&self, offset: isize, whence: u32) -> crate::utils::error::SyscallRet {
         if whence > 2 {
             return Err(SysErrNo::EINVAL);
         }
@@ -253,28 +255,9 @@ impl File for OSInode {
         }
         Ok(inner.offset)
     }
+
      fn fstat(&self) -> super::stat::Kstat {
-        super::stat::Kstat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_rdev: 0,
-            __pad: 0,
-            st_size: self.inner.exclusive_access().inode.size() as isize ,
-            st_blksize: 0,
-            __pad2: 0,
-            st_blocks: 0,
-            st_atime: 0,
-            st_atime_nsec: 0,
-            st_mtime: 0,
-            st_mtime_nsec: 0,
-            st_ctime: 0,
-            st_ctime_nsec: 0,
-            __unused: [0; 2],
-        }
+        self.inner.exclusive_access().inode.fstat()
     }
 
     }

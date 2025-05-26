@@ -41,7 +41,7 @@ const SYSCALL_GET_TIME: usize = 169;
 /// getpid syscall
 const SYSCALL_GETPID: usize = 172;
 /// sbrk syscall
-const SYSCALL_SBRK: usize = 214;
+const SYSCALL_BRK: usize = 214;
 /// munmap syscall
 const SYSCALL_MUNMAP: usize = 215;
 /// fork syscall
@@ -85,12 +85,24 @@ const SYSCALL_CHDIR:usize = 49;
 const SYSCALL_GETDENTS64:usize=61;
 const SYSCALL_GETPGID :usize = 155;
 const SYSCALL_SETPGID :usize = 154;
+const SYSCALL_CLOCK_GETTIME:usize = 112;
+const SYSCALL_CLOCK_SETTIME:usize = 113;
+const SYSCALL_CLOCK_GETRES:usize = 114; 
+const SYSCALL_GETTID:usize=178;
+const SYSCALL_FACCESSAT:usize=48;
+const SYSCALL_SETROBUSTLIST :usize =99;
+const SYSCALL_MKDIRAT:usize =34;
+const SYSCALL_GETROBUSTLIST :usize =100;
+const SYSCALL_DUP2:usize=23;
+
+const SYSCALL_DUP3:usize=24;
 mod fs;
 mod process;
 mod signal;
 mod other;
 pub mod flags;
-use flags::{IoVec, UserTimeSpec};
+use flags::IoVec;
+use crate::timer::UserTimeSpec;
 use fs::*;
 use process::*;
 use other::*;
@@ -102,12 +114,12 @@ use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
   match syscall_id {
-        SYSCALL_OPEN => sys_openat(args[0] as isize,args[1] as *const u8,args[2] as u32,args[3] as u32).await,
-        SYSCALL_CLOSE => sys_close(args[0]).await,
+        SYSCALL_OPEN => sys_openat(args[0] as i32,args[1] as *const u8,args[2] as u32,args[3] as u32).await,
+        SYSCALL_CLOSE => sys_close(args[0] as i32).await,
         SYSCALL_LINKAT => sys_linkat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_UNLINKAT => sys_unlinkat(args[1] as *const u8),
         
-        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Kstat).await,
+        SYSCALL_FSTAT => sys_fstat(args[0] , args[1] as *mut Kstat).await,
         SYSCALL_EXIT => sys_exit(args[0] as i32).await,
         // SYSCALL_FORK => sys_fork(),
        
@@ -118,7 +130,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]).await,
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
        
-        SYSCALL_SBRK => sys_sbrk(args[0] as i32).await,
+        SYSCALL_BRK => sys_brk(args[0] ).await,
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
         SYSCALL_SIGPROCMASK => sys_sigprocmask(
@@ -143,7 +155,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         
         
         ).await,
-        SYSCALL_FSTATAT => sys_fstatat(args[0] as isize, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
+        SYSCALL_FSTATAT => sys_fstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
         SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
@@ -158,8 +170,8 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
         SYSCALL_WRITEV=>sys_writev(args[0] , args[1] as *const IoVec, args[2] as i32).await,
         SYSCALL_READV=>sys_readv(args[0], args[1] as *const IoVec, args[2] as i32).await,
-        SYSCALL_PREAD64=>sys_pread64(args[0], args[1] as *mut u8, args[2], args[3] ).await,
-        SYSCALL_LSEEK=>sys_lseek(args[0], args[1] as isize, args[2] ).await, 
+        SYSCALL_PREAD64=>sys_pread64(args[0] as i32, args[1] as *mut u8, args[2], args[3] ).await,
+        SYSCALL_LSEEK=>sys_lseek(args[0], args[1] as isize, args[2] as u32 ).await, 
         SYSCALL_PWRITE64=>sys_pwrite64(args[0], args[1] as *const u8, args[2], args[3]).await,
         SYSCALL_GETEUID=> sys_geteuid() ,
         SYSCALL_GETCWD =>sys_getcwd(args[0] as *mut u8, args[1]).await,
@@ -169,7 +181,19 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]).await,
         SYSCALL_SETPGID => Ok(0),
         SYSCALL_GETPGID => Ok(0),
-        _ => panic!("Unsupported syscall_id: {}", syscall_id),
+        SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] , args[1]).await,
+        SYSCALL_GETTID => sys_gettid(),
+        SYSCALL_FACCESSAT=>sys_faccessat(args[0] as i32,args[1] as *const u8,args[2] as u32,args[3]).await,
+        SYSCALL_GETROBUSTLIST => sys_get_robust_list(args[0], args[1] as *mut usize, args[2] as *mut usize).await,
+        SYSCALL_SETROBUSTLIST => sys_set_robust_list(args[0], args[1]).await,
+        SYSCALL_MKDIRAT => sys_mkdirat(args[0], args[1] as *const u8, args[2] as u32).await,
+        SYSCALL_DUP2=> sys_dup(args[0] as i32).await,
+        SYSCALL_DUP3=> sys_dup3(args[0] as i32, args[1] as i32, args[2]  as  u32).await,
+
+        _ =>{
+             warn!("Unsupported syscall_id: {}", syscall_id);
+                Err(crate::utils::error::SysErrNo::ENOSYS)
+            }
     }
     
 
