@@ -21,6 +21,7 @@ mod current;
 mod id;
 mod kstack;
 mod processor;
+pub mod fdmanage;
 mod schedule;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
@@ -124,7 +125,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     // deallocate user space
     process.memory_set.lock().await.recycle_data_pages();
     // drop file descriptors
-    process.fd_table.lock().await.clear();
+    process.fd_table.lock().await.0.clear();
 
     } 
     TID2TC.lock().remove(&tid);
@@ -152,7 +153,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 //  static INITPROC_STR: &str =          "cosmmap_clone";
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
-static  CWD:&str = "/musl/basic";
+static  CWD:&str = "/musl";
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
@@ -167,7 +168,7 @@ static  CWD:&str = "/musl/basic";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh run-all.sh ",INITPROC_STR)
+            format!("{} sh  ",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(

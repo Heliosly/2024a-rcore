@@ -2,6 +2,7 @@
 
 ///不支持并发 TODO(Heliosly)
 use core::cell::RefCell;
+use core::sync::atomic::AtomicBool;
 use crate::alloc::string::String;
 use crate::config::MAX_SYMLINK_DEPTH;
 use crate::drivers::block::disk::Disk;
@@ -75,7 +76,10 @@ impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
    
 }
 
-pub struct FileWrapper(RefCell<Ext4File>);
+pub struct FileWrapper{
+    file:RefCell<Ext4File>,
+    delay:AtomicBool,
+}
 
 unsafe impl Send for FileWrapper {}
 unsafe impl Sync for FileWrapper {}
@@ -85,7 +89,7 @@ impl FileWrapper {
         info!("FileWrapper new {:?} {}", types, path);
         //file.file_read_test("/test/test.txt", &mut buf);
 
-        Self(RefCell::new(Ext4File::new(path, types)))
+        Self{file:RefCell::new(Ext4File::new(path, types)),delay:AtomicBool::new(false)}
     }
 
     fn path_deal_with(&self, path: &str) -> String {
@@ -108,26 +112,59 @@ impl FileWrapper {
 
         //Todo ? ../
         //注：lwext4创建文件必须提供文件path的绝对路径
-        let file = self.0.borrow_mut();
+        let file = self.file.borrow_mut();
         let path = file.get_path();
         let fpath = String::from(path.to_str().unwrap().trim_end_matches('/')) + "/" + p;
         info!("dealt with full path: {}", fpath.as_str());
         fpath
     }
-    fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {
-        let file = &mut self.0.borrow_mut();
-        file.file_readlink(buf, bufsize)
-            .map_err(|e| SysErrNo::from(e))
-    }
+   
 }
 
 /// The [`VfsNodeOps`] trait provides operations on a file or a directory.
 impl VfsNodeOps for FileWrapper {
 
-   
+    
+
+ fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {
+        let file = &mut self.file.borrow_mut();
+        file.file_readlink(buf, bufsize)
+            .map_err(|e| SysErrNo::from(e))
+    }
+    fn delay(&self) {
+        self.delay.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+    fn if_delay(&self) -> bool {
+        
+        self.delay.load(core::sync::atomic::Ordering::Acquire)
+
+    }
+    fn unlink(&self, path: &str) -> SyscallRet {
+        let file = &mut self.file.borrow_mut();
+        file.file_remove(path).map_err(|e| SysErrNo::from(e))
+    }
+    fn sym_link(&self, target: &str, path: &str) -> SyscallRet {
+        let file = &mut self.file.borrow_mut();
+        file.file_fsymlink(target, path)
+            .map_err(|e| SysErrNo::from(e))
+    }
+
+    fn link_cnt(&self) -> SyscallRet {
+        let file = &mut self.file.borrow_mut();
+        let r = file.links_cnt();
+        if let Err(e) = r {
+            if e == 2 {
+                return Ok(0);
+            } else {
+                return Err(SysErrNo::from(e));
+            }
+        }
+        Ok(r.unwrap() as usize)
+    }
+
     /*
     fn get_attr(&self) -> Result<usize, i32> {
-        let mut file = self.0.lock();
+        let mut file = self.file.lock();
 
         let perm = file.file_mode_get().unwrap_or(0o755);
         let perm = VfsNodePerm::from_bits_truncate((perm as u16) & 0o777);
@@ -182,7 +219,7 @@ impl VfsNodeOps for FileWrapper {
 
         let types = ty;
 
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         if file.check_inode_exist(fpath, types.clone()) {
             Ok(0)
         } else {
@@ -203,7 +240,7 @@ impl VfsNodeOps for FileWrapper {
 
         assert!(!fpath.is_empty()); // already check at `root.rs`
 
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_DIR) {
             // Recursive directory remove
             file.dir_rm(fpath)
@@ -215,7 +252,7 @@ impl VfsNodeOps for FileWrapper {
     /// Get the parent directory of this directory.
     /// Return `None` if the node is a file.
     fn parent(&self) -> Option<Arc<dyn VfsNodeOps>> {
-        let file = self.0.borrow_mut();
+        let file = self.file.borrow_mut();
         if file.get_type() == InodeTypes::EXT4_DE_DIR {
             let path = file.get_path();
             let path = path.to_str().unwrap();
@@ -231,7 +268,7 @@ impl VfsNodeOps for FileWrapper {
 
         fn fstat(&self) -> Kstat {
             // 获取 ext4_inode_stat 结构
-            let a= self.0.borrow_mut().fstat().unwrap();
+            let a= self.file.borrow_mut().fstat().unwrap();
         
             Kstat {
                 st_dev: a.st_dev,
@@ -261,7 +298,7 @@ impl VfsNodeOps for FileWrapper {
     
     /// Read directory entries into `dirents`, starting from `start_idx`.
     fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
-        let file = &mut self.0.borrow();
+        let file = &mut self.file.borrow();
         let entries = file
             .read_dir_from(off as u64)
             .map_err(|e| SysErrNo::from(e))?;
@@ -290,7 +327,7 @@ impl VfsNodeOps for FileWrapper {
     // /// Lookup the node with given `path` in the directory.
     // /// Return the node if found.
     // fn lookup(self: Arc<Self>, path: &str) -> Result<Arc<FileWrapper>, i32> {
-    //     info!("lookup ext4fs: {:?}, {}", self.0.borrow().get_path(), path);
+    //     info!("lookup ext4fs: {:?}, {}", self.file.borrow().get_path(), path);
 
     //     let fpath = self.path_deal_with(path);
     //     let fpath = fpath.as_str();
@@ -299,7 +336,7 @@ impl VfsNodeOps for FileWrapper {
     //     }
 
     //     /////////
-    //     let mut file = self.0;
+    //     let mut file = self.file;
     //     if file.check_inode_exist(fpath, InodeTypes::EXT4_DE_DIR) {
     //         debug!("lookup new DIR FileWrapper");
     //         Ok(Arc::new(Self::new(fpath, InodeTypes::EXT4_DE_DIR)))
@@ -314,7 +351,7 @@ impl VfsNodeOps for FileWrapper {
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
         // debug!("To read_at {}, buf len={}", offset, buf.len());
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         let path = file.get_path();
         let path = path.to_str().unwrap();
         file.file_open(path, O_RDONLY)?;
@@ -326,7 +363,7 @@ impl VfsNodeOps for FileWrapper {
         r
     }
     fn size(&self) -> usize {
-        let file = &mut self.0.borrow_mut();
+        let file = &mut self.file.borrow_mut();
         let types = as_inode_type(file.get_type());
         if types == InodeType::File {
             let path = file.get_path();
@@ -340,7 +377,7 @@ impl VfsNodeOps for FileWrapper {
     }
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, i32> {
         debug!("To write_at {}, buf len={}", offset, buf.len());
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         let path = file.get_path();
         let path = path.to_str().unwrap();
         file.file_open(path, O_RDWR)?;
@@ -354,7 +391,7 @@ impl VfsNodeOps for FileWrapper {
 
     fn truncate(&self, size: u64) -> Result<usize, i32> {
         info!("truncate file to size={}", size);
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         let path = file.get_path();
         let path = path.to_str().unwrap();
         file.file_open(path, O_RDWR | O_CREAT | O_TRUNC)?;
@@ -367,7 +404,7 @@ impl VfsNodeOps for FileWrapper {
 
     fn rename(&self, src_path: &str, dst_path: &str) -> Result<usize, i32> {
         info!("rename from {} to {}", src_path, dst_path);
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         file.file_rename(src_path, dst_path)
     }
     fn find(
@@ -377,7 +414,7 @@ impl VfsNodeOps for FileWrapper {
         loop_times: usize,
     ) ->Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
          //log::info!("[Inode.find] origin path={}", path);
-         let file = &mut self.0.borrow_mut();
+         let file = &mut self.file.borrow_mut();
          if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
              Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)))
          } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
@@ -413,10 +450,10 @@ impl VfsNodeOps for FileWrapper {
     }
   
     fn is_dir(&self) -> bool {
-        self.0.borrow_mut().get_type() == InodeTypes::EXT4_DE_DIR
+        self.file.borrow_mut().get_type() == InodeTypes::EXT4_DE_DIR
     }
 fn set_owner(&self, uid: u32, gid: u32) -> SyscallRet {
-    let file = self.0.borrow_mut();
+    let file = self.file.borrow_mut();
     let c_path = file.get_path();
     let c_path = c_path.into_raw();
 
@@ -438,7 +475,7 @@ fn set_timestamps(
     mtime: Option<u32>,
     ctime: Option<u32>,
 ) -> SyscallRet {
-    let file = self.0.borrow_mut();
+    let file = self.file.borrow_mut();
     let c_path = file.get_path();
     let c_path = c_path.into_raw();
     let mut r = 0;
@@ -462,7 +499,7 @@ fn set_timestamps(
 }
 
 fn fmode(&self) -> Result<u32, SysErrNo> {
-    let file = self.0.borrow_mut();
+    let file = self.file.borrow_mut();
     let c_path = file.get_path();
     let mut mode: u32 = 0o777;
     let c_path = c_path.into_raw();
@@ -478,7 +515,7 @@ fn fmode(&self) -> Result<u32, SysErrNo> {
 }
 
 fn fmode_set(&self, mode: u32) -> SyscallRet {
-    let file = self.0.borrow_mut();
+    let file = self.file.borrow_mut();
     let c_path = file.get_path();
     let c_path = c_path.into_raw();
     let r = unsafe { ext4_mode_set(c_path, mode) };
@@ -492,14 +529,14 @@ fn fmode_set(&self, mode: u32) -> SyscallRet {
     Ok(EOK as usize)
 }
 fn path (&self)->String{
-    self.0.borrow().get_path().to_string_lossy().to_string()
+    self.file.borrow().get_path().to_string_lossy().to_string()
 }
 
 }
 
 impl Drop for FileWrapper {
     fn drop(&mut self) {
-        let mut file = self.0.borrow_mut();
+        let mut file = self.file.borrow_mut();
         debug!("Drop struct FileWrapper {:?}", file.get_path());
         file.file_close().expect("failed to close fd");
         drop(file); // todo

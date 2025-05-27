@@ -1,4 +1,5 @@
 //! Types related to task management & Functions for completely changing TCB
+use super::fdmanage::FdManage;
 use super::schedule::TaskRef;
 use super::{current_process, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
 use crate::config::{MAX_FD_NUM, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
@@ -37,8 +38,6 @@ use spin::mutex::Mutex as Spin;
 use crate::sync::Mutex;
 unsafe impl Sync for ProcessControlBlock {}
 unsafe impl Send for ProcessControlBlock {}
-type FdTable= Vec<Option<FileDescriptor>>;
-/// Task control block structure
 ///
 /// Directly save the contents that will not change during running
 pub struct ProcessControlBlock {
@@ -78,7 +77,7 @@ pub struct ProcessControlBlock {
     /// Application address space
     //     ///wait wakers
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
-    pub fd_table: Arc<Mutex<Vec<Option<FileDescriptor>>>>,
+    pub fd_table: Arc<Mutex<FdManage>>,
     pub signal_shared_state: Arc<Mutex<ProcessSignalSharedState>>,
     //todo(heliosly)
 }
@@ -87,119 +86,7 @@ pub struct ProcessControlBlock {
 impl ProcessControlBlock {
 
     
-    /// 获取文件描述符表（fd_table）的长度。
-    pub async  fn fd_len(&self) -> usize {
-        self.fd_table.lock().await.len()
-    }
-
-    /// 获取 fd_table[fd] 对应的文件句柄（Arc 克隆）。
-    ///
-    /// 不会修改表里原有的 Option。
-    ///
-    /// # Arguments
-    ///
-    /// * `fd`: 文件描述符。
-    ///
-    /// # Returns
-    ///
-    /// * `Some(FileDescriptor)`: 如果存在，则返回文件句柄的克隆。
-    /// * `None`: 如果 fd_table 中不存在该 fd，或该 fd 对应的项为 None。
-    pub async  fn get_file(&self, fd: usize) -> Result<FileDescriptor, SysErrNo> {
-        let table = self.fd_table.lock().await;
-        match table.get(fd) {
-            Some(Some(file_desc)) => Ok(file_desc.clone()),
-            _ => Err(SysErrNo::EBADF),
-        }
-    }
-
-    /// 分配一个大于或等于 min_fd 的最小可用文件描述符。
-    ///
-    /// # Arguments
-    /// * `min_fd`: 新文件描述符的最小编号。
-    ///
-    /// # Returns
-    /// * `Some(usize)`: 如果找到可用的 fd，则返回其编号。
-    /// * `None`: 如果从 min_fd 到 PROCESS_MAX_FDS-1 都没有可用的 fd。
-    ///
-    /// 注意：此函数仅仅 *找到* 一个可用的 fd 编号。
-    /// 调用者负责实际获取 fd_table 的锁，并在必要时调整其大小，
-    /// 然后将 FileDescriptor 实例插入到返回的 fd 编号对应的位置。
-    pub async  fn alloc_fd_from(&self, min_fd: usize) -> Option<usize> {
-      
-        let table_guard = self.fd_table.lock().await;
-
-        // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上
-        for fd_candidate in min_fd..MAX_FD_NUM {
-            if fd_candidate < table_guard.len() {
-                // 如果 fd_candidate 在当前 fd_table 的范围内
-                if table_guard[fd_candidate].is_none() {
-                    // 找到了一个空的槽位
-                    return Some(fd_candidate);
-                }
-            } else {
-                // 如果 fd_candidate 超出了当前 fd_table 的范围，
-                // 但仍在 PROCESS_MAX_FDS 之内，那么这个槽位是可用的。
-                // fd_table 将在稍后实际插入文件时被扩展。
-                return Some(fd_candidate);
-            }
-        }
-
-        // 如果循环完成都没有找到，说明从 min_fd 开始的所有槽位都被占用了
-        // (或者 min_fd >= PROCESS_MAX_FDS)
-        None
-    }
-    /// 向文件描述符表（fd_table）中添加一个文件描述符。
-    ///
-    /// 如果 `pos` 小于当前 `fd_table` 的长度，则替换该位置的文件句柄。
-    /// 否则，扩展 `fd_table` 到 `pos + 1` 的长度，并在 `pos` 位置插入文件句柄。
-    ///
-    /// # Arguments
-    ///
-    /// * `fd`: 要添加的文件句柄。
-    /// * `pos`: 要添加到的文件描述符位置。
-    ///
-    /// # Returns
-    ///
-    /// * `Some(FileDescriptor)`: 如果 `pos` 位置原来存在文件句柄，则返回原来的文件句柄。
-    /// * `None`: 如果 `pos` 位置原来没有文件句柄。
-    ///
-    /// # Panics
-    ///
-    /// 如果 `pos` 大于 `MAX_FD_NUM`，则会发生 panic。
-    ///
-    /// 注意：此函数内部持有 `fd_table` 的锁。
-    pub async  fn add_fd(&self, fd: FileDescriptor,pos:usize) ->Option<FileDescriptor>  {
-      
-        let mut table_guard = self.fd_table.lock().await;
-        if pos>MAX_FD_NUM{
-            panic!("fd out of range");
-        }
-        if pos<table_guard.len(){
-           table_guard[pos].replace(fd)
-         }
-         else{
-            table_guard.resize(pos+1, None);
-            table_guard[pos].replace(fd)
-         }
-    }
-    /// “取出” fd_table[fd] 对应的文件句柄，
-    /// 表中该项会被置为 None，相当于关闭/移除它。
-    ///
-    /// # Arguments
-    ///
-    /// * `fd`: 要取出的文件描述符。
-    ///
-    /// # Returns
-    ///
-    /// * `Some(FileDescriptor)`: 如果存在，则返回文件句柄。
-    /// * `None`: 如果 fd_table 中不存在该 fd，或该 fd 对应的项为 None。
-    pub async fn take_file(&self, fd: usize) -> Option<FileDescriptor> {
-        let mut table = self.fd_table.lock().await;
-        table.get_mut(fd)
-             .and_then(|opt| opt.take())
-    }
-
-    /// 激活用户的内存空间。
+        /// 激活用户的内存空间。
     pub async  fn activate_user_memoryset(&self) {
         self.memory_set.lock().await.activate();
     }
@@ -315,17 +202,6 @@ impl ProcessControlBlock {
     /// * `val`: 新的程序 break 地址。
     pub fn set_program_brk(&self, val: usize) {
         self.program_brk.store(val, Ordering::Release)
-    }
-
-    /// 分配一个文件描述符。
-    pub async  fn alloc_fd(&self) -> usize {
-        let mut fd_table = self.fd_table.lock().await;
-        if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
-            fd
-        } else {
-            fd_table.push(None);
-            fd_table.len() - 1
-        }
     }
 
     /// 获取应用程序页表的地址。
@@ -493,7 +369,7 @@ impl ProcessControlBlock {
         parent: u64,
         memory_set: Arc<Mutex<MemorySet>>,
         heap_bottom: u64,
-        fd_table:FdTable ,
+        fd_table:FdManage ,
         cwd: String,
         main_task :Mutex<TaskRef>
         // mask: Arc<AtomicI32>,
@@ -560,7 +436,7 @@ impl ProcessControlBlock {
             memory_set: Arc::new(Mutex::new(memory_set)),
             main_task: Mutex::new(new_task.clone()),
             tasks: Mutex::new(vec![new_task.clone()]),
-            fd_table: Arc::new(Mutex::new(fd_vec)),
+            fd_table: Arc::new(Mutex::new(FdManage(fd_vec))),
 
             signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
         };
@@ -867,7 +743,7 @@ impl ProcessControlBlock {
              };
             // copy fd table
             let mut new_fd_table: Vec<Option<FileDescriptor>> = Vec::new();
-            for fd in self.fd_table.lock().await.iter() {
+            for fd in self.fd_table.lock().await.0.iter() {
                 if let Some(file) = fd {
                     new_fd_table.push(Some(file.clone()));//todo()
                 } else {
@@ -886,7 +762,7 @@ impl ProcessControlBlock {
                 parent: AtomicUsize::new(parent),
                 children: Mutex::new(Vec::new()),
                 exit_code: AtomicI32::new(0),
-                fd_table: Arc::new(Mutex::new(new_fd_table)),
+                fd_table: Arc::new(Mutex::new(FdManage(new_fd_table))),
                 heap_bottom: AtomicUsize::new(self.heap_bottom.load(Ordering::Relaxed)),
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
                 user_stack_top: AtomicUsize::new(0),
@@ -993,7 +869,7 @@ impl ProcessControlBlock {
 /// `Result<String, SysErrNo>`: 成功时为最终的、规范化的绝对路径，失败时为错误码。
 pub async fn resolve_path_from_fd(
     &self,
-    dirfd: usize,
+    dirfd:i32,
     path_str: &str,
     follow_last_symlink: bool,
 ) -> Result<String, SysErrNo> {
@@ -1006,10 +882,10 @@ pub async fn resolve_path_from_fd(
     let base_path_string: String;
     if path_str.starts_with('/') {
         base_path_string = "/".to_string();
-    } else if dirfd == AT_FDCWD as usize {
+    } else if dirfd == AT_FDCWD  {
         base_path_string = self.cwd.lock().await.clone();
     } else {
-        let fd_table_guard = self.fd_table.lock().await;
+        let fd_table_guard = &self.fd_table.lock().await.0;
         let dir_file_desc_opt = fd_table_guard.get(dirfd as usize).and_then(|opt| opt.as_ref());
         match dir_file_desc_opt {
             Some(dir_file_desc) => {

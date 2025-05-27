@@ -6,18 +6,13 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use bitflags::bitflags;
-use lwext4_rust::bindings::{off_t, SEEK_CUR, SEEK_END, SEEK_SET};
+use lwext4_rust::bindings::{ SEEK_CUR, SEEK_END, SEEK_SET};
+use spin::Mutex;
 
-use super::ext4::ops::FileWrapper;
-use super::stat::Kstat;
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
-use crate::fs::dirent::Dirent;
 use crate::mm::UserBuffer;
-use crate::sync::UPSafeCell;
-use crate::utils::error::{ASyncRet, ASyscallRet, SysErrNo, SyscallRet, TemplateRet};
-use core::pin::Pin;
-use core::future::Future;
+use crate::utils::error::{ SysErrNo, SyscallRet, TemplateRet};
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
@@ -59,12 +54,12 @@ bitflags! {
 pub struct OsInode {
     readable: bool,
     writable: bool,
-    inner: UPSafeCell<OSInodeInner>,
+    pub inner: Mutex<OSInodeInner>,
 }
 
 pub struct OSInodeInner {
     offset: usize,
-    inode: Arc<dyn VfsNodeOps>,
+    pub inode: Arc<dyn VfsNodeOps>,
 }
 
 impl OsInode {
@@ -72,12 +67,12 @@ impl OsInode {
         OsInode {
             readable,
             writable,
-            inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
+            inner:  Mutex::new(OSInodeInner { offset: 0, inode }) ,
         }
     }
 
     pub fn read_all(&self) -> Vec<u8> {
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         let mut buf = [0u8; 512];
         let mut out = Vec::new();
         loop {
@@ -89,31 +84,31 @@ impl OsInode {
         out
     }
     pub fn get_path(&self)->String{
-        let inner = self.inner.exclusive_access();
+        let inner = self.inner.lock();
        inner.inode.path()
     }
     pub fn is_dir(&self)->bool{
-        let inner =self.inner.exclusive_access();
+        let inner =self.inner.lock();
         inner.inode.is_dir()
     }
     pub fn read_at(&self,offset:usize, buf:&mut [u8])->SyscallRet{
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         let n = inner.inode.read_at(offset as u64, buf)?;
         inner.offset += n;
         Ok(n)
     }
     pub fn write_at(&self,offset:usize, buf:&[u8])->SyscallRet{
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         let n = inner.inode.write_at(offset as u64, buf)?;
         inner.offset += n;
         Ok(n)
     }
     pub fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
-        let file = &mut self.inner.exclusive_access().inode;
+        let file = &mut self.inner.lock().inode;
         file.read_dentry(off, len)
     }
     pub fn offset(&self) -> usize {
-        self.inner.exclusive_access().offset
+        self.inner.lock().offset
     }
 
 }
@@ -194,7 +189,7 @@ impl File for OsInode {
         self
     }
     fn clear(&self) {
-        let _ = self.inner.exclusive_access().inode.truncate(0);
+        let _ = self.inner.lock().inode.truncate(0);
         
     }
    fn readable(&self) -> TemplateRet<bool> {
@@ -209,7 +204,7 @@ impl File for OsInode {
         mut buf: UserBuffer<'a>  
     ) -> Result<usize, SysErrNo> {
        
-            let mut inner = self.inner.exclusive_access();
+            let mut inner = self.inner.lock();
                 let mut total = 0;
             for slice in buf.buffers.iter_mut() {
                 let n = inner.inode.read_at(inner.offset as u64, slice)?;
@@ -223,7 +218,7 @@ impl File for OsInode {
 
     async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
       
-            let mut inner = self.inner.exclusive_access();
+            let mut inner = self.inner.lock();
             let mut total = 0;
             for slice in buf.buffers.iter() {
                 let n = inner.inode.write_at(inner.offset as u64, *slice)?;
@@ -237,7 +232,7 @@ impl File for OsInode {
         if whence > 2 {
             return Err(SysErrNo::EINVAL);
         }
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         if whence == SEEK_SET {
             inner.offset = offset as usize;
         } else if whence == SEEK_CUR {
@@ -257,7 +252,7 @@ impl File for OsInode {
     }
 
      fn fstat(&self) -> super::stat::Kstat {
-        self.inner.exclusive_access().inode.fstat()
+        self.inner.lock().inode.fstat()
     }
 
     }

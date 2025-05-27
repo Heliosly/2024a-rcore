@@ -131,3 +131,66 @@ pub fn get_usertime() -> UserTimeSpec {
     UserTimeSpec { tv_sec, tv_nsec }
 
 }
+
+
+
+pub struct Tms {
+    pub tms_utime: isize,  //用户模式下花费的CPU时间
+    pub tms_stime: isize,  //内核模式下花费的CPU时间
+    pub tms_cutime: isize, //子进程在用户模式下花费的CPU时间
+    pub tms_cstime: isize, //子进程在内核模式下花费的CPU时间
+}
+
+impl Tms {
+    pub fn new(time_data: &TimeData) -> Self {
+        Self {
+            tms_utime: time_data.utime,
+            tms_stime: time_data.stime,
+            tms_cutime: time_data.cutime,
+            tms_cstime: time_data.cstime,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TimeData {
+    pub utime: isize,//用户模式下花费的CPU时间
+    pub stime: isize, //内核模式下花费的CPU时间
+    pub cutime: isize, //子进程在用户模式下花费的CPU时间
+    pub cstime: isize,//子进程在内核模式下花费的CPU时间
+    pub lasttime: isize,
+}
+
+impl TimeData {
+    pub fn new() -> Self {
+        let now = (get_time_ms()) as isize;
+        Self {
+            utime: 0,
+            stime: 0,
+            cutime: 0,
+            cstime: 0,
+            lasttime: now,
+        }
+    }
+    pub fn update_utime(&mut self) {
+        let now = (get_time_ms()) as isize;
+        let duration = now - self.lasttime;
+        self.utime += duration;
+        self.lasttime = now;
+    }
+    pub fn update_stime(&mut self) {
+        let now = (get_time_ms()) as isize;
+        let duration = now - self.lasttime;
+        self.stime += duration;
+        self.lasttime = now;
+    }
+    pub fn clear(&mut self) {
+        let now = (get_time_ms()) as isize;
+        self.utime = 0;
+        self.stime = 0;
+        self.cutime = 0;
+        self.cstime = 0;
+        self.lasttime = now;
+    }
+}
+

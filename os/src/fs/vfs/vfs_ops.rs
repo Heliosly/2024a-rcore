@@ -69,7 +69,12 @@ pub trait VfsNodeOps: Send + Sync {
     fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, i32> {
         unimplemented!()
     }
-
+    fn read_link(&self, _buf: &mut [u8], _bufsize: usize) -> SyscallRet {
+        unimplemented!()
+    }
+    fn sym_link(&self, _target: &str, _path: &str) -> SyscallRet {
+        unimplemented!()
+    }
     /// Write data to the file at the given offset.
     fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, i32> {
         unimplemented!()
@@ -163,4 +168,18 @@ pub trait VfsNodeOps: Send + Sync {
     fn is_dir(&self) -> bool {
         unimplemented!()
     }
+
+
+    fn link_cnt(&self) -> SyscallRet {
+        unimplemented!()
+    }
+    fn unlink(&self, path: &str) -> SyscallRet {
+        unimplemented!()
+    }
+    fn delay(&self) {
+        unimplemented!()
+    }
+     fn if_delay(&self) -> bool {
+        unimplemented!()
+     }
 }

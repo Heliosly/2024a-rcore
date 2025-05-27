@@ -136,7 +136,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
 
     let token = process.get_user_token().await;
     let mut path = translated_str(token, path);
-    path = process.resolve_path_from_fd(AT_FDCWD as usize, path.as_str(),true).await?;
+    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     // if !argv.is_null() {
@@ -477,10 +477,7 @@ pub async fn sys_mmap(
 
     let file = if !anon {
         // 7.1 拿到文件对象
-        let file = match fd_table.get(fd) {
-            Some(f) => f.clone().unwrap(),
-            None => return Err(SysErrNo::EBADF),
-        };
+        let file = fd_table.get_file(fd)?; 
         // 7.2 写映射需可写权限
         if map_perm.contains(MapPermission::W) && !file.writable()? {
             return Err(SysErrNo::EACCES);
