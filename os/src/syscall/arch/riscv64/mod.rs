@@ -85,6 +85,11 @@ pub const SYSCALL_GETROBUSTLIST :usize =100;
 pub const SYSCALL_DUP2:usize=23;
 
 pub const SYSCALL_DUP3:usize=24;
-
+pub const SYSCALL_PRLIMIT64 :usize =261;
 pub const SYSCALL_MOUNT:usize=40;
 pub const SYSCALL_UMOUNT2:usize=39;
+pub const SYSCALL_SYMLINKAT:usize =36;
+pub const SYSCALL_READLINKAT:usize =78;
+pub const SYSCALL_GETRANDOM:usize =278; 
+
+pub const SYSCALL_MPROTECT:usize =226; 

@@ -723,7 +723,7 @@ impl ProcessControlBlock {
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
             || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
         {
-            todo!();
+            // todo!();
         }
         // trace!("flags:{:#?}",flags);
         //生成线程或者进程
@@ -858,7 +858,7 @@ impl ProcessControlBlock {
     }
 /// 解析路径，处理 dirfd、相对/绝对路径、"."、".." 和符号链接。
 /// 利用底层 VFS 的 find 方法（它已经处理了符号链接递归）。
-///
+/// 会持有fd_table的锁
 /// # 参数
 /// * `proc_arc`: 当前进程的 `Arc<ProcessControlBlock>`。
 /// * `dirfd`: 目录文件描述符，或 AT_FDCWD。

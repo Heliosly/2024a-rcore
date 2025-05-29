@@ -154,6 +154,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
 static  CWD:&str = "/musl";
+// static  PARAMETERS :&str= "/glibc/basic/run-all.sh";
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
@@ -168,7 +169,7 @@ static  CWD:&str = "/musl";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh  ",INITPROC_STR)
+            format!("{} sh /musl/basic_testcode.sh",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(

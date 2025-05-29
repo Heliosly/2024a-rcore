@@ -3,19 +3,17 @@ use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_TABLE_TOKEN};
 use crate::task::aux::{Aux, AuxType};
-use crate::task::exit_current_and_run_next;
-use crate::utils::bpoint;
-use crate::utils::error::{GeneralRet, SysErrNo};
+use crate::utils::error::{SysErrNo, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
-use super::page_table::PTEFlags;
-use super::{flush_tlb, MmapFlags, VirtAddr, VirtPageNum};
+use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, VirtAddr, VirtPageNum};
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
+use alloc::collections::btree_map::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
-use riscv::register::scause::{Exception, Scause, Trap};
+use riscv::register::scause::{Exception,  Trap};
 use xmas_elf::ElfFile;
 use core::arch::asm;
 use riscv::register::satp;
@@ -514,17 +512,44 @@ log::info!("[map_elf] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, start_va=
         // Check if the page table is valid
         
         let va = VirtAddr::from(vpn).0;
+        loop{
         match self.page_table.translate(vpn) {
             None => {
-                self.handle_page_fault(Trap::Exception(Exception::StorePageFault),va).await;
+               if self.handle_page_fault(Trap::Exception(Exception::StorePageFault),va).await{
+                    // If the page fault is handled successfully, retry translation
+                    continue;
+                } else {
+                    // If the page fault cannot be handled, return None
+                    break None
+               }
             }
             Some(ref pte) => {
                 if !pte.is_valid() {
-                    self.handle_page_fault(Trap::Exception(Exception::StorePageFault),va).await;
+                    //这里不确定有没有问题todo
+                   if self.handle_page_fault(Trap::Exception(Exception::StorePageFault),va).await{
+                    // If the page fault is handled successfully, retry translation
+                    continue;
+                   }
+                   else{
+                    // If the page fault cannot be handled, return None
+                    break None
+                   };
+                }
+                else{
+                    break Some(*pte);
                 }
             }
     }   
-    None
+    
+  }
+}
+pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
+    self.safe_translate(va.clone().floor()).await.map(|pte| {
+        let aligned_pa: PhysAddr = pte.ppn().into();
+        let offset = va.page_offset();
+        let aligned_pa_usize: usize = aligned_pa.into();
+        (aligned_pa_usize + offset).into()
+    })
 }
      
     /// Translate a virtual page number to a page table entry
@@ -564,7 +589,8 @@ log::info!("[map_elf] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, start_va=
             false
         }
     }
-/// 处理页错误陷阱（存储、加载、指令页错误）
+
+/// 处理页错误陷阱（存储、加载、指令页错误）目前只有mmap 懒分配的逻辑
 pub async fn handle_page_fault(&mut self,scause: Trap, stval: usize)->bool{
     // println!("{:#?}",tf);
     let fault_va = VirtAddr::from(stval);
@@ -599,10 +625,10 @@ pub async fn handle_page_fault(&mut self,scause: Trap, stval: usize)->bool{
                 file.lseek((va - start_addr.0 + mmap_file.offset) as isize, SEEK_SET)
                     .expect("mmap_page_fault should not fail");
                 file.read(user_buff).await.unwrap();
-               
+                
                 file.lseek(old_offset as isize, SEEK_SET)
                     .expect("mmap_page_fault should not fail");
-               
+                
               
             }
             flush_tlb();
@@ -626,6 +652,115 @@ pub async fn handle_page_fault(&mut self,scause: Trap, stval: usize)->bool{
 
     }
 }
+/// Translate&Copy a ptr[u8] array end with `\0` to a `String` Vec through page table
+pub  async fn safe_translated_str(&mut self, ptr: *const u8) -> String {
+    let mut string = String::new();
+    let mut va = ptr as usize;
+    loop {
+        let ch: u8 =
+            *(KernelAddr::from(   
+              self.safe_translate_va(VirtAddr::from(va)).await.unwrap()
+        ).get_mut());
+        if ch == 0 {
+            break;
+        }
+        string.push(ch as char);
+        va += 1;
+    }
+    string
+}
+
+pub async fn safe_translated_refmut<'a, T>(
+    &'a mut self,
+    ptr: *mut T,
+) -> TemplateRet<&'a mut T>
+where
+    T: 'a,
+{
+    let pa = self.safe_translate_va(VirtAddr::from(ptr as usize)).await;
+    match  pa {
+        Some(pa)=> Ok( unsafe { &mut *pa.get_mut_ptr() }),
+        None => Err(SysErrNo::ENOMEM),
+    }
+                
+}
+pub async fn safe_translated_byte_buffer(&mut self, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    let mut start = ptr as usize;
+    let end = start + len;
+    let mut v = Vec::new();
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+
+        let ppn = self.safe_translate(vpn).await.unwrap().ppn();
+
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        if end_va.page_offset() == 0 {
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
+        } else {
+            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+        }
+        start = end_va.into();
+    }
+    v
+}
+
+pub async fn mprotect(&mut self, start: VirtAddr, size: usize, flags: MapPermission) {
+    
+     // `drain_filter()` out the overlapped areas first.
+
+     let end = start + size;
+     let end_vpn = end.ceil();
+     let start_vpn = start.floor();
+
+     let mut overlapped_area: Vec<(usize, MapArea)> = Vec::new();
+     let mut prev_area: BTreeMap<VirtPageNum, MapArea> = BTreeMap::new();
+     for _ in 0..self.areatree.len() {
+        let (idx, area) = self.areatree.pop_first().unwrap();
+        if area.overlap_with(start_vpn, end_vpn) {
+            overlapped_area.push((idx.0, area));
+        } else {
+            prev_area.insert(idx, area);
+        }
+    }
+    self.areatree.areas = prev_area;
+    for (_, mut area) in overlapped_area {
+        if area.contained_in(start_vpn, end_vpn) {
+            // update whole area
+            area.update_flags(flags, &mut self.page_table);
+        } else if area.strict_contain(start_vpn, end_vpn) {
+            // split into 3 areas, update the middle one
+            let (mut mid, right) = area.split3(start_vpn, end_vpn).await;
+            mid.update_flags(flags, &mut self.page_table);
+
+            assert!(self.areatree.insert(mid.start_vpn(), mid).is_none());
+            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+        } else if start_vpn <= area.start_vpn() && area.start_vpn() < end_vpn {
+            // split into 2 areas, update the left one
+            let right = area.split(end_vpn).await;
+            area.update_flags(flags, &mut self.page_table);
+
+            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+        } else {
+            // split into 2 areas, update the right one
+            let mut right = area.split(start_vpn).await;
+            right.update_flags(flags, &mut self.page_table);
+
+            assert!(self.areatree.insert(right.start_vpn(), right).is_none());
+        }
+
+        assert!(self.areatree.insert(area.start_vpn(), area).is_none());
+    }
+
+
+
+
+}
+
+
+
 }
 
 /// remap test in kernel space

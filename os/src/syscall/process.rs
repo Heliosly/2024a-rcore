@@ -3,10 +3,7 @@
 
 
 use alloc::{
-    format,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
+   format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::AT_FDCWD;
 
@@ -66,6 +63,7 @@ pub fn sys_getpid() -> SyscallRet {
 /// * `ptid` - usize
 /// * `tls` - usize
 /// * `ctid` - usize
+/// TODO(Heliosly) Ctid and Safe_trans
 pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //解析参数
     let flags = args[0];
@@ -102,15 +100,15 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
-        // CLONE_CHILD_SETTID only makes sense when sharing VM
-        return Err(SysErrNo::EINVAL);
-    }
+    // if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
+    //     // CLONE_CHILD_SETTID only makes sense when sharing VM
+    //     return Err(SysErrNo::EINVAL);
+    // }
 
-    if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) && !flags.contains(CloneFlags::CLONE_VM) {
-        // CLONE_CHILD_CLEARTID only makes sense when sharing VM
-        return Err(SysErrNo::EINVAL);
-    }
+    // if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) && !flags.contains(CloneFlags::CLONE_VM) {
+    //     // CLONE_CHILD_CLEARTID only makes sense when sharing VM
+    //     return Err(SysErrNo::EINVAL);
+    // }
 
     if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_PARENT_SETTID only makes sense when sharing VM
@@ -747,4 +745,42 @@ pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut
     //     Err(SysErrNo::ESRCH)
     // }
     Ok(0)
+}
+
+pub fn sys_prlimit(
+    pid: usize,
+    resource: u32,
+    new_limit: *const RLimit,
+    old_limit: *mut RLimit,
+) -> SyscallRet{
+  Err(SysErrNo::ENOSYS )
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RLimit {
+    pub rlim_cur: usize, /* Soft limit */
+    pub rlim_max: usize, /* Hard limit (ceiling for rlim_cur) */
+}
+
+
+
+
+
+
+pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet {
+    trace!("[sys_mprotect] start:{:#x},size:{:#x},flags:{:#x}",start,size,flags);
+     let start_va= VirtAddr::from(start);
+     let pcb_arc= current_process();
+     let mut memory_set = pcb_arc.memory_set.lock().await;
+    match MmapProt::from_bits(flags as u32) {
+       Some(prot) => {
+          memory_set.mprotect(start_va, size, prot.into()).await;
+       }
+       None => {
+          return Err(SysErrNo::EINVAL);
+       }
+    }
+     Ok(0)
+
 }

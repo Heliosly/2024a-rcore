@@ -74,13 +74,13 @@ pub fn run_task2(mut curr: CurrentTask) {
                             disable_irqs();
                             drop(core::mem::ManuallyDrop::into_inner(state));
 
-                            trace!(
-                                "user return return val: {} sepc:{:#x},u_sp:{:#x},pid:{}",
-                                tf.regs.a0,
-                                tf.sepc,
-                                tf.regs.sp,
-                                curr.get_pid()
-                            );
+                            // trace!(
+                            //     "user return return val: {} sepc:{:#x},u_sp:{:#x},pid:{}",
+                            //     tf.regs.a0,
+                            //     tf.sepc,
+                            //     tf.regs.sp,
+                            //     curr.get_pid()
+                            // );
                             // trace!("ret tf");
                             //  trace!(
                             //                                 "return trapcontext :{:#?}",

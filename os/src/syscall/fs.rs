@@ -1,5 +1,6 @@
 //! File and filesystem-related syscalls
 
+use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
 use crate::signal::SigSet;
 use crate::syscall::flags::FaccessatMode;
@@ -11,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec:: Vec;
 use alloc::vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
-
+const NONE_MODE:u32=0;
 use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
 use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
 use crate::mm::{ put_data, translated_byte_buffer, translated_str, UserBuffer};
@@ -22,6 +23,7 @@ use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
 use super::flags::{ FstatatFlags, IoVec,  AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
+use super::process;
 
 
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -214,6 +216,7 @@ pub async  fn sys_fstatat(
     kst: *mut Kstat,
     flags: usize,
 ) -> SyscallRet {
+    trace!("[sys_fstatat] dirfd: {}, path: {:?}, kst: {:?}, flags: {}", dirfd, path_ptr, kst, flags);
     let token = current_token().await;
 
     // 从用户指针翻译出路径字符串
@@ -232,9 +235,8 @@ pub async  fn sys_fstatat(
         }
         // 校验并获取 dirfd 对应的文件句柄
         let file = proc.fd_table.lock().await.get_file(dirfd as usize)?;
-        let inode = file.file().expect("fd should refer to inode-backed file");
         // 将元数据写回用户缓冲区
-        put_data(token, kst, inode.fstat())? ;
+        put_data(token, kst, file.any().fstat())? ;
         return Ok(0);
     }
 
@@ -248,7 +250,7 @@ pub async  fn sys_fstatat(
     } else {
         // 相对于 dirfd 指向的目录
         let file = proc.fd_table.lock().await.get_file(dirfd as usize)?;
-        let inode = file.file().expect("fd should refer to inode-backed file");
+        let inode = file.file().expect("abs file should use AT_EMPTY_PATH flags");
         inode.get_path()
     };
     let full_path = normalize_and_join_path(base_path.as_str(), path.as_str())?;
@@ -1472,4 +1474,220 @@ pub async  fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallR
     }
 
     Ok(0)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// readlinkat 系统调用实现
+/// dirfd: 目录文件描述符，或 AT_FDCWD。
+/// path_user_ptr: 指向用户空间中符号链接路径的指针。
+/// buf_user_ptr: 指向用户空间缓冲区的指针，用于存储链接目标。
+/// bufsiz: 用户缓冲区的大小。
+/// 返回：成功时为复制到 buf 的字节数，失败时为 -错误码。
+pub async fn sys_readlinkat(
+    dirfd: i32,
+    path_user_ptr: *const u8,
+    buf_user_ptr: *mut u8, // buf 是 *mut u8 因为我们要写入它
+    bufsize: usize,
+) -> SyscallRet {
+    log::trace!("[sys_readlinkat] dirfd: {}, path_ptr: {:p}, buf_ptr: {:p}, bufsiz: {}",
+                dirfd, path_user_ptr, buf_user_ptr, bufsize);
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.get_user_token().await;
+
+    // 1. 校验参数
+    if path_user_ptr.is_null() || (buf_user_ptr.is_null() && bufsize > 0) {
+        return Err(SysErrNo::EFAULT);
+    }
+    if bufsize == 0 && !buf_user_ptr.is_null() { // 如果 buf 非空但大小为0，POSIX行为未定，这里返回成功0字节
+        return Ok(0);
+    }
+
+
+    // 2. 从用户空间读取路径字符串
+    let path_kernel_str = translated_str(token, path_user_ptr);
+
+    // 3. 特殊处理 /proc/self/exe 
+    // if path_kernel_str == "/proc/self/exe" {
+    //     // log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
+    //     // 假设 ProcessControlBlock 或其 fs_info 有 exe_path() 方法
+    //     let exe_path_kernel_str = pcb_arc.get_exe_path_str().await?; // 假设返回 Result<String, SysErrNo>
+
+    //     let exe_path_bytes = exe_path_kernel_str.as_bytes();
+    //     let len_to_copy = core::cmp::min(exe_path_bytes.len(), bufsiz);
+
+    //     if len_to_copy > 0 { // 只有当有东西可复制且用户缓冲区非空时才复制
+    //          if buf_user_ptr.is_null() { return Err(SysErrNo::EFAULT); } // 再次检查，虽然上面检查过
+    //         match unsafe {
+    //             copy_to_user_bytes(
+    //                 token,
+    //                 VirtAddr::from(buf_user_ptr as usize),
+    //                 &exe_path_bytes[0..len_to_copy],
+    //             )
+    //         } {
+    //             Ok(copied) => {
+    //                 if copied != len_to_copy { // copy_to_user_bytes 返回实际复制的
+    //                     // 这可能表示用户缓冲区比 len_to_copy 小，但我们已经用了 min
+    //                     // 或者 copy_to_user_bytes 内部有其他限制/错误
+    //                     // log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
+    //                     return Err(SysErrNo::EFAULT); // 或者返回部分成功？readlink 通常不部分成功
+    //                 }
+    //             }
+    //             Err(_) => return Err(SysErrNo::EFAULT),
+    //         }
+    //     }
+    //     return Ok(len_to_copy as isize);
+    // }
+
+    // 4. 解析路径以获取符号链接本身的 inode (不 follow 最后一个组件)
+    //    我们需要 resolve_path_from_fd 的 follow_last_symlink 参数为 false。
+    let symlink_abs_path = match pcb_arc.resolve_path_from_fd(
+        dirfd,
+        &path_kernel_str,
+        false, // <--- 重要：不解析路径的最后一个符号链接组件
+    ).await {
+        Ok(p) => p,
+        Err(e) => return Err(e),
+    };
+
+    // 5. 获取符号链接的 inode
+    //    resolve_path_from_fd 如果 follow_last_symlink=false，它返回的路径
+    //    应该就是符号链接本身的路径（如果最后一个组件是符号链接）。
+    //    然后我们需要 lookup 这个路径来得到 inode。
+    //    或者，resolve_path_from_fd 可以直接返回最终的 Arc<OSInode> 和真实路径。
+    //    假设我们现在有符号链接的真实路径 symlink_abs_path。
+    let symlink_inode_arc = open_file (&symlink_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    let mut linkbuf = vec![0u8; bufsize];
+    let readcnt = symlink_inode_arc.inner.lock().inode.read_link(&mut linkbuf, bufsize)?;
+    let mut buffer = UserBuffer::new(translated_byte_buffer(token, buf_user_ptr, readcnt));
+    buffer.write(&linkbuf);
+    Ok(readcnt)
+    
+
+}
+
+
+
+
+/// symlinkat 系统调用实现
+/// target_user_ptr: 指向用户空间中符号链接目标的字符串指针。
+/// newdirfd: 目录文件描述符，用于解析 linkpath。可以是 AT_FDCWD。
+/// linkpath_user_ptr: 指向用户空间中要创建的符号链接路径的指针。
+/// 返回：成功时为 0，失败时为 -错误码。
+pub async fn sys_symlinkat(
+    target_user_ptr: *const u8,
+    newdirfd: i32, // POSIX 是 int, Rust 通常用 i32
+    linkpath_user_ptr: *const u8,
+) -> SyscallRet {
+    log::trace!("[sys_symlinkat] target_ptr: {:p}, newdirfd: {}, linkpath_ptr: {:p}",
+                target_user_ptr, newdirfd, linkpath_user_ptr);
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+
+    // 1. 校验用户指针
+    if target_user_ptr.is_null() || linkpath_user_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 2. 从用户空间读取 target 和 linkpath 字符串
+    let target_kernel_str =   translated_str(token, target_user_ptr );
+
+    let linkpath_kernel_str =  translated_str(token, linkpath_user_ptr );
+     
+
+    // log::debug!("[sys_symlinkat] target='{}', linkpath='{}', newdirfd={}",
+    //             target_kernel_str, linkpath_kernel_str, newdirfd);
+
+    // 3. 解析 linkpath 以确定其父目录和新符号链接的名称
+   
+
+    let resolved_linkpath_abs_str = pcb_arc. resolve_path_from_fd(
+        
+        newdirfd,
+        &linkpath_kernel_str,
+        false).await?;
+        
+    
+
+
+    // 4. 分离出父目录路径和要创建的符号链接的名称
+    let (parent_dir_abs_path, symlink_name) =
+        get_parent_path_and_filename(&resolved_linkpath_abs_str);
+
+    if symlink_name.is_empty() || symlink_name == "/" || symlink_name == "." || symlink_name == ".." {
+        // log::warn!("[sys_symlinkat] Invalid symlink name derived: '{}'", symlink_name);
+        return Err(SysErrNo::EISDIR); // 或者 EEXIST，或 EINVAL
+    }
+
+    // log::debug!("[sys_symlinkat] Parent dir: '{}', symlink name: '{}'", parent_dir_abs_path, symlink_name);
+
+    // 5. 检查目标符号链接路径 `resolved_linkpath_abs_str` 是否已存在
+    //    使用 lookup_inode，不 follow 符号链接，因为我们想看这个路径本身是否存在。
+    if let Ok(_) = open_file(&resolved_linkpath_abs_str, OpenFlags::empty(), NONE_MODE) {
+        return Err(SysErrNo::EEXIST);
+    }
+    // 6. 获取父目录的 inode
+    let parent_dir_inode_arc = match find_inode(&parent_dir_abs_path,OpenFlags::O_PATH|OpenFlags::O_DIRECTORY){
+        Ok(inode) => inode,
+        Err(e) => {
+            // log::warn!("[sys_symlinkat] Failed to lookup parent directory '{}': {:?}", parent_dir_abs_path, e);
+            return Err(e); // 父目录不存在或不可访问
+        }
+    };
+
+    // // 7. 检查在父目录中创建文件的权限 (通常是父目录的写权限和执行权限)
+    // //    你需要一个权限检查函数，例如 parent_dir_inode_arc.check_permission(Permissions::WRITE_EXEC)
+    
+    // let (uid, gid) = (pcb_arc.get_uid(), pcb_arc.get_gid()); // 假设 PCB 有这些方法
+    // // 需要父目录有写和执行权限才能在其中创建文件/链接
+    // let mut write_exec_mode = FaccessatMode::empty();
+    // write_exec_mode.insert(FaccessatMode::W_OK);
+    // write_exec_mode.insert(FaccessatMode::X_OK);
+    // if !parent_dir_inode_arc.access(uid, gid, write_exec_mode).await { // 假设 OSInode::access 是 async
+    //     // log::warn!("[sys_symlinkat] No write/execute permission in parent directory '{}'", parent_dir_abs_path);
+    //     return Err(SysErrNo::EACCES);
+    // }
+
+
+    // 8. 调用父目录 inode 的方法来创建符号链接
+    
+    parent_dir_inode_arc.sym_link( &target_kernel_str,&resolved_linkpath_abs_str)?;
+    Ok(0)
+   
+}
+
+
+
+
+pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
+    trace!("[sys_getrandom] buf_ptr: {:p}, buflen: {}, flags: {}", buf_ptr, buflen, flags);
+    let proc= current_process();
+    let token = proc.get_user_token().await;
+
+    if (flags as i32) < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    
+
+    if buf_ptr.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    open_device_file("/dev/random")?.read(UserBuffer::new(
+        translated_byte_buffer(token, buf_ptr, buflen),
+    )).await
 }

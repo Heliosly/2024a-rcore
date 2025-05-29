@@ -260,6 +260,10 @@ impl PhysAddr {
     pub fn get_ptr<T>(&self)->*const T{
         KernelAddr::from(*self).get_ptr()
     }
+    pub fn get_mut_ptr<T>(&self) -> *mut T {
+        
+        KernelAddr::from(*self).get_mut_ptr()
+    }
 }
 
 /// impl KernelAddr
@@ -276,6 +280,9 @@ impl KernelAddr {
     ///Get mutable reference to `PhysAddr` value
     pub fn get_mut<T>(&self) -> &'static mut T {
         unsafe { (self.0 as *mut T).as_mut().unwrap() }
+    }
+    pub fn get_mut_ptr<T>(&self)->*mut T {
+        self.0 as *mut T
     }
 }
 impl PhysPageNum {
@@ -346,6 +353,10 @@ where
     }
     pub fn empty(&self)->bool{
         self.l==self.r
+    }
+    pub fn set_end(&mut self,val:T){
+        assert!(self.get_start()<=val);
+        self.r=val;
     }
  
 }

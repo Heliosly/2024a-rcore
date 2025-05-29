@@ -2,31 +2,38 @@
 
 
 
-use super::{KernelAddr, KERNEL_PAGE_TABLE_PPN};
+use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use bitflags::*;
 use crate::config::{self, PAGE_SIZE};
 use crate::timer::get_time_ticks;
 use crate::utils::error::{ SysErrNo, TemplateRet};
-use crate::utils::is_aligned_to;
-bitflags! {
-    /// page table entry flags
-    pub struct PTEFlags: u8 {
-        const V = 1 << 0;
-        const R = 1 << 1;
-        const W = 1 << 2;
-        const X = 1 << 3;
-        const U = 1 << 4;
-        const G = 1 << 5;
-        const A = 1 << 6;
-        const D = 1 << 7;
+bitflags::bitflags! {
+    /// Page-table entry flags.
+    pub struct PTEFlags: usize {
+        /// Whether the PTE is valid.
+        const V =   1 << 0;
+        /// Whether the page is readable.
+        const R =   1 << 1;
+        /// Whether the page is writable.
+        const W =   1 << 2;
+        /// Whether the page is executable.
+        const X =   1 << 3;
+        /// Whether the page is accessible to user mode.
+        const U =   1 << 4;
+        /// Designates a global mapping.
+        const G =   1 << 5;
+        /// Indicates the virtual page has been read, written, or fetched from
+        /// since the last time the A bit was cleared.
+        const A =   1 << 6;
+        /// Indicates the virtual page has been written since the last time the
+        /// D bit was cleared.
+        const D =   1 << 7;
     }
 }
-
 #[derive(Copy, Clone)]
 #[repr(C)]
 /// page table entry structure
@@ -36,6 +43,7 @@ pub struct PageTableEntry {
 }
 
 impl PageTableEntry {
+    const PHYS_ADDR_MASK: usize = (1 << 54) - (1 << 10); // bits 10..54
     /// Create a new page table entry
     pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
         PageTableEntry {
@@ -50,9 +58,13 @@ impl PageTableEntry {
     pub fn ppn(&self) -> PhysPageNum {
         (self.bits >> 10 & ((1usize << 44) - 1)).into()
     }
+    pub fn set_ppn(&mut self,paddr : PhysAddr){
+        self.bits = (self.bits & !Self::PHYS_ADDR_MASK)
+        | ((paddr.0>> 2) & Self::PHYS_ADDR_MASK);
+    }
     /// Get the flags from the page table entry
     pub fn flags(&self) -> PTEFlags {
-        PTEFlags::from_bits(self.bits as u8).unwrap()
+        PTEFlags::from_bits_truncate(self.bits )
     }
     /// The page pointered by page table entry is valid?
     pub fn is_valid(&self) -> bool {
@@ -70,8 +82,57 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
+  pub  fn set_flags(&mut self, flags: MapPermission) {
+        let flags = PTEFlags::from(flags) | PTEFlags::A | PTEFlags::D;
+        debug_assert!(flags.intersects(PTEFlags::R | PTEFlags::X));
+        self.bits = (self.bits & Self::PHYS_ADDR_MASK) | flags.bits() as usize;
+    }
+   pub fn is_huge(&self) -> bool {
+        PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
+    }
+    
+   
 }
 
+
+impl From<MapPermission> for PTEFlags {
+    fn from(f: MapPermission) -> Self {
+        if f.is_empty() {
+            return Self::empty();
+        }
+        let mut ret = Self::V;
+        if f.contains(MapPermission::R) {
+            ret |= Self::R;
+        }
+        if f.contains(MapPermission::W) {
+            ret |= Self::W;
+        }
+        if f.contains(MapPermission::X) {
+            ret |= Self::X;
+        }
+        if f.contains(MapPermission::U) {
+            ret |= Self::U;
+        }
+        ret
+    }
+}
+
+/// 页表操作失败的错误类型。
+#[derive(Debug)]
+pub enum PagingError {
+    /// 无法分配内存。
+    NoMemory,
+    /// 地址未与页面大小对齐。
+    NotAligned,
+    /// 映射不存在。
+    NotMapped,
+    /// 映射已存在。
+    AlreadyMapped,
+    /// 页表条目表示一个大页面，但目标物理帧的大小为 4K。
+    MappedToHugePage,
+    
+  
+}
 /// page table structure
 pub struct PageTable {
 
@@ -79,8 +140,70 @@ pub struct PageTable {
     frames: Vec<Arc<FrameTracker>>,
 }
 
+#[repr(usize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+/// 页面的大小。
+pub enum PageSize {
+    /// 4 千字节的大小 (2<sup>12</sup> 字节)。
+    Size4K = 0x1000,
+    /// 2 兆字节的大小 (2<sup>21</sup> 字节)。
+    Size2M = 0x20_0000,
+    /// 1 吉字节的大小 (2<sup>30</sup> 字节)。
+    Size1G = 0x4000_0000,
+}
+
+
+/// 用于页表操作的特殊 Result 类型。
+pub type PagingResult<T = ()> = Result<T, PagingError>;
+
+
+
 /// Assume that it won't oom when creating/mapping.
 impl PageTable {
+    /// 更新一个连续虚拟内存区域的映射标志。
+    /// 在使用 [`PageTable64::map_region`] 之前，该区域必须已经被映射，否则会返回一个错误。
+    pub fn update_region(
+        &mut self,
+        mut vaddr: VirtAddr,
+        size: usize,
+        flags: MapPermission,
+    ) -> PagingResult {
+        let end = vaddr + size;
+        while vaddr < end {
+            let page_size = self.update(vaddr, None, Some(flags))?;
+            vaddr.0 += page_size as usize;
+        }
+        Ok(())
+    }
+
+    /// 更新从 `vaddr` 开始的映射的目标或标志。如果相应的参数是 `None`，则不会更新。
+    ///
+    /// 返回映射的页面大小。
+    ///
+    /// 如果映射不存在，则返回 [`Err(PagingError::NotMapped)`](PagingError::NotMapped)。
+    pub fn update(
+        &mut self,
+        vaddr: VirtAddr,
+        paddr: Option<PhysAddr>,
+        flags: Option<MapPermission>,
+    ) -> PagingResult<PageSize> {
+        let vpn= vaddr.floor();
+       let pte= match  self.find_pte(vpn){
+            Some(f) => f,
+            None => return Err(PagingError::NotMapped),
+        };
+        // if pte.ppn() == 0.into() {
+        //     return Ok();
+        // }
+        if let Some(paddr) = paddr {
+            pte.set_ppn(paddr);
+        }
+        if let Some(flags) = flags {
+            pte.set_flags(flags);
+        }
+        //现在只能映射4k页面
+        Ok(PageSize::Size4K)
+    }
     ///clear frame 
     pub fn clear(&mut self) {
         self.frames.clear();
@@ -497,10 +620,7 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
         .translate_va(start_va)
         .ok_or(PutDataError::TranslationFailed(start_va))?;
 
-    // 检查数据是否能完全放入从 start_pa 开始的单页内
-    // （start_pa.as_usize() / PAGE_SIZE） == ((start_pa.as_usize() + data_size - 1) / PAGE_SIZE)
-    // 更严谨的方式：
-    // start_pa.floor() == (start_pa + data_size - 1).floor()
+  
     let crosses_page_boundary = if data_size > 0 { // 避免 data_size - 1 溢出
         // 判断起始物理页号和结束物理页号是否不同
         // (pa.as_usize() & !(PAGE_SIZE - 1)) != ((pa.as_usize() + size - 1) & !(PAGE_SIZE - 1))
@@ -517,13 +637,7 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
         
         
         
-        // 如果没有 `translated_refmut`，则需要自行写物理地址
-        // 检查从 start_va 到 start_va + data_size - 1 所有字节均映射
-        // for offset in 0..data_size {
-        //     if page_table.translate_va(start_va + offset).is_none() {
-        //         return Err(PutDataError::TranslationFailed(start_va + offset));
-        //     }
-        // }
+        
      
       
         // 安全：调用者保证 ptr 对 T 来说有效且可写

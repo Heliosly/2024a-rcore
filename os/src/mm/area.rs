@@ -1,14 +1,28 @@
-use core::{cmp::min, ops::{Deref, DerefMut, Range}};
+use core::{
+    cmp::min,
+    ops::{Deref, DerefMut, Range},
+};
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use linux_raw_sys::general::SEEK_CUR;
+use lwext4_rust::bindings::SEEK_SET;
 
-use crate::{config::{KERNEL_PGNUM_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE}, fs::{FileDescriptor, OsInode}, mm::StepByOne, syscall::flags::MmapProt};
+use crate::{
+    config::{KERNEL_PGNUM_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE, PAGE_SIZE_BITS},
+    fs::{File, FileDescriptor, OsInode},
+    mm::StepByOne,
+    syscall::flags::MmapProt,
+    utils::error::{SyscallRet, TemplateRet},
+};
 
-use super::{frame_alloc, page_table::PTEFlags, FrameTracker, PageTable, PhysPageNum, VPNRange, VirtAddr, VirtPageNum};
+use super::{
+    frame_alloc, page_table::PTEFlags, FrameTracker, PageTable, PhysPageNum, VPNRange, VirtAddr,
+    VirtPageNum,
+};
 
-/// 虚拟内存区域树：Key 按照 Range.start 排序
+/// 虚拟内存区域树：Key 按照 Range.start_vpn 排序
 pub struct VmAreaTree {
-    areas: BTreeMap<VirtPageNum, MapArea>,
+    pub areas: BTreeMap<VirtPageNum, MapArea>,
 }
 impl Deref for VmAreaTree {
     type Target = BTreeMap<VirtPageNum, MapArea>;
@@ -24,27 +38,26 @@ impl DerefMut for VmAreaTree {
     }
 }
 impl VmAreaTree {
-    pub fn push(&mut self,area:MapArea){
-        // trace!("[VmAreaTree] push area: l:{:#x} r:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0 ); 
-      
-         self.areas.insert(area.vpn_range.get_start(), area);
-       
+    pub fn push(&mut self, area: MapArea) {
+        // trace!("[VmAreaTree] push area: l:{:#x} r:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0 );
+
+        self.areas.insert(area.vpn_range.get_start(), area);
     }
     /// 创建一个空的树
     pub fn new() -> Self {
-        VmAreaTree { areas: BTreeMap::new() }
+        VmAreaTree {
+            areas: BTreeMap::new(),
+        }
     }
 
-    
-    pub fn remove_by_area(&mut self, area:MapArea)->MapArea{
+    pub fn remove_by_area(&mut self, area: MapArea) -> MapArea {
         self.areas.remove(&area.vpn_range.get_start()).unwrap()
-        
     }
     /// 手动插入一段页号区间，覆盖前需保证不重叠
-    pub fn insert(
+    pub fn insert_vpn_area(
         &mut self,
         start_vpn: VirtPageNum,
-        end_vpn:   VirtPageNum,
+        end_vpn: VirtPageNum,
         map_type: MapType,
         perm: MapPermission,
         area_type: MapAreaType,
@@ -59,11 +72,7 @@ impl VmAreaTree {
     }
 
     /// 从 MMAP_PGNUM_TOP 向下找 npages 个连续页号，插入并返回起始页号
-    pub fn alloc_pages(
-        &mut self,
-        npages: usize,
-      
-    ) -> Option<VirtPageNum> {
+    pub fn alloc_pages(&mut self, npages: usize) -> Option<VirtPageNum> {
         let mut end_pn = MMAP_PGNUM_TOP;
 
         for area in self.areas.values().rev() {
@@ -75,7 +84,7 @@ impl VmAreaTree {
                 let start_pn = end_pn - npages;
                 if start_pn >= e {
                     let start_vpn = VirtPageNum(start_pn);
-                  
+
                     return Some(start_vpn);
                 }
             }
@@ -86,7 +95,7 @@ impl VmAreaTree {
         if end_pn >= npages {
             let start_pn = end_pn - npages;
             let start_vpn = VirtPageNum(start_pn);
-         
+
             return Some(start_vpn);
         }
 
@@ -94,19 +103,15 @@ impl VmAreaTree {
     }
 
     /// 按起始页号释放该区域
-    /// 
- fn dealloc(&mut self, start_vpn: VirtPageNum) -> Option<MapArea> {
+    ///
+    fn dealloc(&mut self, start_vpn: VirtPageNum) -> Option<MapArea> {
         match self.areas.remove(&start_vpn) {
-            
-            Some(area) => {
-           
-                Some(area)
-                
-            },
-     
-            None =>{println!("dealloc: no such region");
-             None
-        },
+            Some(area) => Some(area),
+
+            None => {
+                println!("dealloc: no such region");
+                None
+            }
         }
     }
 
@@ -125,20 +130,22 @@ impl VmAreaTree {
     pub fn find_area(&self, vpn: VirtPageNum) -> Option<VirtPageNum> {
         // 将虚拟地址转换为页号
         // 在BTreeMap中查找最后一个起始页号 <= 当前页号的区域
-        self.areas.range(..=vpn).next_back().and_then(|(viddr, area)| {
-            // 检查该区域是否包含目标页号
-            if area.vpn_range.contains(vpn) {
-                Some(*viddr)
-            } else {
-                None
-            }
-        })
-    
-}
+        self.areas
+            .range(..=vpn)
+            .next_back()
+            .and_then(|(viddr, area)| {
+                // 检查该区域是否包含目标页号
+                if area.vpn_range.contains(vpn) {
+                    Some(*viddr)
+                } else {
+                    None
+                }
+            })
+    }
     /// 从 `hint` 向下寻找能容纳 `npages` 页的第一个空闲区
     pub fn find_gap_from(&self, hint: VirtPageNum, npages: usize) -> Option<VirtPageNum> {
         let mut end_pn = hint.0;
-        
+
         // 遍历所有 start < hint 的区域，倒序（从高地址到低地址）
         for (start, area) in self.areas.range(..hint).rev() {
             let s = start.0;
@@ -183,7 +190,7 @@ bitflags! {
         const MAP_ANONYMOUS = 1 << 5;
         /// Don't permit write
         const MAP_DENYWRITE = 1 << 11;
-        /// Populate (prefault) page tables 
+        /// Populate (prefault) page tables
         const MAP_POPULATE = 1 << 13;
         /// Region grows down (like a stack)
         const MAP_STACK = 1 << 17;
@@ -196,7 +203,7 @@ bitflags! {
 pub struct MapArea {
     ///从start到end的vpn
     pub vpn_range: VPNRange,
-    pub data_frames: BTreeMap<VirtPageNum,Arc< FrameTracker>>,
+    pub data_frames: BTreeMap<VirtPageNum, Arc<FrameTracker>>,
     map_type: MapType,
     pub map_perm: MapPermission,
     pub area_type: MapAreaType,
@@ -206,22 +213,22 @@ pub struct MapArea {
 }
 
 impl MapArea {
-    pub fn debug_print(&self) {
-          
-            let end = self.vpn_range.get_end();
-            let start = self.vpn_range.get_start();
-            println!(
-                "Area [{:#x}..{:#x}) type={:?} perm={:?} map_type={:?},map_area_type={:?}",
-                start.0, end.0, self.map_type, self.map_perm, self.map_type,self.area_type
-            );
-        
+    pub fn size(&self) -> usize {
+        self.data_frames.len() * PAGE_SIZE
     }
-    pub fn allocated(&self,vpn: VirtPageNum)->bool{
+    pub fn debug_print(&self) {
+        let end = self.vpn_range.get_end();
+        let start = self.vpn_range.get_start();
+        println!(
+            "Area [{:#x}..{:#x}) type={:?} perm={:?} map_type={:?},map_area_type={:?}",
+            start.0, end.0, self.map_type, self.map_perm, self.map_type, self.area_type
+        );
+    }
+    pub fn allocated(&self, vpn: VirtPageNum) -> bool {
         self.data_frames.contains_key(&vpn)
-
     }
     pub fn set_fd(&mut self, fd: Option<MmapFile>) {
-        self.fd=fd;
+        self.fd = fd;
     }
     pub fn new(
         start_va: VirtAddr,
@@ -238,8 +245,8 @@ impl MapArea {
             map_type,
             map_perm,
             area_type,
-            fd:None,
-                        mmap_flags: MmapFlags::empty(),
+            fd: None,
+            mmap_flags: MmapFlags::empty(),
         }
     }
     pub fn new_by_vpn(
@@ -249,14 +256,13 @@ impl MapArea {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> Self {
-     
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
             data_frames: BTreeMap::new(),
             map_type,
             map_perm,
             area_type,
-            fd:None,
+            fd: None,
             mmap_flags: MmapFlags::empty(),
         }
     }
@@ -267,35 +273,41 @@ impl MapArea {
             map_type: another.map_type,
             map_perm: another.map_perm,
             area_type: another.area_type,
-            fd:None,
+            fd: None,
 
-                        mmap_flags: MmapFlags::empty(),
+            mmap_flags: MmapFlags::empty(),
         }
     }
     pub fn map_given_frames(&mut self, page_table: &mut PageTable, frames: Vec<Arc<FrameTracker>>) {
         for (vpn, frame) in self.vpn_range.clone().into_iter().zip(frames.into_iter()) {
-            let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+            let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
             page_table.map(vpn, frame.ppn, pte_flags);
             self.data_frames.insert(vpn, frame);
         }
     }
+    /// Update area's mapping flags and write it to page table. You need to flush TLB after calling
+    /// this function.
+    pub fn update_flags(&mut self, flags: MapPermission, page_table: &mut PageTable) {
+        self.map_perm = flags;
+        page_table
+            .update_region(self.vpn_range.get_start().into(), self.size(), flags)
+            .unwrap();
+    }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
-      
-        
+
         match self.map_type {
-           
             MapType::Framed => {
                 let frame = frame_alloc().unwrap();
                 ppn = frame.ppn();
-               
+
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Direct => {
                 ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
             }
         }
-        let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
         page_table.map(vpn, ppn, pte_flags);
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -304,14 +316,13 @@ impl MapArea {
         }
         page_table.unmap(vpn);
     }
-    
+
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
-        
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
@@ -334,11 +345,11 @@ impl MapArea {
     /// assume that all frames were cleared before
     pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8], offset: usize) {
         assert_eq!(self.map_type, MapType::Framed);
-        assert!(offset<PAGE_SIZE);
+        assert!(offset < PAGE_SIZE);
         let mut start: usize = 0;
         let mut current_vpn = self.vpn_range.get_start();
         let len = data.len();
-        
+
         let mut page_offset = offset;
         loop {
             let src = &data[start..len.min(start + PAGE_SIZE - page_offset)];
@@ -358,17 +369,17 @@ impl MapArea {
             current_vpn.step();
         }
     }
-      /// 克隆当前 MapArea，但只保留 new_range 范围内的页号和对应的 data_frames。
-      pub fn from_another_with_range(&self, start_vpn: VirtPageNum,end_vpn: VirtPageNum) -> MapArea {
+    /// 克隆当前 MapArea，但只保留 new_range 范围内的页号和对应的 data_frames。
+    pub fn from_another_with_range(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> MapArea {
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
             data_frames: BTreeMap::new(),
             map_type: self.map_type,
             map_perm: self.map_perm,
             area_type: self.area_type,
-            fd:None,
+            fd: None,
 
-                        mmap_flags: MmapFlags::empty(),
+            mmap_flags: MmapFlags::empty(),
         }
     }
     pub fn start_vpn(&self) -> VirtPageNum {
@@ -377,13 +388,131 @@ impl MapArea {
     pub fn end_vpn(&self) -> VirtPageNum {
         self.vpn_range.get_end()
     }
+    ///判断是否包含所给地址
+    pub fn contains(&self, vpn: VirtPageNum) -> bool {
+        self.vpn_range.contains(vpn)
+    }
+    ///判断是否与所给地址段是否有交集
+    pub fn overlap_with(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        self.start_vpn() <= start_vpn && start_vpn < self.end_vpn()
+            || start_vpn <= self.start_vpn() && self.start_vpn() < end_vpn
+    }
+
+    /// 判断是否包含所给地址段.
+    pub fn contained_in(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        start_vpn <= self.start_vpn() && self.end_vpn() <= end_vpn
+    }
+    ///判断是否严格包含(真包含)所给地址段
+    pub fn strict_contain(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        self.start_vpn() < start_vpn && end_vpn < self.end_vpn()
+    }
+
+    /// 将一个 area分割为三段，其中|   left |mid | right   |
+    pub async fn split3(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> (Self, Self) {
+        assert!(self.strict_contain(start_vpn, end_vpn));
+        // 1. 拆出 “右段”：所有 key >= end
+        let right_data_frames = self.data_frames.split_off(&end_vpn);
+        //    现在 self.pages 里只剩下 key < end
+
+        // 2. 拆出 “中段”：所有 key >= start（剩下的就是 < start 的“左段”）
+        let mid_data_frames = self.data_frames.split_off(&start_vpn);
+        //    self.pages 现在只剩下 key < start（就是左段）
+        // 3. 准备中段的 backend
+        let mid_file = match self.fd.clone() {
+            Some(mut mmap_file) => {
+                let off = (start_vpn.0 - self.start_vpn().0) << PAGE_SIZE_BITS;
+                //目前 mmap_file一定是OsInode
+                let file = mmap_file.file.file().unwrap();
+                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset=new_off;
+                Some(mmap_file)
+            }
+            None => None,
+        };
+
+       
+
+        // 4. 构造 mid 区域
+        let mid = MapArea {
+            vpn_range: VPNRange::new(start_vpn, end_vpn),
+            data_frames: mid_data_frames, 
+            map_type: self.map_type,
+            map_perm: self.map_perm,
+            area_type: self.area_type,
+            fd: mid_file,
+            mmap_flags: self.mmap_flags,
+        };
+
+        // 5. 准备右段的 backend
+        let right_file = match self.fd.clone() {
+            Some(mut mmap_file) => {
+                let off = (end_vpn.0 - self.start_vpn().0) << PAGE_SIZE_BITS;
+                //目前 mmap_file一定是OsInode
+                let file = mmap_file.file.file().unwrap();
+                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset=new_off;
+                Some(mmap_file)
+            }
+            None => None,
+        };
+
+
+        // 6. 构造 right 区域
+        let right = MapArea {
+            vpn_range: VPNRange::new(end_vpn, self.end_vpn()),
+            data_frames: right_data_frames, 
+            map_type: self.map_type,
+            map_perm: self.map_perm,
+            area_type: self.area_type,
+            fd: right_file,
+            mmap_flags: self.mmap_flags,
+        };
+        //修改left区域
+        self.vpn_range.set_end(start_vpn);
+        
+        (mid, right)
+    }
+    ///将一个area拆分为两个
+    pub async fn split(&mut self, vpn: VirtPageNum) -> Self {
+        let right_data_frames = self.data_frames.split_off(&vpn);
+        //  准备mmap_file
+        let right_file = match self.fd.clone() {
+            Some(mut mmap_file) => {
+                let off = (vpn.0 - self.start_vpn().0) << PAGE_SIZE_BITS;
+                //目前 mmap_file一定是OsInode
+                let file = mmap_file.file.file().unwrap();
+                let new_off=file.lseek(off as isize, SEEK_CUR).unwrap();
+                file.lseek((new_off-off) as isize, SEEK_SET).unwrap();
+                mmap_file.offset=new_off;
+                Some(mmap_file)
+            }
+            None => None,
+        };
+
+        // 6. 构造 right 区域
+        let right = MapArea {
+            vpn_range: VPNRange::new(vpn, self.end_vpn()),
+            data_frames: right_data_frames, 
+            map_type: self.map_type,
+            map_perm: self.map_perm,
+            area_type: self.area_type,
+            fd: right_file,
+            mmap_flags: self.mmap_flags,
+        };
+        //修改left区域
+        self.vpn_range.set_end(vpn);
+        right
+    }
+
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
     Framed,
-    Direct  ,
+    Direct,
 }
 
 bitflags! {
@@ -400,21 +529,21 @@ bitflags! {
     }
 }
 
-impl From<MmapProt> for MapPermission{
-     fn from(port:MmapProt)->Self{
-    let mut flag: MapPermission = MapPermission::empty();
-    flag |= MapPermission::U;
-    if port.contains(MmapProt::PROT_READ) {
-        flag |= MapPermission::R;
+impl From<MmapProt> for MapPermission {
+    fn from(port: MmapProt) -> Self {
+        let mut flag: MapPermission = MapPermission::empty();
+        flag |= MapPermission::U;
+        if port.contains(MmapProt::PROT_READ) {
+            flag |= MapPermission::R;
+        }
+        if port.contains(MmapProt::PROT_WRITE) {
+            flag |= MapPermission::W;
+        }
+        if port.contains(MmapProt::PROT_EXEC) {
+            flag |= MapPermission::X;
+        }
+        flag
     }
-    if port.contains(MmapProt::PROT_WRITE) {
-        flag |= MapPermission::W;
-    }
-    if port.contains(MmapProt::PROT_EXEC) {
-        flag |= MapPermission::X;
-    }
-    flag
-     }
 }
 
 /// Map area type
@@ -442,9 +571,15 @@ pub struct MmapFile {
 }
 
 impl MmapFile {
-   
-
     pub fn new(file: FileDescriptor, offset: usize) -> Self {
         Self { file, offset }
+    }
+
+    pub async fn readable(&self) -> TemplateRet<bool> {
+        self.file.readable()
+    }
+
+    pub async fn writable(&self) -> TemplateRet<bool> {
+        self.file.writable()
     }
 }

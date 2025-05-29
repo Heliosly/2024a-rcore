@@ -113,9 +113,12 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ).await,
         SYSCALL_UMOUNT2 => sys_umount2(args[0] as *const u8, args[1] as u32).await,
         SYSCALL_UNLINKAT => sys_unlinkat(args[0] as i32, args[1] as *const u8, args[2] as u32).await,
-        113=>     Err(crate::utils::error::SysErrNo::ENOSYS),
-        
-        
+        SYSCALL_PRLIMIT64=> sys_prlimit(args[0] , args[1] as u32, args[2] as *const RLimit, args[3] as *mut RLimit),
+        SYSCALL_CLOCK_SETTIME=>     Err(crate::utils::error::SysErrNo::ENOSYS),
+        SYSCALL_SYMLINKAT=>sys_symlinkat(args[0] as *const u8,args[1] as i32, args[2] as *const u8).await,
+        SYSCALL_READLINKAT=>sys_readlinkat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8, args[3]).await,
+        SYSCALL_GETRANDOM=>sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32).await,
+        SYSCALL_MPROTECT=>sys_mprotect(args[0], args[1],args[2] ).await,
         
         
         
@@ -128,7 +131,6 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
-                Err(crate::utils::error::SysErrNo::ENOSYS)
             }
     }
     
