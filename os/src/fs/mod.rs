@@ -357,6 +357,8 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
          "/glibc/lib/libc.so", 
          "/glibc/lib/tls_get_new-dtv_dso.so", 
          "/glibc/lib/ld-linux-riscv64-lp64.so.1",
+    
+         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
           "/glibc/lib/tls_align_dso.so", 
           "/glibc/lib/tls_init_dso.so"
 

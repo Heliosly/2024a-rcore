@@ -223,7 +223,8 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    debug!("[user_task_top]sys_call start syscall id = {}", syscall_id);
+                    debug!("[user_task_top]sys_call start syscall id = {} tid = {}", syscall_id,curr.id());
+                    
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
                     ];
@@ -234,7 +235,9 @@ pub async fn user_task_top() -> i32 {
                     let result = match result {
                         Ok(res) => res,
                         Err(err) => {
-                            debug!("[Syscall]Err:{}", err.str());
+                            // debug!("[Syscall]Err:{}", err.str());
+                            println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+
                             -(err as isize) as usize
                         }
                     };

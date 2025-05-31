@@ -293,7 +293,7 @@ log::info!("[map_elf] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, start_va=
                 if ph_flags.is_write() {
                     map_perm |= MapPermission::W;
                 }
-                if ph_flags.is_execute() {
+                if ph_flags.is_execute() || ph.get_type() == Ok(xmas_elf::program::Type::GnuRelro) {
                     map_perm |= MapPermission::X;
                 }
                 let map_area = MapArea::new(

@@ -85,6 +85,10 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //     return Err(SysErrNo::EINVAL);
     // }
 
+    if flags.contains(CloneFlags::CLONE_VM) && user_stack!=0{
+        return Err(SysErrNo::EINVAL);
+
+    }
     if flags.contains(CloneFlags::CLONE_SETTLS) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_SETTLS requires CLONE_VM
         return Err(SysErrNo::EINVAL);
@@ -130,8 +134,9 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
 
 
 pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
+    
     let process = current_process();
-
+    
     let token = process.get_user_token().await;
     let mut path = translated_str(token, path);
     path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
@@ -217,7 +222,13 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
 
     let elf_data = app_inode.file()?.read_all();
+    //在exec前清理clear_tid
+    for tcb in process.tasks.lock().await.iter(){
+        tcb.clear_child_tid().unwrap();
+    }
     process.exec(&elf_data, &argv_vec, &mut env).await?;
+    process.set_exe(abs_path).await;
+    
     process.memory_set.lock().await.activate();
     Ok(argv_vec.len())
 }
@@ -344,7 +355,7 @@ pub async fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
 //     *translated_refmut(current_token(), tp as *mut TimeVal) = timeval;
 //     0
 // }
-
+///TODO(Heliosly)
 pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
@@ -718,6 +729,7 @@ pub fn sys_gettid() -> SyscallRet {
     Ok(current_task().id.as_usize())
 }
 pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
+    trace!("[sys_set_robust_list] NOT IMPLEMENT" );
     // if len != crate::task::RobustList::HEAD_SIZE {
     //     return Err(SysErrNo::EINVAL);
     // }
@@ -726,11 +738,12 @@ pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
     // task_inner.robust_list.head = head;
     // //inner.robust_list.len = len;
     // Ok(0)
-
-    Ok(0)
+    Err(SysErrNo::ENOSYS)
 }
 
 pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
+
+    trace!("[sys_get_robust_list] NOT IMPLEMENT" );
     // let mut task = find_task_by_tid(pid);
     // if task.is_none() && pid == 0 {
     //     task = current_task();
@@ -740,11 +753,12 @@ pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut
     //     let token = task_inner.user_token();
     //     put_data(token, head_ptr, task_inner.robust_list.head);
     //     put_data(token, len_ptr, task_inner.robust_list.len);
-    //     Ok(0)
+        // Ok(0)
     // } else {
     //     Err(SysErrNo::ESRCH)
     // }
-    Ok(0)
+
+    Err(SysErrNo::ENOSYS)
 }
 
 pub fn sys_prlimit(
@@ -753,7 +767,9 @@ pub fn sys_prlimit(
     new_limit: *const RLimit,
     old_limit: *mut RLimit,
 ) -> SyscallRet{
-  Err(SysErrNo::ENOSYS )
+    println!("sys_prlimit NOT IMPLEMENT" );
+    Ok(0)
+//   Err(SysErrNo::ENOSYS )
 }
 
 #[repr(C)]

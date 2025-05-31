@@ -1518,38 +1518,37 @@ pub async fn sys_readlinkat(
 
     // 2. 从用户空间读取路径字符串
     let path_kernel_str = translated_str(token, path_user_ptr);
-
+ 
     // 3. 特殊处理 /proc/self/exe 
-    // if path_kernel_str == "/proc/self/exe" {
-    //     // log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
-    //     // 假设 ProcessControlBlock 或其 fs_info 有 exe_path() 方法
-    //     let exe_path_kernel_str = pcb_arc.get_exe_path_str().await?; // 假设返回 Result<String, SysErrNo>
+    if path_kernel_str == "/proc/self/exe" {
+        // log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
+        // 假设 ProcessControlBlock 或其 fs_info 有 exe_path() 方法
+        let exe_path_kernel_str = pcb_arc.exe.lock().await; // 假设返回 Result<String, SysErrNo>
 
-    //     let exe_path_bytes = exe_path_kernel_str.as_bytes();
-    //     let len_to_copy = core::cmp::min(exe_path_bytes.len(), bufsiz);
+        let exe_path_bytes = exe_path_kernel_str.as_bytes();
+        let len_to_copy = core::cmp::min(exe_path_bytes.len(), bufsize);
 
-    //     if len_to_copy > 0 { // 只有当有东西可复制且用户缓冲区非空时才复制
-    //          if buf_user_ptr.is_null() { return Err(SysErrNo::EFAULT); } // 再次检查，虽然上面检查过
-    //         match unsafe {
-    //             copy_to_user_bytes(
-    //                 token,
-    //                 VirtAddr::from(buf_user_ptr as usize),
-    //                 &exe_path_bytes[0..len_to_copy],
-    //             )
-    //         } {
-    //             Ok(copied) => {
-    //                 if copied != len_to_copy { // copy_to_user_bytes 返回实际复制的
-    //                     // 这可能表示用户缓冲区比 len_to_copy 小，但我们已经用了 min
-    //                     // 或者 copy_to_user_bytes 内部有其他限制/错误
-    //                     // log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
-    //                     return Err(SysErrNo::EFAULT); // 或者返回部分成功？readlink 通常不部分成功
-    //                 }
-    //             }
-    //             Err(_) => return Err(SysErrNo::EFAULT),
-    //         }
-    //     }
-    //     return Ok(len_to_copy as isize);
-    // }
+        if len_to_copy > 0 { // 只有当有东西可复制且用户缓冲区非空时才复制
+            match unsafe {
+                copy_to_user_bytes(
+                    token,
+                    VirtAddr::from(buf_user_ptr as usize),
+                    &exe_path_bytes[0..len_to_copy],
+                )
+            } {
+                Ok(copied) => {
+                    if copied != len_to_copy { // copy_to_user_bytes 返回实际复制的
+                        // 这可能表示用户缓冲区比 len_to_copy 小，但我们已经用了 min
+                        // 或者 copy_to_user_bytes 内部有其他限制/错误
+                        // log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
+                        return Err(SysErrNo::EFAULT); // 或者返回部分成功？
+                    }
+                }
+                Err(_) => return Err(SysErrNo::EFAULT),
+            }
+        }
+        return Ok(len_to_copy );
+    }
 
     // 4. 解析路径以获取符号链接本身的 inode (不 follow 最后一个组件)
     //    我们需要 resolve_path_from_fd 的 follow_last_symlink 参数为 false。

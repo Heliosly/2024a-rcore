@@ -93,7 +93,7 @@ pub const IDLE_PID: usize = 0;
 pub async  fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
     let task = current_task();
-
+    
     let process = current_process();
 
     debug!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
@@ -102,6 +102,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     task.set_state(TaskStatus::Zombie);
     // Record exit code
     task.set_exit_code(exit_code as isize);
+    task.clear_child_tid();
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {
@@ -129,6 +130,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 
     } 
     TID2TC.lock().remove(&tid);
+    
     // 从进程中删除当前线程
     let mut tasks = process.tasks.lock().await;
     let len = tasks.len();
@@ -140,20 +142,20 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     }
 
     
-
+    
     // drop task manually to maintain rc correctly
     drop(task); 
 }
 
 // static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
-// static INITPROC_STR: &str =          "musl/basic/times";
- static INITPROC_STR: &str =          "musl/busybox";
+// static INITPROC_STR: &str =          "/glibc/basic/brk";
+ static INITPROC_STR: &str =          "/busybox";
 
 //  static INITPROC_STR: &str =          "cosmmap_clone";
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
-static  CWD:&str = "/musl";
+static  CWD:&str = "/glibc";
 // static  PARAMETERS :&str= "/glibc/basic/run-all.sh";
     /// Creation of initial process
     ///
@@ -169,7 +171,7 @@ static  CWD:&str = "/musl";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh /musl/basic_testcode.sh",INITPROC_STR)
+            format!("{} sh ./basic_testcode.sh",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(
@@ -177,6 +179,7 @@ static  CWD:&str = "/musl";
             CWD.to_string(),
             &binding,
             &mut envs,
+            INITPROC_STR.to_string(),
         );
     
         // . Pin 到堆上

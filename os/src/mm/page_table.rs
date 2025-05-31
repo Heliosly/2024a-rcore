@@ -734,7 +734,7 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
 #[allow(unused)]
 
 /// Translate a ptr[u8] array through page table and return a mutable reference of T
-/// 不支持跨页
+/// 对于没有safe前缀的translated函数 使用前要确保区域必须已分配，而不是懒分配
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> TemplateRet<&'static mut T> {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;

@@ -20,7 +20,7 @@ pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
 pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16;
 /// kernel heap size
-pub const KERNEL_HEAP_SIZE: usize = 0x100_0000;
+pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
 ///于allocuserres中于分配页数
 pub const PRE_ALLOC_PAGES: usize = 8;
 /// page size : 4KB
