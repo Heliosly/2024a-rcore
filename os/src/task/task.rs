@@ -5,7 +5,7 @@ use super::{current_process, current_token, pid_alloc, yield_now, CloneFlags, Pi
 use crate::config::{ PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{find_inode, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum,
+    flush_tlb, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::syscall::flags::AT_FDCWD;
@@ -24,6 +24,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::default;
 use core::future::Future;
 use core::mem::ManuallyDrop;
 use core::ops::Deref;
@@ -332,6 +333,10 @@ impl ProcessControlBlock {
             .find(|t| t.id() == id)
             .cloned()
     }
+    
+    
+
+
 }
 //  Non
 
@@ -433,7 +438,6 @@ impl ProcessControlBlock {
             false,
         )));
 
-        let fd_vec: Vec<Option<FileDescriptor>> = new_fd_with_stdio();
 
         let process_control_block = Self {
             pid: pid_handle,
@@ -449,7 +453,7 @@ impl ProcessControlBlock {
             memory_set: Arc::new(Mutex::new(memory_set)),
             main_task: Mutex::new(new_task.clone()),
             tasks: Mutex::new(vec![new_task.clone()]),
-            fd_table: Arc::new(Mutex::new(FdManage(fd_vec))),
+            fd_table: Arc::new(Mutex::new(FdManage::new_with_stdio())),
             exe: Mutex::new(exe),
             signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
         };
@@ -654,15 +658,17 @@ impl ProcessControlBlock {
         // 关闭文件描述符
         //将设置了O_CLOEXEC位的文件描述符关闭 todo(heliosly)
         // update trap_cx ppn
-        info!("exec entry_point:{:#x}", entry_point);
+        info!("exec entry_point:{:#x} sp:{:#x}", entry_point,user_sp);
         let binding = self.main_task.lock().await;
         let trap_cx: &mut TrapContext = binding.get_trap_cx().unwrap();
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
-        trap_cx.regs.a0 = argv.len();
-        trap_cx.regs.a1 = argv_base;
-        trap_cx.regs.a2 = envp_base;
+        // trap_cx.regs.a1 = argv.len();
+        // trap_cx.regs.a2 = argv_base;
+        // trap_cx.regs.a3 = envp_base;
+
+        // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);
         self.set_heap_bottom(user_heap_base);
         self.set_program_brk(user_heap_base);
@@ -676,7 +682,7 @@ impl ProcessControlBlock {
         flags: CloneFlags,
         user_stack: usize,
         ptid: usize,
-        _tls: usize,
+        tls: usize,
         ctid: usize,
     ) -> SyscallRet {
         // ---- hold parent PCB lock
@@ -768,15 +774,7 @@ impl ProcessControlBlock {
                     &*current_process().signal_shared_state.lock().await,
                 )))
             };
-            // copy fd table
-            let mut new_fd_table: Vec<Option<FileDescriptor>> = Vec::new();
-            for fd in self.fd_table.lock().await.0.iter() {
-                if let Some(file) = fd {
-                    new_fd_table.push(Some(file.clone())); //todo()
-                } else {
-                    new_fd_table.push(None);
-                }
-            }
+            
 
             let process_control_block = Arc::new(ProcessControlBlock {
                 pid: pid.unwrap(),
@@ -789,7 +787,7 @@ impl ProcessControlBlock {
                 parent: AtomicUsize::new(parent),
                 children: Mutex::new(Vec::new()),
                 exit_code: AtomicI32::new(0),
-                fd_table: Arc::new(Mutex::new(FdManage(new_fd_table))),
+                fd_table: Arc::new(Mutex::new(FdManage::from_another(&*self.fd_table.lock().await))),
                 heap_bottom: AtomicUsize::new(self.heap_bottom.load(Ordering::Relaxed)),
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
                 user_stack_top: AtomicUsize::new(0),
@@ -825,7 +823,9 @@ impl ProcessControlBlock {
             // modify kernel_sp in trap_cx
             trap_cx.trap_status = TrapStatus::Done;
             trap_cx.regs.a0 = 0;
-
+ if flags.contains(CloneFlags::CLONE_SETTLS){
+            trap_cx.set_tls(tls);
+        }
             // 设置用户栈
             // 若给定了用户栈，则使用给定的用户栈
             // 若没有给定用户栈，则使用当前用户栈
@@ -843,6 +843,7 @@ impl ProcessControlBlock {
             *translated_refmut(clone_token, ctid as *mut u32)? = tcb.id() as u32;
         }
 
+       
 
 
 
@@ -924,7 +925,7 @@ impl ProcessControlBlock {
         } else if dirfd == AT_FDCWD {
             base_path_string = self.cwd.lock().await.clone();
         } else {
-            let fd_table_guard = &self.fd_table.lock().await.0;
+            let fd_table_guard = &self.fd_table.lock().await.table;
             let dir_file_desc_opt = fd_table_guard
                 .get(dirfd as usize)
                 .and_then(|opt| opt.as_ref());
@@ -979,7 +980,36 @@ impl ProcessControlBlock {
 
         // info!("[resolve_path_from_fd] normal_path_str: {}",normalized_path_to_find);
         Ok(normalized_path_to_find)
+     }
+    /// alloc range physical memory for lazy allocation manually
+    pub async fn manual_alloc_range_for_lazy(
+        &self,
+        start: VirtAddr,
+        end: VirtAddr,
+    ) -> GeneralRet{
+        self.memory_set
+            .lock()
+            .await
+            .manual_alloc_range_for_lazy(start, end).await?;
+            Ok(())
     }
+
+    /// alloc physical memory with the given type size for lazy allocation manually
+    /// 需要保证传入的不是空指针哦
+    pub async fn manual_alloc_type_for_lazy<T: Sized>(&self, obj: *const T) -> GeneralRet {
+        self.memory_set
+            .lock()
+            .await
+            .manual_alloc_type_for_lazy(obj)
+            .await?;
+            Ok(())
+    }
+
+
+
+
+
+
 }
 
 /// A unique identifier for a thread.
@@ -1043,9 +1073,9 @@ pub struct TaskControlBlock {
     pub signal_state: Mutex<TaskSignalState>,
     pub page_table_token: UnsafeCell<usize>,
     /// bool位表示是否需要clear
-    pub child_tid_ptr: Option<usize>,
+    pub child_tid_ptr: Option<AtomicUsize>,
     pub need_clear_child_tid:AtomicBool,
-     
+    pub robust_list: Mutex<RobustList>, 
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1059,6 +1089,10 @@ impl TaskControlBlock {
         chlid_tid_ptr: Option<usize>,
         clear_child_tid:bool,
     ) -> Self {
+        let child_tid= match chlid_tid_ptr{
+            Some(p)=> Some(AtomicUsize::new(p)),
+            None=>None,
+        };
         Self {
             id: TaskId::new(),
             is_init,
@@ -1073,11 +1107,33 @@ impl TaskControlBlock {
             trap_cx: UnsafeCell::new(Some(trap_cx)),
             state: Spin::new(TaskStatus::Runnable),
             signal_state: Mutex::new(signal_state),
-            child_tid_ptr:chlid_tid_ptr,
+            child_tid_ptr:child_tid,
             need_clear_child_tid: AtomicBool::new(clear_child_tid),
+        robust_list:Mutex::new(RobustList::default()),
             
         }
     }
+
+        pub fn child_tid_ptr(&self)->Option<usize>{
+            match &self.child_tid_ptr{
+                Some(p)=>Some(p.load(Ordering::Acquire)),
+                None=>None,
+            }
+
+        }
+        pub fn set_child_tid_ptr(&self,ptr:usize){
+            match &self.child_tid_ptr{
+                Some(p)=>{
+                    p.store(ptr, Ordering::Release);
+                },
+                None=>{
+                    
+                },
+            }
+
+        }
+
+
     ///
     pub fn id(&self) -> usize {
         self.id.0
@@ -1108,7 +1164,7 @@ impl TaskControlBlock {
 
     pub fn clear_child_tid(&self)->GeneralRet{
         if self.need_clear_child_tid.load(Ordering::Acquire){
-            *translated_refmut(unsafe { *self.page_table_token.get() }, self.child_tid_ptr.unwrap() as *mut u32)?=0;
+            *translated_refmut(unsafe { *self.page_table_token.get() }, self.child_tid_ptr().unwrap() as *mut u32)?=0;
         }
         self.need_clear_child_tid.store(false, Ordering::Relaxed);
         Ok(())
@@ -1171,4 +1227,20 @@ pub fn new_fd_with_stdio() -> Vec<Option<FileDescriptor>> {
             file: FileClass::Abs(Arc::new(Stdout)),
         }),
     ]
+}
+
+
+
+#[derive(Clone, Copy, Debug)]
+pub struct RobustList {
+    pub head: usize,
+    pub len: usize,
+}
+
+impl RobustList {
+    // from strace
+    pub const HEAD_SIZE: usize = 24;
+    pub fn default() -> Self {
+        RobustList { head: 0, len: 24 }
+    }
 }

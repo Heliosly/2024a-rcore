@@ -328,7 +328,7 @@ pub fn print_inner() {
 
 pub fn map_dynamic_link_file( path: &str) -> &str {
 
-            log::info!("[map_dynamic] path={}",path);
+            log::warn!("[map_dynamic] path={}",path);
     if !path.starts_with('/') { panic!("worth path") };
     if !DYNAMIC_PATH.contains(path) {
        

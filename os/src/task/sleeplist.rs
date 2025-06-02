@@ -12,7 +12,8 @@ use lazy_init::LazyInit;
 use crate::timer::{TimeVal, current_time}; // 假设 TimeVal 可比较, Ord
 use crate::task::{Task, TaskStatus, TaskRef, TID2TC};
 use crate::task::waker::waker_from_task;
-use super::current_task_id; // 假设 current_task_id() -> usize
+use super::current_task_id;
+use super::schedule::remove_task; // 假设 current_task_id() -> usize
 
 // --- 全局睡眠队列 ---
 pub static GLOBAL_SLEEPER_QUEUE: LazyInit<Mutex<SleeperList>> = LazyInit::new();
@@ -204,12 +205,14 @@ impl Future for SleepFuture {
         let node_arc = Arc::new(node);
 
         // 设置任务状态
+
         let mut state_guard = task_arc_for_waker_and_state.state_lock_manual();
         if **state_guard == TaskStatus::Running || **state_guard == TaskStatus::Runnable {
-            **state_guard = TaskStatus::Blocked;
+            **state_guard = TaskStatus::Blocking;
         } else if **state_guard == TaskStatus::Blocking {
-            **state_guard = TaskStatus::Blocked;
+            **state_guard = TaskStatus::Blocking;
         }
+        
         drop(core::mem::ManuallyDrop::into_inner(state_guard));
 
 

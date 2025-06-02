@@ -45,7 +45,7 @@ pub async fn sys_sigaction(
     oldact_user_ptr: *mut SigAction,
 ) -> SyscallRet {
 
-    trace!("[sys_sigaction]");
+    trace!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -62,7 +62,7 @@ pub async fn sys_sigaction(
     // 如果 oldact 非空，保存旧的动作
     if !oldact_user_ptr.is_null() {
        
-        put_data(token, oldact_user_ptr,  shared_state.sigactions[sig as usize])? ;
+       process.memory_set.lock().await .safe_put_data( oldact_user_ptr,  shared_state.sigactions[sig as usize]).await? ;
           
     }
 
@@ -94,7 +94,7 @@ pub async  fn sys_sigprocmask(
     let old_mask = signal_state.sigmask;
 
     if !set_user_ptr.is_null() {
-        let set = *get_target_ref(token, set_user_ptr)?;
+        let set = * current_process().memory_set.lock().await.safe_get_target_ref( set_user_ptr).await?;
 
         let enum_how = match SigMaskHow::try_from(how) {
             Ok(how) => how,
@@ -140,7 +140,8 @@ pub async  fn sys_sigprocmask(
     drop(signal_state); // 先释放锁，再复制到用户空间
 
     if !oldset_user_ptr.is_null() {
-        *translated_refmut(token, oldset_user_ptr)?=old_mask;
+        *current_process().memory_set.lock().await.
+        safe_translated_refmut( oldset_user_ptr).await?=old_mask;
         
     }
 

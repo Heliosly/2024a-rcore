@@ -70,7 +70,7 @@ pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
 pub const USER_HEAP_SIZE: usize = 0x40000;
 
 /// user app's stack size
-pub const USER_STACK_SIZE: usize = 4096 * 32;
+pub const USER_STACK_SIZE: usize = 4096 * 16*16*10;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data

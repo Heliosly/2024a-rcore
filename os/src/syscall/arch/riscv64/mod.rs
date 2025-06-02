@@ -25,10 +25,9 @@ pub const SYSCALL_TKILL: usize = 130;
 pub const SYSCALL_TGKILL: usize = 131;
 /// setpriority syscall
 pub const SYSCALL_SET_PRIORITY: usize = 140;
-/// gettime syscall
-pub const SYSCALL_GET_TIME: usize = 169;
 /// getpid syscall
 pub const SYSCALL_GETPID: usize = 172;
+pub const SYSCALL_CLOCK_NANOSLEEP :usize =115;
 /// sbrk syscall
 pub const SYSCALL_BRK: usize = 214;
 /// munmap syscall
@@ -54,6 +53,7 @@ pub const SYSCALL_GETUID :usize = 174;
 ///exit group
 pub const SYSCALL_EXITGROUP :usize=  94;
 ///
+pub const SYSCALL_GETTIMEOFDAY :usize =169;
 pub const SYSCALL_LSEEK: usize = 62;
 pub const SYSCALL_READV: usize = 65;
 pub const SYSCALL_WRITEV: usize = 66;

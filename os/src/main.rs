@@ -83,11 +83,13 @@ pub fn setbootsp() {
        
     }
 }
+
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
     clear_bss();
     println!("[kernel] Hello, !");
+    
     logging::init();
     mm::init();
     mm::heap_allocator::heap_test();
@@ -95,7 +97,6 @@ pub fn rust_main() -> ! {
     trap::init();
     trap::enable_irqs();
     timer::set_next_trigger();
-
     task::init(|| Box::pin(user_task_top()));
 
     fs::init();

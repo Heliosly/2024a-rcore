@@ -18,7 +18,7 @@ mod context;
 mod ucontext;
 use crate::config::PAGE_SIZE;
 use crate::fs::File;
-use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, UserBuffer, VirtAddr};
+use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
@@ -58,6 +58,9 @@ extern "C" {
     fn trap_vector_base();
 }
 
+pub fn set_sum(){
+    unsafe { sstatus::set_sum() };
+}
 fn set_trap_entry() {
     unsafe {
         stvec::write(trap_vector_base as usize, TrapMode::Direct);
@@ -83,7 +86,7 @@ fn set_trap_entry() {
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
     unsafe {
-        sie::set_stimer();
+        // sie::set_stimer();
     }
 }
 /// disable timer interrupt in supervisor mode
@@ -192,6 +195,7 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
 
 
 
+
 ///a future to handle user trap
 /// IMPO
 
@@ -265,7 +269,7 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
-                   if !curr.get_process().memory_set.lock().await.  handle_page_fault( scause.cause(), stval).await{
+                   if curr.get_process().memory_set.lock().await.  handle_page_fault(  stval).await.is_err(){
                        exit_current_and_run_next(-2).await; log_page_fault_error(scause, stval, sepc)
                         }
                 

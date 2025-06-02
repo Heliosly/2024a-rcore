@@ -12,7 +12,7 @@
 //! 不会因为任务阻塞而导致引用计数增加，
 //! 其余对 TaskRef 引用计数的操作只会源于其余模块中的操作
 
-use core::{mem::{transmute, ManuallyDrop}, task::{RawWaker, RawWakerVTable, Waker}};
+use core::{ task::{RawWaker, RawWakerVTable, Waker}};
 
 use alloc::sync::Arc;
 

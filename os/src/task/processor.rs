@@ -12,6 +12,7 @@ use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::sleeplist::init_sleeper_queue;
 use crate::task::{put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
+use crate::utils::{bpoint, bpoint1};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
@@ -62,7 +63,7 @@ pub fn run_task2(mut curr: CurrentTask) {
         Poll::Pending => {
             let mut state = curr.state_lock_manual();
 
-            trace!("res is pending and Taskstatus:{}", **state as usize);
+            // trace!("res is pending and Taskstatus:{} , pid:{}", **state as usize,curr.id());
             match **state {
                 // await 主动让权，将任务的状态修改为就绪后，放入就绪队列中
                 TaskStatus::Running => {
@@ -87,6 +88,7 @@ pub fn run_task2(mut curr: CurrentTask) {
                             //                                 tf
                             //                             );
                             enable_irqs();
+
                             user_return(tf);
                         }
                     }

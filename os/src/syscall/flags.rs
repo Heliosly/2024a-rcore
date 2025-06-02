@@ -1,3 +1,5 @@
+use crate::timer::TimeVal;
+
 
 
 // For Mmap
@@ -42,7 +44,7 @@ pub struct IoVec {
     pub base: *mut u8, // iov_base: Starting address of buffer
     pub len: usize,    // iov_len: Number of bytes to transfer to/from buffer
 }
-
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Utsname {
     pub sysname: [u8; 65],
@@ -81,4 +83,27 @@ bitflags! {
         const W_OK = 2;
         const R_OK = 4;
     }
+}
+
+
+
+#[repr(C)]
+#[derive(Debug,  Clone, Copy)]
+pub struct Rusage {
+    pub ru_utime: TimeVal, // user CPU time used
+    pub ru_stime: TimeVal, // system CPU time used
+    // pub ru_maxrss: i64,    // maximum resident set size
+    // pub ru_ixrss: i64,     // integral shared memory size
+    // pub ru_idrss: i64,     // integral unshared data size
+    // pub ru_isrss: i64,     // integral unshared stack size
+    // pub ru_minflt: i64,    // page reclaims (soft page faults)
+    // pub ru_majflt: i64,    // page faults (hard page faults)
+    // pub ru_nswap: i64,     // swaps
+    // pub ru_inblock: i64,   // block input operations
+    // pub ru_oublock: i64,   // block output operations
+    // pub ru_msgsnd: i64,    // IPC messages sent
+    // pub ru_msgrcv: i64,    // IPC messages received
+    // pub ru_nsignals: i64,  // signals received
+    // pub ru_nvcsw: i64,     // voluntary context switches
+    // pub ru_nivcsw: i64,    // involuntary context switches
 }

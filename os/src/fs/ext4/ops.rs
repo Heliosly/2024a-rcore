@@ -349,18 +349,17 @@ impl VfsNodeOps for FileWrapper {
     // }
     
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, SysErrNo> {
         // debug!("To read_at {}, buf len={}", offset, buf.len());
         let mut file = self.file.borrow_mut();
         let path = file.get_path();
         let path = path.to_str().unwrap();
-        file.file_open(path, O_RDONLY)?;
-
-        file.file_seek(offset as i64, SEEK_SET)?;
+        file.file_open(path, O_RDONLY)
+            .map_err(|e| SysErrNo::from(e))?;
+        file.file_seek(offset as i64, SEEK_SET)
+            .map_err(|e| SysErrNo::from(e))?;
         let r = file.file_read(buf);
-
-        let _ = file.file_close();
-        r
+        r.map_err(|e| SysErrNo::from(e))
     }
     fn size(&self) -> usize {
         let file = &mut self.file.borrow_mut();
@@ -368,7 +367,7 @@ impl VfsNodeOps for FileWrapper {
         if types == InodeType::File {
             let path = file.get_path();
             let path = path.to_str().unwrap();
-            file.file_open(path, O_RDONLY);
+            file.file_open(path, O_RDONLY).unwrap();
             let fsize = file.file_size();
             fsize as usize
         } else {

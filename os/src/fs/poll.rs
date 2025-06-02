@@ -6,7 +6,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use core::mem;
 
-use crate::config::FD_SETSIZE;
 // 假设的依赖
 use crate::task::{current_process, ProcessControlBlock};
 use crate::fs::{FileDescriptor, PollEvents, PollFd}; // PollFdUser 是用户空间版本

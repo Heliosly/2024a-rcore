@@ -16,8 +16,7 @@ use crate::{
 };
 
 use super::{
-    frame_alloc, page_table::PTEFlags, FrameTracker, PageTable, PhysPageNum, VPNRange, VirtAddr,
-    VirtPageNum,
+    flush_tlb, frame_alloc, page_table::PTEFlags, FrameTracker, PageTable, PhysPageNum, VPNRange, VirtAddr, VirtPageNum
 };
 
 /// 虚拟内存区域树：Key 按照 Range.start_vpn 排序
@@ -134,10 +133,15 @@ impl VmAreaTree {
             .range(..=vpn)
             .next_back()
             .and_then(|(viddr, area)| {
+
                 // 检查该区域是否包含目标页号
-                if area.vpn_range.contains(vpn) {
+                if area.contains(vpn) {
+
                     Some(*viddr)
                 } else {
+                    
+
+                
                     None
                 }
             })
@@ -505,7 +509,11 @@ impl MapArea {
         self.vpn_range.set_end(vpn);
         right
     }
-
+    pub fn lazy_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) {
+        // 仅映射页面
+        vma.map_one(page_table, va.floor());
+        flush_tlb();
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -563,6 +571,8 @@ pub enum MapAreaType {
     Physical,
     /// MMIO(for kernel)
     MMIO,
+
+    Tls,
 }
 #[derive(Clone)]
 pub struct MmapFile {

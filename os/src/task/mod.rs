@@ -15,6 +15,7 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
+mod tls;
 pub mod aux;
 mod flags;
 mod current;
@@ -52,6 +53,7 @@ pub use task::ProcessControlBlock;
 pub use yieldfut::yield_now;
 pub use waker::custom_noop_waker;
 
+pub use task::RobustList;
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
@@ -60,9 +62,17 @@ use alloc::sync::Arc;
 
 use spin::mutex::Mutex as Spin;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
+#[inline]
+pub unsafe fn write_thread_pointer(tp: usize) {
+    core::arch::asm!("mv tp, {}", in(reg) tp)
+}
 
 // pub use manager::add_task;
-
+pub fn init_tls() {
+    let main_tls = tls::TlsArea::alloc();
+    unsafe {write_thread_pointer(main_tls.tls_ptr() as usize) };
+    core::mem::forget(main_tls);
+}
 pub type ProcessRef = Arc<ProcessControlBlock>;
 pub static PID2PC: Spin<BTreeMap<usize, ProcessRef>> =Spin::new(BTreeMap::new());
 pub static TID2TC: Spin<BTreeMap<usize, TaskRef>> = Spin::new(BTreeMap::new());
@@ -102,7 +112,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     task.set_state(TaskStatus::Zombie);
     // Record exit code
     task.set_exit_code(exit_code as isize);
-    task.clear_child_tid();
+    task.clear_child_tid().unwrap();
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {
@@ -126,7 +136,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     // deallocate user space
     process.memory_set.lock().await.recycle_data_pages();
     // drop file descriptors
-    process.fd_table.lock().await.0.clear();
+    process.fd_table.lock().await.table.clear();
 
     } 
     TID2TC.lock().remove(&tid);
@@ -150,8 +160,11 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
 // static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
 // static INITPROC_STR: &str =          "/glibc/basic/brk";
- static INITPROC_STR: &str =          "/busybox";
+ static INITPROC_STR: &str =          "/glibc/busybox";
 
+//  static INITPROC_STR: &str =          "/tls";
+
+//  static INITPROC_STR: &str =          "/glibc/busybox";
 //  static INITPROC_STR: &str =          "cosmmap_clone";
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
@@ -171,7 +184,7 @@ static  CWD:&str = "/glibc";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh ./basic_testcode.sh",INITPROC_STR)
+            format!("{} sh  /glibc/basic_testcode.sh ",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(

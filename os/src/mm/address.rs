@@ -80,7 +80,8 @@ impl From<KernelAddr> for PhysPageNum {
 }
 impl From<PhysAddr> for KernelAddr {
     fn from(pa: PhysAddr) -> Self {
-        Self(pa.0 + (KERNEL_DIRECT_OFFSET ))
+     assert!(pa.0!=0);
+     Self(pa.0 + (KERNEL_DIRECT_OFFSET ))
     }
 }
 
@@ -296,6 +297,7 @@ impl PhysPageNum {
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
+        
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut u8, 4096) }
     }
     /// Get the mutable reference of physical address

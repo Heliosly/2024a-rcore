@@ -66,7 +66,7 @@ pub trait VfsNodeOps: Send + Sync {
     // file operations:
 
     /// Read data from the file at the given offset.
-    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, i32> {
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> SyscallRet {
         unimplemented!()
     }
     fn read_link(&self, _buf: &mut [u8], _bufsize: usize) -> SyscallRet {
