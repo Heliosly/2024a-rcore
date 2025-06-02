@@ -84,3 +84,6 @@ pub const MAX_FD_NUM:usize=1024;
 
 // Maximum path length
 pub const PATH_MAX: usize = 4096;
+
+// 定义一个内核中转缓冲区的合理大小
+pub const SENDFILE_KERNEL_BUFFER_SIZE: usize = 4*PAGE_SIZE;

@@ -190,8 +190,8 @@ pub fn get_usertime() -> UserTimeSpec {
 
 }
 
-
-
+#[repr(C)]
+#[derive(Default,Clone, Copy)]
 pub struct Tms {
     pub tms_utime: isize,  //用户模式下花费的CPU时间
     pub tms_stime: isize,  //内核模式下花费的CPU时间
@@ -210,7 +210,7 @@ impl Tms {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Copy)]
 pub struct TimeData {
     pub utime: isize,//用户模式下花费的CPU时间
     pub stime: isize, //内核模式下花费的CPU时间
@@ -219,7 +219,20 @@ pub struct TimeData {
     pub lasttime: isize,
 }
 
+impl Default for TimeData{
+    fn default() -> Self {
+        let now = (get_time_ms()) as isize;
+        Self {
+            utime: 0,
+            stime: 0,
+            cutime: 0,
+            cstime: 0,
+            lasttime: now,
+        }
+    }
+}
 impl TimeData {
+    
     pub fn new() -> Self {
         let now = (get_time_ms()) as isize;
         Self {

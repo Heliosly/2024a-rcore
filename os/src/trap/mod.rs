@@ -22,7 +22,7 @@ use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current_and_run_next, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
+    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
@@ -233,8 +233,11 @@ pub async fn user_task_top() -> i32 {
                     ];
 
                     tf.sepc += 4;
+
+                    curr.update_utime();
                     let result = syscall(syscall_id, args).await;
 
+                    curr.update_stime();
                     let result = match result {
                         Ok(res) => res,
                         Err(err) => {
@@ -242,7 +245,13 @@ pub async fn user_task_top() -> i32 {
                             if err==SysErrNo::EAGAIN {
                                tf.sepc-=4; 
                                tf.regs.a0
-                            }else{
+                            }
+                            else if  err==SysErrNo::ECHILD{
+                               debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+
+                                -(err as isize) as usize
+                            }
+                            else{
                                 
                             println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
@@ -277,7 +286,7 @@ pub async fn user_task_top() -> i32 {
                     //     sepc
                     // );
                    if curr.get_process().memory_set.lock().await.  handle_page_fault(  stval).await.is_err(){
-                       exit_current_and_run_next(-2).await; log_page_fault_error(scause, stval, sepc)
+                       exit_current(-2).await; log_page_fault_error(scause, stval, sepc)
                         }
                 
                 }
@@ -293,12 +302,12 @@ pub async fn user_task_top() -> i32 {
 
                     // page fault exit code
 
-                    exit_current_and_run_next(-2).await;
+                    exit_current(-2).await;
                 }
                 Trap::Exception(Exception::IllegalInstruction) => {
                     println!("[kernel] IllegalInstruction in application, kernel killed it.");
                     // illegal instruction exit code
-                    exit_current_and_run_next(-3).await;
+                    exit_current(-3).await;
                 }
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();

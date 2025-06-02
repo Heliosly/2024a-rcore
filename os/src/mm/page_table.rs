@@ -371,6 +371,9 @@ impl<'b> UserBuffer<'b> {
     pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
         Self { buffers }
     }
+    pub fn is_empty (&self) ->bool{
+          self.len()==0
+    }
     /// Get the length of the buffer
     pub fn len(&self) -> usize {
         let mut total: usize = 0;

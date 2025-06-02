@@ -15,7 +15,7 @@ use crate::{
     },
     syscall::flags:: MmapProt,
     task::{
-        current_process, current_task, current_token, exit_current_and_run_next, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
+        current_process, current_task, current_token, exit_current, exit_proc, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     },
     timer::{ get_time_us, get_usertime, TimeVal, UserTimeSpec},
     utils::{
@@ -42,7 +42,7 @@ pub fn sys_getppid() -> SyscallRet {
 pub async  fn sys_exit(exit_code: i32) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exit", current_task().get_pid());
 
-    exit_current_and_run_next(exit_code).await;
+    exit_current(exit_code).await;
     Ok(exit_code as usize)
 }
 
@@ -131,14 +131,15 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     proc.clone_task(flags, user_stack, ptid, tls, ctid).await
 }
 
-
+///
+/// todo(heliosly)
+/// 更换主线程 ，处理FXCLOSE
 pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     
     let process = current_process();
     
     let token = process.get_user_token().await;
-    let mut path = translated_str(token, path);
-    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
+   
     // if path.is_dir() {
     //     return Err(SysErrNo::EISDIR);
     // }
@@ -164,14 +165,15 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
             argv = argv.add(1);
         }
     }
+    
+     let mut path = translated_str(token, path);
     if path.ends_with(".sh") {
         //.sh文件不是可执行文件，需要用busybox的sh来启动
         argv_vec.insert(0, String::from("sh"));
         argv_vec.insert(0, String::from("busybox "));
-        path = String::from("/musl/busybox");
+        path = String::from("/glibc/busybox");
     }
-    
-    
+    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
     // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
     //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
     //     argv_vec.insert(0, String::from("busybox"));
@@ -443,6 +445,7 @@ pub fn sys_getuid() -> SyscallRet {
 //        is equal to that of the calling process at the time of the call to waitpid().
 // > 0    meaning wait for the child whose process ID is equal to the value of pid.
 //  参考 https://man7.org/linux/man-pages/man2/wait4.2.html
+//唤醒方式有待优化
 pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallRet {
     trace!("[sys_wait4] pid:{},wstatus:{:?},options:{}",pid,wstatus,options);
     let proc = current_process();
@@ -575,7 +578,7 @@ pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
         "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
         current_task().get_pid()
     );
-    exit_current_and_run_next(exit_code).await;
+    exit_proc(exit_code).await;
     Ok(0)
 }
 /// YOUR JOB: Finish sys_task_info to pass testcases

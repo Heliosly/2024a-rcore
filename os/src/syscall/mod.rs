@@ -17,7 +17,7 @@ mod other;
 mod arch;
 pub mod flags;
 use flags::{IoVec, Utsname};
-use crate::timer::UserTimeSpec;
+use crate::timer::{Tms, UserTimeSpec};
 use fs::*;
 use process::*;
 use other::*;
@@ -37,7 +37,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_FSTAT => sys_fstat(args[0] , args[1] as *mut Kstat).await,
         SYSCALL_EXIT => sys_exit(args[0] as i32).await,
         // SYSCALL_FORK => sys_fork(),
-       
+        SYSCALL_TIMES=>syscall_time(args[0] as *mut Tms).await,
         SYSCALL_GETUID=>sys_getuid(),
         SYSCALL_SETTIDADDRESS=>sys_settidaddress(args[0]),
         SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32).await,
@@ -120,7 +120,8 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_READLINKAT=>sys_readlinkat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8, args[3]).await,
         SYSCALL_GETRANDOM=>sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32).await,
         SYSCALL_MPROTECT=>sys_mprotect(args[0], args[1],args[2] ).await,
-        
+        SYSCALL_PIPE2=> sys_pipe2(args[0] as *mut i32 , args[1]as u32).await,
+        SYSCALL_SENDFILE=>sys_sendfile(args[0]  as i32,args[1] as i32 , args[2] as *mut isize , args[3]).await,
         
         
         

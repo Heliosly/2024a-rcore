@@ -53,6 +53,7 @@ pub const SYSCALL_GETUID :usize = 174;
 ///exit group
 pub const SYSCALL_EXITGROUP :usize=  94;
 ///
+pub const SYSCALL_TIMES : usize =153;
 pub const SYSCALL_GETTIMEOFDAY :usize =169;
 pub const SYSCALL_LSEEK: usize = 62;
 pub const SYSCALL_READV: usize = 65;
@@ -93,3 +94,6 @@ pub const SYSCALL_READLINKAT:usize =78;
 pub const SYSCALL_GETRANDOM:usize =278; 
 
 pub const SYSCALL_MPROTECT:usize =226; 
+
+pub const SYSCALL_PIPE2:usize =59; 
+pub const SYSCALL_SENDFILE: usize= 71;

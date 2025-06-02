@@ -2,6 +2,7 @@
 
 use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
+use crate::fs::pipe::make_pipe;
 use crate::signal::SigSet;
 use crate::syscall::flags::FaccessatMode;
 use crate::timer::{TimeVal,UserTimeSpec};
@@ -13,9 +14,9 @@ use alloc::vec:: Vec;
 use alloc::vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 const NONE_MODE:u32=0;
-use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, UIO_MAXIOV};
-use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
-use crate::mm::{ put_data, translated_byte_buffer, translated_str, UserBuffer};
+use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, SENDFILE_KERNEL_BUFFER_SIZE, UIO_MAXIOV};
+use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
+use crate::mm::{ put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
 use crate::timer::current_time;
@@ -370,7 +371,7 @@ use crate::mm::{VirtAddr, TranslateRefError, PageTable}; // 你的内存管理�
 // 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
 use crate::mm::page_table::{
      // 你提供的，但主要用于单页、类型化数据
-    copy_from_user_array, copy_from_user_bytes, copy_from_user_exact, copy_to_user_bytes // 我们基于 copy_from_user_bytes 实现的
+    copy_from_user_array, copy_from_user_bytes, copy_from_user_exact, copy_to_user_bytes, copy_to_user_bytes_exact // 我们基于 copy_from_user_bytes 实现的
     // 如果 TranslateRefError 需要扩展，确保也导入或定义
 };
 
@@ -1983,4 +1984,281 @@ pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> Sys
     open_device_file("/dev/random")?.read(UserBuffer::new(
         translated_byte_buffer(token, buf_ptr, buflen),
     )).await
+}
+
+
+
+
+
+/// pipe2 系统调用
+/// pipefd_user_ptr: 指向用户空间 int[2] 数组的指针，用于接收两个新的文件描述符。
+/// flags: 创建管道的标志 (例如 O_CLOEXEC, O_NONBLOCK)。
+/// 返回：成功时为 0，失败时为 -错误码。
+pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet {
+    log::trace!("sys_pipe2(pipefd_ptr: {:p}, flags: 0x{:x})", pipefd_user_ptr, flags_u32);
+
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+
+    // 1. 校验用户指针
+    if pipefd_user_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 2. 解析 flags
+    let open_flags = OpenFlags::from_bits_truncate(flags_u32); // 忽略未知标志位
+    // TODO: 检查是否有不支持的 flags (pipe2 只支持 O_CLOEXEC, O_DIRECT, O_NONBLOCK)
+    //       O_DIRECT 对管道通常无意义。我们主要关心 O_CLOEXEC 和 O_NONBLOCK。
+
+    // 3. 创建管道
+    let (read_pipe_arc, write_pipe_arc) = make_pipe(open_flags);
+
+    // 4. 为读端和写端分配文件描述符
+    //    add_fd_to_current_process 需要是 async 或在异步上下文中安全调用
+   let fd_read= pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(read_pipe_arc))).await;
+    
+   let fd_write=  pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(write_pipe_arc))).await;
+
+
+    // 5. 将两个文件描述符写回用户空间
+    let fds_to_write: [i32; 2] = [fd_read as i32, fd_write as i32];
+    match unsafe {
+        copy_to_user_bytes_exact(
+            token,
+            VirtAddr::from(pipefd_user_ptr as usize),
+            core::slice::from_raw_parts(
+                fds_to_write.as_ptr() as *const u8,
+                core::mem::size_of::<[i32; 2]>(),
+            ),
+        )
+    } {
+        Ok(()) => Ok(0), // 成功
+        Err(_translate_err) => {
+            // 写回失败，这是一个严重的问题。
+            // 理论上应该尝试关闭已分配的 fd_read 和 fd_write。
+            log::error!("sys_pipe2: Failed to copy fds to user space: {:?}", _translate_err);
+            // pcb_arc.close_fd(fd_read as usize).await.ok();
+            // pcb_arc.close_fd(fd_write as usize).await.ok();
+            Err(SysErrNo::EFAULT)
+        }
+    }
+}
+
+
+
+
+
+
+
+/// sendfile 系统调用实现
+/// out_fd: 输出文件描述符 (通常是套接字)
+/// in_fd: 输入文件描述符 (通常是常规文件)
+/// offset_user_ptr: 指向用户空间 off_t (isize) 的指针，或为 0 (NULL)
+/// count: 要传输的字节数
+/// 返回：成功时为传输的字节数，失败时为 -错误码
+pub async fn sys_sendfile(
+    out_fd: i32,
+    in_fd: i32,
+    offset_user_ptr: *mut isize,
+    count: usize,
+) -> SyscallRet {
+    // log::trace!("[sys_sendfile] out_fd: {}, in_fd: {}, offset_ptr: {:p}, count: {}",
+    //             out_fd, in_fd, offset_user_ptr, count);
+
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let proc_arc = current_process(); // 改为 current_process().await
+    let token = proc_arc.memory_set.lock().await.token();
+    // fd_table 的锁现在在 ProcessControlBlock 的 get_file 方法内部处理 (根据你的原始代码风格)
+    // let fd_table_guard = proc_arc.fd_table.lock().await;
+
+    // 1. 获取并校验文件描述符 (基于你原始 sys_sendfile 的风格)
+
+    // 校验 fd 范围 (MAX_FD_NUM 需要定义)
+    if out_fd < 0 || out_fd as usize >= MAX_FD_NUM ||
+       in_fd < 0 || in_fd as usize >= MAX_FD_NUM {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let out_file_desc_wrapper = proc_arc.get_file(out_fd as usize).await?; // 假设返回 Result<FileDescriptor, SysErrNo>
+    let in_file_desc_wrapper = proc_arc.get_file(in_fd as usize).await?;
+
+    // 2. 检查文件权限和类型
+    
+    proc_arc.manual_alloc_type_for_lazy(offset_user_ptr).await?;
+
+    if !out_file_desc_wrapper.writable()? { 
+        log::warn!("[sys_sendfile] out_fd {} is not writable", out_fd);
+        return Err(SysErrNo::EBADF);
+    }
+    if !in_file_desc_wrapper.readable()? { 
+        log::warn!("[sys_sendfile] in_fd {} is not readable", in_fd);
+        return Err(SysErrNo::EBADF);
+    }
+
+    if out_file_desc_wrapper.is_abs() || in_file_desc_wrapper.is_abs() {
+        return Err(SysErrNo::EINVAL); // 通常 sendfile 不用于抽象/特殊文件
+    }
+
+
+    let infile = in_file_desc_wrapper;  // 直接使用
+    let outfile = out_file_desc_wrapper; // 直接使用
+
+
+    // 3. 处理 offset_ptr (与之前版本类似，但使用异步 lseek)
+    let mut current_read_offset_from_in_file: Option<usize> = None; // Some(offset) 表示从指定偏移读取
+    let mut original_in_fd_offset_to_restore: Option<usize> = None; // 如果 offset_user_ptr 为 NULL
+
+    if offset_user_ptr.is_null() {
+        
+    } else {
+        // offset 非 NULL: 从用户提供的 *offset 开始读取，并更新 *offset，in_fd 偏移不变
+        let initial_offset_val = match unsafe {
+            copy_from_user_exact::<isize>(token, offset_user_ptr) // 从用户空间读 isize
+        } {
+            Ok(val) => val,
+            Err(_) => return Err(SysErrNo::EFAULT),
+        };
+        if initial_offset_val < 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        current_read_offset_from_in_file = Some(initial_offset_val as usize);
+        // 保存原始偏移，以便之后恢复，因为当 offset_user_ptr 非空时，in_fd 的文件指针不应改变
+        original_in_fd_offset_to_restore = Some(infile.lseek(0, SEEK_CUR)? as usize);
+    }
+
+    // 4. 主循环
+    let mut total_bytes_transferred: usize = 0;
+    let mut kernel_transfer_buffer = vec![0u8; SENDFILE_KERNEL_BUFFER_SIZE.min(count)]; // 限制单次读写大小
+
+    while total_bytes_transferred < count {
+        let bytes_to_process_this_loop = core::cmp::min(
+            count - total_bytes_transferred,
+            kernel_transfer_buffer.len(), // 使用已分配缓冲区的大小
+        );
+        if bytes_to_process_this_loop == 0 {
+            break;
+        }
+
+        let current_kernel_slice_for_read = &mut kernel_transfer_buffer[0..bytes_to_process_this_loop];
+
+        // a. 从 in_fd 读取数据
+        let bytes_read_from_in_fd: usize;
+        let mut read_user_buf_vec = Vec::new(); // UserBuffer 需要 Vec<&mut [u8]>
+        unsafe {
+            read_user_buf_vec.push(core::slice::from_raw_parts_mut(
+                current_kernel_slice_for_read.as_mut_ptr(),
+                current_kernel_slice_for_read.len(),
+            ));
+        }
+        let in_user_buffer = UserBuffer::new(read_user_buf_vec);
+
+        if let Some(offset_val) = current_read_offset_from_in_file {
+            // 从指定偏移读取 (不改变 infile 的持久文件指针)
+            // 你的 File::read() 是从当前文件指针读。所以需要先 lseek。
+            infile.lseek(offset_val as isize, SEEK_SET)?;
+            bytes_read_from_in_fd = match infile.read(in_user_buffer).await {
+                Ok(n) => n,
+                Err(e) => { // 读取出错
+                    if total_bytes_transferred > 0 { break; } // 如果已传输一些，则返回成功的部分
+                    else {
+                        // 恢复原始偏移（如果适用）
+                        if let Some(orig_off) = original_in_fd_offset_to_restore {
+                            infile.lseek(orig_off as isize, SEEK_SET).ok();
+                        }
+                        return Err(e);
+                    }
+                }
+            };
+            // current_read_offset_from_in_file 需要在循环外更新，或者在这里更新并用于下次 lseek
+        } else {
+            // 从当前文件偏移读取 (会更新 infile 的持久文件指针)
+            bytes_read_from_in_fd = match infile.read(in_user_buffer).await {
+                Ok(n) => n,
+                Err(e) => {
+                    if total_bytes_transferred > 0 { break; } else { return Err(e); }
+                }
+            };
+        }
+
+        if bytes_read_from_in_fd == 0 { // EOF on in_fd
+            break;
+        }
+
+        // b. 将读取到的数据写入 out_fd
+        // 构造 UserBuffer for write (这是个痛点，因为 UserBuffer::new 需要 &mut)
+        // **这是一个高风险的 `unsafe` 操作，假设 `outfile.write` 不会修改缓冲区**
+        // **理想情况下，UserBuffer 或 File::write 应该能接受 `&[u8]`**
+        let mut write_user_buf_vec = Vec::new();
+        unsafe {
+            let kernel_slice_for_write = &kernel_transfer_buffer[0..bytes_read_from_in_fd];
+            // 将 &[u8] 强制转换为 &mut [u8] 以匹配 UserBuffer::new 的签名
+            // 这是非常不安全的，依赖于 outfile.write 的内部实现。
+            let mutable_alias_for_write = core::slice::from_raw_parts_mut(
+                kernel_slice_for_write.as_ptr() as *mut u8, // <--- unsafe cast
+                kernel_slice_for_write.len()
+            );
+            write_user_buf_vec.push(mutable_alias_for_write);
+        }
+        let out_user_buffer = UserBuffer::new(write_user_buf_vec);
+
+        match outfile.write(out_user_buffer).await {
+            Ok(bytes_written_to_out_fd) => {
+                if bytes_written_to_out_fd != bytes_read_from_in_fd {
+                    // 部分写入
+                    total_bytes_transferred += bytes_written_to_out_fd;
+                    // 更新 current_read_offset_from_in_file (如果正在使用)
+                    if let Some(ref mut offset_val) = current_read_offset_from_in_file {
+                        *offset_val += bytes_written_to_out_fd;
+                    } else {
+                        // 如果是更新 infile 的持久偏移，但只写了一部分
+                        // infile 的偏移已经前进了 bytes_read_from_in_fd
+                        // 我们需要把它回退 (bytes_read_from_in_fd - bytes_written_to_out_fd)
+                        let rewind_amount = (bytes_read_from_in_fd - bytes_written_to_out_fd) as isize;
+                        if rewind_amount > 0 {
+                            infile.lseek(-rewind_amount, SEEK_CUR).ok();
+                        }
+                    }
+                    break; // 结束传输
+                }
+                total_bytes_transferred += bytes_written_to_out_fd;
+            }
+            Err(e) => { // 写入 out_fd 失败
+                if total_bytes_transferred > 0 { break; }
+                else {
+                    if let Some(orig_off) = original_in_fd_offset_to_restore { // 恢复offset_ptr!=NULL时的原始偏移
+                        infile.lseek(orig_off as isize, SEEK_SET).ok();
+                    } else if offset_user_ptr.is_null() && bytes_read_from_in_fd > 0 { // 恢复offset_ptr==NULL时多读的部分
+                        infile.lseek(-(bytes_read_from_in_fd as isize), SEEK_CUR).ok();
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        // c. 更新 current_read_offset_from_in_file (如果正在使用)
+        if let Some(ref mut offset_val) = current_read_offset_from_in_file {
+            *offset_val += bytes_read_from_in_fd; // 更新下一次读取的起始点
+        }
+    } // end while loop
+
+    // 5. 恢复 in_fd 的原始偏移量 (如果 offset_user_ptr 非空)
+    if let Some(orig_off) = original_in_fd_offset_to_restore {
+        infile.lseek(orig_off as isize, SEEK_SET).ok();
+    }
+
+    // 6. 如果 offset_user_ptr 非空，将最终的 offset 写回用户空间
+    if let Some(final_offset_val) = current_read_offset_from_in_file {
+        if !offset_user_ptr.is_null() {
+
+
+
+            *translated_refmut(token, offset_user_ptr as *mut u64)?=final_offset_val as u64;
+            
+        }
+    }
+
+    Ok(total_bytes_transferred )
 }

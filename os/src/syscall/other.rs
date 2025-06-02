@@ -1,7 +1,7 @@
 
 use linux_raw_sys::general::MAX_CLOCKS;
 
-use crate::{mm::{fill_str, get_target_ref, put_data}, syscall::flags::Utsname, task::{current_process, current_token, sleeplist::sleep_until}, timer::{self, get_usertime, usertime2_timeval, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{mm::{fill_str, get_target_ref, put_data, translated_refmut}, syscall::flags::Utsname, task::{current_process, current_task, current_token, sleeplist::sleep_until}, timer::{self, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 
 
@@ -91,5 +91,19 @@ pub async fn sys_clock_nanosleep(
         }
     }
 
+    Ok(0)
+}
+
+/// 返回值为当前经过的时钟中断数
+/// # Arguments
+/// * `tms` - *mut Tms
+pub async  fn syscall_time(tms:*mut Tms) -> SyscallRet{
+    trace!("[syscall_time] tms:{:#?}",tms);
+    let timedata= unsafe { *current_task().tms.get() };
+    let pcb =current_process();
+    pcb.manual_alloc_type_for_lazy(tms).await?;
+    let token =  pcb .get_user_token().await;
+    *translated_refmut(token, tms)?= Tms ::new(&timedata);
+    
     Ok(0)
 }

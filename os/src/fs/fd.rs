@@ -118,5 +118,21 @@ impl FileDescriptor {
     pub fn set_nonblock(&mut self) {
         self.flags |= OpenFlags::O_NONBLOCK;
     }
+    pub fn is_file(&self)->bool{
+          if let  FileClass::File(_) = self.file {
+            true
+          }
+          else{
+            false
+          }
+    }
+ pub fn is_abs(&self)->bool{
+          if let  FileClass::Abs(_) = self.file{
+            true
+          }
+          else{
+            false
+          }
+    }
 }
 

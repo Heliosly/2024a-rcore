@@ -98,9 +98,70 @@ pub fn suspend_current_and_run_next() {
 
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
+/// 整个进程退出：把进程里所有线程一起结束，回收所有资源
+pub async fn exit_proc(exit_code: i32) {
+    // 1. 拿到当前进程的 PCB
+    let process = current_process();
+    let pid = process.get_pid();
 
-/// Exit the current 'Running' task and run the next task in task list.
-pub async  fn exit_current_and_run_next(exit_code: i32) {
+    debug!("[kernel] exit_proc pid {}, exit_code: {}", pid, exit_code);
+
+    // 2. 先把所有线程都标记为 Zombie、设置退出码、清除 child_tid
+    {
+        let mut tasks = process.tasks.lock().await;
+        for thread in tasks.iter() {
+            thread.set_state(TaskStatus::Zombie);
+            thread.set_exit_code(exit_code as isize);
+            let _ = thread.clear_child_tid(); 
+            // TODO(Heliosly)“唤醒”线程
+        }
+    }
+
+    // 3. 如果有子进程，要把它们 reparent 给 init
+    if pid != 1 {
+        let mut children = process.children.lock().await;
+        for child in children.iter() {
+            child.set_parent(INITPROC.pid.0);
+            INITPROC.children.lock().await.push(child.clone());
+        }
+        children.clear();
+    }
+
+    // 4. 回收“进程级”资源：地址空间、FD 表、信号等
+    {
+        // 回收地址空间的所有用户页
+        process.memory_set.lock().await.recycle_data_pages();
+        // 关闭并清空文件
+        process.fd_table.lock().await.table.clear();
+        // （如果有其他全局结构，比如信号队列、管道、TLS 等，也要在这里清理）
+    }
+
+    // 5. 从全局 TID2TC、tasks 列表里把所有线程移除
+    {
+        let mut tasks = process.tasks.lock().await;
+        for thread in tasks.iter() {
+            let tid = thread.id.as_usize();
+            TID2TC.lock().remove(&tid);
+            // drop(thread) 由 Rust 智能指针自动处理
+        }
+        tasks.clear();
+    }
+
+    // 6. 从全局进程表里把这个进程删掉
+    PID2PC.lock().remove(&pid);
+
+    // 7. 通知父进程：发 SIGCHLD 或者通过 IPC 让父进程 wakeup 执行 wait TODO(HELIOSLY)
+    //   
+    // let ppid = process.get_parent();
+    // if let Some(parent_proc) = PID2PC.lock().get(&ppid) {
+    //     parent_proc.notify_child_exited(pid, exit_code);
+    // }
+
+    
+}
+///Exit the current 'Running' task and run the next task in task list. 
+/// 并不清理资源等waitpid回收
+pub async  fn exit_current(exit_code: i32) {
     // take from Processor
     let task = current_task();
     
@@ -184,7 +245,7 @@ static  CWD:&str = "/glibc";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh  /glibc/basic_testcode.sh ",INITPROC_STR)
+            format!("{} sh  /glibc/busybox_testcode.sh ",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(

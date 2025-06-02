@@ -7,7 +7,7 @@ mod ext4;
 mod vfs;
 mod stat;
 mod fd;
-mod pipe;
+pub mod pipe;
 mod poll;
 pub mod dev;
 pub mod mount;
@@ -234,8 +234,17 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescri
 pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
 }
-pub fn find_inode(abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
+///只能找File文件
+pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
       trace!("[find_inode] abs_path={}", abs_path);
+      // 如果是动态链接文件,转换路径
+      //判断是否是设备文件
+    
+    if is_dynamic_link_file(abs_path) {
+     
+        abs_path = map_dynamic_link_file(abs_path);
+    }
+
       root_inode().find(abs_path, flags, 0)
 }
 ///open file

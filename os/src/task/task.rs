@@ -18,6 +18,7 @@ use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
 use crate::task::{add_task, current_task, PID2PC, TID2TC};
+use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
 use crate::utils::string::normalize_absolute_path;
@@ -28,7 +29,6 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::default;
 use core::future::Future;
 use core::mem::ManuallyDrop;
 use core::ops::Deref;
@@ -88,6 +88,19 @@ pub struct ProcessControlBlock {
 /// `ProcessControlBlock` 的实现。
 
 impl ProcessControlBlock {
+
+    pub async fn get_file(&self,fd:usize)->Result<FileDescriptor, SysErrNo>{
+        self.fd_table.lock().await.get_file(fd)
+    }
+    pub async fn alloc_fd(&self)->usize{
+        self.fd_table.lock().await.alloc_fd()
+    }
+    pub async fn alloc_and_add_fd(&self,fd:FileDescriptor)->usize{
+        let mut table = self.fd_table.lock().await;
+        let res= table.alloc_fd();
+        table.add_fd(fd, res);
+        res
+    }
     /// 激活用户的内存空间。
     pub async fn activate_user_memoryset(&self) {
         self.memory_set.lock().await.activate();
@@ -789,6 +802,8 @@ impl ProcessControlBlock {
                 tasks: Mutex::new(Vec::new()),
                 exe: Mutex::new(self.exe.lock().await.clone()),
             });
+
+            tcb.set_lead();
             if user_stack == 0 {
                 if !flags.contains(CloneFlags::CLONE_VM) {
                     process_control_block.clone_user_res(self).await;
@@ -1055,6 +1070,7 @@ pub struct TaskControlBlock {
     pub child_tid_ptr: Option<AtomicUsize>,
     pub need_clear_child_tid: AtomicBool,
     pub robust_list: Mutex<RobustList>,
+    pub tms:UnsafeCell<TimeData>,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1089,6 +1105,8 @@ impl TaskControlBlock {
             child_tid_ptr: child_tid,
             need_clear_child_tid: AtomicBool::new(clear_child_tid),
             robust_list: Mutex::new(RobustList::default()),
+
+            tms:UnsafeCell::new( TimeData::default()),
         }
     }
 
@@ -1220,6 +1238,17 @@ impl TaskControlBlock {
     pub fn set_need_resched(&self, need: bool) {
         self.need_resched.store(need, Ordering::Release);
     }
+    pub fn update_utime(&self){
+
+                    {unsafe { *self.tms.get() }}.update_utime();
+    }
+    pub fn update_stime(&self){
+
+        {unsafe { *self.tms.get() }}.update_stime();
+}
+pub fn set_lead(&self){
+      self.is_leader.store(true, Ordering::Release);
+}
 }
 
 pub fn new_fd_with_stdio() -> Vec<Option<FileDescriptor>> {
