@@ -273,6 +273,7 @@ pub async  fn sys_fstatat(
 
 
 pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysErrNo> {
+    trace!("[sys_fcntl],fd:{},cmd:{},arg:{}",fd,cmd,arg);
     let proc = current_process();
 
     let mut file_table = proc.fd_table.lock().await;

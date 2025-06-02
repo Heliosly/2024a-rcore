@@ -1,11 +1,15 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::fdmanage::FdManage;
 use super::schedule::TaskRef;
-use super::{current_process, current_token, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef, TaskStatus};
-use crate::config::{ PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
+use super::{
+    current_process, current_token, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef,
+    TaskStatus,
+};
+use crate::config::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::{find_inode, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    flush_tlb, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
+    flush_tlb, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr,
+    VirtPageNum,
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::syscall::flags::AT_FDCWD;
@@ -64,7 +68,7 @@ pub struct ProcessControlBlock {
     base_size: AtomicUsize,
     /// current work p
     pub cwd: Mutex<String>,
-    pub exe :Mutex<String>,
+    pub exe: Mutex<String>,
     /// Parent process of the current process.
     /// Weak will not affect the reference count of the parent
     parent: AtomicUsize,
@@ -79,7 +83,6 @@ pub struct ProcessControlBlock {
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     pub fd_table: Arc<Mutex<FdManage>>,
     pub signal_shared_state: Arc<Mutex<ProcessSignalSharedState>>,
-
     //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
@@ -203,8 +206,8 @@ impl ProcessControlBlock {
         self.program_brk.store(val, Ordering::Release)
     }
 
-    pub async  fn set_exe(&self,path:String){
-        *self.exe.lock().await= path;
+    pub async fn set_exe(&self, path: String) {
+        *self.exe.lock().await = path;
     }
 
     /// 获取应用程序页表的地址。
@@ -333,10 +336,6 @@ impl ProcessControlBlock {
             .find(|t| t.id() == id)
             .cloned()
     }
-    
-    
-
-
 }
 //  Non
 
@@ -414,7 +413,7 @@ impl ProcessControlBlock {
         cwd: String,
         argv: &Vec<String>,
         env: &mut Vec<String>,
-        exe: String
+        exe: String,
     ) -> Self {
         // alloc a pid and a kernel stack in kernel space
         let pid_handle = pid_alloc();
@@ -437,7 +436,6 @@ impl ProcessControlBlock {
             None,
             false,
         )));
-
 
         let process_control_block = Self {
             pid: pid_handle,
@@ -658,7 +656,7 @@ impl ProcessControlBlock {
         // 关闭文件描述符
         //将设置了O_CLOEXEC位的文件描述符关闭 todo(heliosly)
         // update trap_cx ppn
-        info!("exec entry_point:{:#x} sp:{:#x}", entry_point,user_sp);
+        info!("exec entry_point:{:#x} sp:{:#x}", entry_point, user_sp);
         let binding = self.main_task.lock().await;
         let trap_cx: &mut TrapContext = binding.get_trap_cx().unwrap();
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
@@ -690,10 +688,10 @@ impl ProcessControlBlock {
 
         // copy user space(include trap context)
         // 子线程或者进程的memory_set和 clone_token
-        let (memory_set,clone_token )= if flags.contains(CloneFlags::CLONE_THREAD) {
-            (None,self.get_user_token().await )
+        let (memory_set, clone_token) = if flags.contains(CloneFlags::CLONE_THREAD) {
+            (None, self.get_user_token().await)
         } else {
-            let ms=if flags.contains(CloneFlags::CLONE_VM) {
+            let ms = if flags.contains(CloneFlags::CLONE_VM) {
                 self.memory_set.clone()
             } else {
                 Arc::new(Mutex::new(MemorySet::from_existed_user(
@@ -701,7 +699,7 @@ impl ProcessControlBlock {
                 )))
             };
             let token = ms.lock().await.token();
-            (Some(ms),token)
+            (Some(ms), token)
         };
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
             self.parent()
@@ -722,25 +720,20 @@ impl ProcessControlBlock {
 
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
-        let (child_tid,need_set_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
+        let (child_tid, need_set_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
             || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
         {
-                assert!(ctid!=0);
+            assert!(ctid != 0);
 
-            
-            if flags.contains(CloneFlags::CLONE_CHILD_SETTID){
-                  (Some(ctid),true)
+            if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
+                (Some(ctid), true)
+            } else {
+                (Some(ctid), false)
             }
-            else{
-                 (Some(ctid),false)
-            }
-            
-        } 
-        else{
-            (None,false)
+        } else {
+            (None, false)
         };
-        
-        
+
         let trap_cx = Box::new(*current_task().get_trap_cx().unwrap());
 
         let fut = UTRAP_HANDLER();
@@ -753,7 +746,6 @@ impl ProcessControlBlock {
             new_sig_state,
             child_tid,
             need_set_tid,
-            
         )));
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
             let parent_token = self.memory_set.lock().await.token();
@@ -774,7 +766,6 @@ impl ProcessControlBlock {
                     &*current_process().signal_shared_state.lock().await,
                 )))
             };
-            
 
             let process_control_block = Arc::new(ProcessControlBlock {
                 pid: pid.unwrap(),
@@ -783,18 +774,20 @@ impl ProcessControlBlock {
                 cwd: Mutex::new(self.cwd.lock().await.clone()),
                 is_init: AtomicBool::new(false),
                 base_size: AtomicUsize::new(self.base_size()),
-                memory_set:memory_set.unwrap(),
+                memory_set: memory_set.unwrap(),
                 parent: AtomicUsize::new(parent),
                 children: Mutex::new(Vec::new()),
                 exit_code: AtomicI32::new(0),
-                fd_table: Arc::new(Mutex::new(FdManage::from_another(&*self.fd_table.lock().await))),
+                fd_table: Arc::new(Mutex::new(FdManage::from_another(
+                    &*self.fd_table.lock().await,
+                ))),
                 heap_bottom: AtomicUsize::new(self.heap_bottom.load(Ordering::Relaxed)),
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
                 user_stack_top: AtomicUsize::new(0),
 
                 signal_shared_state: new_proc_sig_state,
                 tasks: Mutex::new(Vec::new()),
-                exe:Mutex::new(self.exe.lock().await.clone()),
+                exe: Mutex::new(self.exe.lock().await.clone()),
             });
             if user_stack == 0 {
                 if !flags.contains(CloneFlags::CLONE_VM) {
@@ -823,9 +816,9 @@ impl ProcessControlBlock {
             // modify kernel_sp in trap_cx
             trap_cx.trap_status = TrapStatus::Done;
             trap_cx.regs.a0 = 0;
- if flags.contains(CloneFlags::CLONE_SETTLS){
-            trap_cx.set_tls(tls);
-        }
+            if flags.contains(CloneFlags::CLONE_SETTLS) {
+                trap_cx.set_tls(tls);
+            }
             // 设置用户栈
             // 若给定了用户栈，则使用给定的用户栈
             // 若没有给定用户栈，则使用当前用户栈
@@ -839,16 +832,9 @@ impl ProcessControlBlock {
                 // );
             }
         }
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID){
+        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
             *translated_refmut(clone_token, ctid as *mut u32)? = tcb.id() as u32;
         }
-
-       
-
-
-
-
-
 
         add_task(tcb.clone());
         TID2TC.lock().insert(tcb.id.0, tcb);
@@ -915,7 +901,9 @@ impl ProcessControlBlock {
     ) -> Result<String, SysErrNo> {
         log::trace!(
             "resolve_path_from_fd: dirfd={}, path='{}', follow_last={}",
-            dirfd, path_str, follow_last_symlink
+            dirfd,
+            path_str,
+            follow_last_symlink
         );
 
         // 1. 确定基准绝对路径 (base_path_string)
@@ -980,18 +968,15 @@ impl ProcessControlBlock {
 
         // info!("[resolve_path_from_fd] normal_path_str: {}",normalized_path_to_find);
         Ok(normalized_path_to_find)
-     }
+    }
     /// alloc range physical memory for lazy allocation manually
-    pub async fn manual_alloc_range_for_lazy(
-        &self,
-        start: VirtAddr,
-        end: VirtAddr,
-    ) -> GeneralRet{
+    pub async fn manual_alloc_range_for_lazy(&self, start: VirtAddr, end: VirtAddr) -> GeneralRet {
         self.memory_set
             .lock()
             .await
-            .manual_alloc_range_for_lazy(start, end).await?;
-            Ok(())
+            .manual_alloc_range_for_lazy(start, end)
+            .await?;
+        Ok(())
     }
 
     /// alloc physical memory with the given type size for lazy allocation manually
@@ -1002,14 +987,8 @@ impl ProcessControlBlock {
             .await
             .manual_alloc_type_for_lazy(obj)
             .await?;
-            Ok(())
+        Ok(())
     }
-
-
-
-
-
-
 }
 
 /// A unique identifier for a thread.
@@ -1056,7 +1035,7 @@ pub struct TaskControlBlock {
     /// Whether the task needs to be rescheduled
     ///
     /// When the time slice is exhausted, it needs to be rescheduled
-    _need_resched: AtomicBool,
+    need_resched: AtomicBool,
     /// The disable count of preemption
     ///
     /// When the task get a lock which need to disable preemption, it
@@ -1064,7 +1043,7 @@ pub struct TaskControlBlock {
     /// decrease the count.
     ///
     /// Only when the count is zero, the task can be preempted.
-    _preempt_disable_count: AtomicUsize,
+    preempt_disable_count: AtomicUsize,
     /// 在内核中发生抢占或者使用线程接口时的上下文
     // stack_ctx: UnsafeCell<Option<StackCtx>>,
     /// 是否是所属进程下的主线程
@@ -1074,8 +1053,8 @@ pub struct TaskControlBlock {
     pub page_table_token: UnsafeCell<usize>,
     /// bool位表示是否需要clear
     pub child_tid_ptr: Option<AtomicUsize>,
-    pub need_clear_child_tid:AtomicBool,
-    pub robust_list: Mutex<RobustList>, 
+    pub need_clear_child_tid: AtomicBool,
+    pub robust_list: Mutex<RobustList>,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1087,11 +1066,11 @@ impl TaskControlBlock {
         trap_cx: Box<TrapContext>,
         signal_state: TaskSignalState,
         chlid_tid_ptr: Option<usize>,
-        clear_child_tid:bool,
+        clear_child_tid: bool,
     ) -> Self {
-        let child_tid= match chlid_tid_ptr{
-            Some(p)=> Some(AtomicUsize::new(p)),
-            None=>None,
+        let child_tid = match chlid_tid_ptr {
+            Some(p) => Some(AtomicUsize::new(p)),
+            None => None,
         };
         Self {
             id: TaskId::new(),
@@ -1099,40 +1078,34 @@ impl TaskControlBlock {
             exit_code: AtomicIsize::new(0),
             fut: UnsafeCell::new(fut),
             wait_wakers: UnsafeCell::new(VecDeque::new()),
-            _need_resched: AtomicBool::new(false),
-            _preempt_disable_count: AtomicUsize::new(0),
+            need_resched: AtomicBool::new(false),
+            preempt_disable_count: AtomicUsize::new(0),
             is_leader: AtomicBool::new(false),
             process_id: AtomicUsize::new(process_id),
             page_table_token: UnsafeCell::new(page_table_token),
             trap_cx: UnsafeCell::new(Some(trap_cx)),
             state: Spin::new(TaskStatus::Runnable),
             signal_state: Mutex::new(signal_state),
-            child_tid_ptr:child_tid,
+            child_tid_ptr: child_tid,
             need_clear_child_tid: AtomicBool::new(clear_child_tid),
-        robust_list:Mutex::new(RobustList::default()),
-            
+            robust_list: Mutex::new(RobustList::default()),
         }
     }
 
-        pub fn child_tid_ptr(&self)->Option<usize>{
-            match &self.child_tid_ptr{
-                Some(p)=>Some(p.load(Ordering::Acquire)),
-                None=>None,
-            }
-
+    pub fn child_tid_ptr(&self) -> Option<usize> {
+        match &self.child_tid_ptr {
+            Some(p) => Some(p.load(Ordering::Acquire)),
+            None => None,
         }
-        pub fn set_child_tid_ptr(&self,ptr:usize){
-            match &self.child_tid_ptr{
-                Some(p)=>{
-                    p.store(ptr, Ordering::Release);
-                },
-                None=>{
-                    
-                },
+    }
+    pub fn set_child_tid_ptr(&self, ptr: usize) {
+        match &self.child_tid_ptr {
+            Some(p) => {
+                p.store(ptr, Ordering::Release);
             }
-
+            None => {}
         }
-
+    }
 
     ///
     pub fn id(&self) -> usize {
@@ -1162,9 +1135,12 @@ impl TaskControlBlock {
         self.exit_code.store(code, Ordering::Relaxed);
     }
 
-    pub fn clear_child_tid(&self)->GeneralRet{
-        if self.need_clear_child_tid.load(Ordering::Acquire){
-            *translated_refmut(unsafe { *self.page_table_token.get() }, self.child_tid_ptr().unwrap() as *mut u32)?=0;
+    pub fn clear_child_tid(&self) -> GeneralRet {
+        if self.need_clear_child_tid.load(Ordering::Acquire) {
+            *translated_refmut(
+                unsafe { *self.page_table_token.get() },
+                self.child_tid_ptr().unwrap() as *mut u32,
+            )? = 0;
         }
         self.need_clear_child_tid.store(false, Ordering::Relaxed);
         Ok(())
@@ -1174,6 +1150,36 @@ impl TaskControlBlock {
     }
     pub fn get_exit_code(&self) -> isize {
         self.exit_code.load(Ordering::Relaxed)
+    }
+    /// Whether the task is blocking
+    #[inline]
+    pub fn is_blocking(&self) -> bool {
+        matches!(*self.state.lock(), TaskStatus::Blocking)
+    }
+    /// Whether the task can be preempted
+    #[inline]
+    pub fn can_preempt(&self) -> bool {
+        self.preempt_disable_count.load(Ordering::Acquire) == 0
+    }
+
+    /// Disable the preemption
+    #[inline]
+    pub fn disable_preempt(&self) {
+        self.preempt_disable_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Enable the preemption by increasing the disable count
+    ///
+    /// Only when the count is zero, the task can be preempted
+    #[inline]
+    pub fn enable_preempt(&self) {
+        self.preempt_disable_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get the number of preempt disable counter
+    #[inline]
+    pub fn preempt_num(&self) -> usize {
+        self.preempt_disable_count.load(Ordering::Acquire)
     }
     #[inline]
     /// temp
@@ -1208,6 +1214,12 @@ impl TaskControlBlock {
     pub fn get_process(&self) -> ProcessRef {
         Arc::clone(PID2PC.lock().get(&self.get_pid()).unwrap())
     }
+    pub fn need_resched(&self) -> bool {
+        self.need_resched.load(Ordering::Acquire)
+    }
+    pub fn set_need_resched(&self, need: bool) {
+        self.need_resched.store(need, Ordering::Release);
+    }
 }
 
 pub fn new_fd_with_stdio() -> Vec<Option<FileDescriptor>> {
@@ -1228,8 +1240,6 @@ pub fn new_fd_with_stdio() -> Vec<Option<FileDescriptor>> {
         }),
     ]
 }
-
-
 
 #[derive(Clone, Copy, Debug)]
 pub struct RobustList {

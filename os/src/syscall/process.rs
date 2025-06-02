@@ -475,7 +475,7 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
         }
     }
     if let Some((idx, child_task)) = pair {
-        debug!("chiled idx is removed");
+        debug!("chiled pid is :{} removed",child_task.get_pid());
         
         PID2PC.lock().remove(&child_task.get_pid());
         let child = childvec.remove(idx);
@@ -493,9 +493,9 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
             let mut ms = proc.memory_set.lock().await;
             if exit_code >= 128 && exit_code <= 255 {
                 //表示由于信号而退出的
-               ms. safe_put_data( wstatus, exit_code).await?;
+               ms. safe_put_data( wstatus, exit_code).await.unwrap();
             } else {
-                ms.safe_put_data( wstatus, exit_code << 8).await?;
+                ms.safe_put_data( wstatus, exit_code << 8).await.unwrap();
             }
         }
         assert_eq!(
@@ -506,6 +506,7 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
         );
         Ok(found_pid)
     } else {
+
         return Err(SysErrNo::EAGAIN);
     }
     // ---- release current PCB automatically
@@ -1009,7 +1010,7 @@ pub async  fn sys_prlimit(
         let limit = translated_refmut(token, old_limit)?;
         limit.rlim_cur = 0xdeadbeff;
         limit.rlim_max =  0xdeadbeff;
-        return Err(SysErrNo::ENOSYS);
+        return Ok(0)
     }
 
     if pid == 0 {

@@ -22,8 +22,7 @@ use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current_and_run_next,
-    pick_next_task, run_task2, task_tick, CurrentTask,
+    current_process, current_task, current_task_may_uninit, exit_current_and_run_next, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
@@ -86,7 +85,7 @@ fn set_trap_entry() {
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
     unsafe {
-        // sie::set_stimer();
+        sie::set_stimer();
     }
 }
 /// disable timer interrupt in supervisor mode
@@ -227,7 +226,7 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    debug!("[user_task_top]sys_call start syscall id = {} tid = {}", syscall_id,curr.id());
+                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={}", syscall_id,curr.id(),curr.get_process().get_pid());
                     
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
@@ -239,10 +238,18 @@ pub async fn user_task_top() -> i32 {
                     let result = match result {
                         Ok(res) => res,
                         Err(err) => {
-                            // debug!("[Syscall]Err:{}", err.str());
-                            println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
+                            if err==SysErrNo::EAGAIN {
+                               tf.sepc-=4; 
+                               tf.regs.a0
+                            }else{
+                                
+                            println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
+                            }
+
+                            // debug!("[Syscall]Err:{}", err.str());
+
                         }
                     };
                     trace!("[user_task_top]sys_call end result:{}", result);
@@ -298,6 +305,24 @@ pub async fn user_task_top() -> i32 {
 
                     tf.trap_status = TrapStatus::Done;
                     on_timer_tick();
+                    if let Some(curr) = current_task_may_uninit() {
+                        // if task is already exited or blocking,
+                        // no need preempt, they are rescheduling
+                        if curr.need_resched()
+                            && curr.can_preempt()
+                            && !curr.is_exited()
+                            && !curr.is_blocking()
+                        {
+                            trace!(
+                                "[user_task_top]current {} is to be preempted in user mode, allow {}",
+                                curr.id(),
+                                curr.can_preempt()
+                            );
+                            curr.set_need_resched(false);
+                            tf.trap_status = TrapStatus::Blocked;
+                            yield_now().await;
+                        }
+                    }
                 }
                 _ => {
                     panic!(
@@ -341,6 +366,9 @@ pub async fn user_task_top() -> i32 {
 }
 pub fn on_timer_tick() {
     if let Some(curr) = current_task_may_uninit() {
-        if task_tick(curr.as_task_ref()) {}
+        if task_tick(curr.as_task_ref()) {
+            curr.set_need_resched(true);
+        }
+
     }
 }
