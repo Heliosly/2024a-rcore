@@ -37,7 +37,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_FSTAT => sys_fstat(args[0] , args[1] as *mut Kstat).await,
         SYSCALL_EXIT => sys_exit(args[0] as i32).await,
         // SYSCALL_FORK => sys_fork(),
-        SYSCALL_TIMES=>syscall_time(args[0] as *mut Tms).await,
+        SYSCALL_TIMES=>sys_time(args[0] as *mut Tms).await,
         SYSCALL_GETUID=>sys_getuid(),
         SYSCALL_SETTIDADDRESS=>sys_settidaddress(args[0]),
         SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32).await,
@@ -82,7 +82,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_SIGNALRET =>sys_sigreturn().await,
-        // SYSCALL_KILL => sys_kill(args[0] as isize, args[1]),
+        SYSCALL_KILL => sys_kill(args[0], args[1]).await,
         SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
         SYSCALL_WRITEV=>sys_writev(args[0] , args[1] as *const IoVec, args[2] as i32).await,
         SYSCALL_READV=>sys_readv(args[0], args[1] as *const IoVec, args[2] as i32).await,
@@ -125,7 +125,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_STATFS=>sys_statfs(args[0] as *const u8, args[1] as *mut crate::fs::Statfs).await,
         SYSCALL_LOG =>sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
         SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,
-        
+        SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
         
         
         

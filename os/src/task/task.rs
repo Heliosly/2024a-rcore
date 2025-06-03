@@ -921,7 +921,7 @@ impl ProcessControlBlock {
             follow_last_symlink
         );
 
-        // 1. 确定基准绝对路径 (base_path_string)
+            // 1. 确定基准绝对路径 (base_path_string)
         let base_path_string: String;
         if path_str.starts_with('/') {
             base_path_string = "/".to_string();

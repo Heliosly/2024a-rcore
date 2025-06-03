@@ -1269,3 +1269,32 @@ pub unsafe fn copy_from_user_exact<T: Copy>(token: usize, user_src: *const T) ->
 }
 
 
+/// 从 `token` 地址空间 `ptr` 处读取数据，
+/// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页。
+///
+/// 类型 `T` 需实现 Copy trait
+pub fn get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
+    let page_table = PageTable::from_token(token);
+    let mut va = VirtAddr::from(ptr as usize);
+    let pa = page_table.translate_va(va).unwrap();
+    let size = core::mem::size_of::<T>();
+    // 若数据跨页，则转换成字节数据写入
+    if (pa + size - 1).floor() != pa.floor() {
+        let mut bytes = vec![0u8; size];
+        for i in 0..size {
+            bytes[i] = *(page_table.translate_va(va).unwrap().get_ref());
+            va = va + 1;
+        }
+        unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) }
+    } else {
+        *translated_ref(token, ptr)
+    }
+}
+
+#[allow(unused)]
+///Translate a generic through page table and return a reference
+pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+    KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).get_ref()
+}

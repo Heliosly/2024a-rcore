@@ -139,7 +139,8 @@ impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
         unsafe {
             match self.data_ptr {
                 Some(ptr) => &*ptr, // 如果已经加锁，data_ptr 是 Some，直接解引用返回引用
-                None => panic!("MutexGuard: Dereferenced before lock acquired"), // 未加锁时解引用，panic 防止未定义行为
+                
+                None => panic!("MutexGuard: Dereferenced before lock acquired need await"), // 未加锁时解引用，panic 防止未定义行为
             }
         }
     }

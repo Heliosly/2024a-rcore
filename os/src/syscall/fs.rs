@@ -1386,8 +1386,7 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
 /// mode: 要检查的访问模式 (R_OK, W_OK, X_OK 的组合，或 F_OK)。
 /// flags: AT_SYMLINK_NOFOLLOW 或 AT_EACCESS (此实现暂不处理 flags)。
 pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, _flags: usize) -> SyscallRet {
-    log::trace!("[sys_faccessat] dirfd: {}, path_ptr: {:p}, mode: {}, flags: {}",
-                dirfd, path_user_ptr, mode_u32, _flags);
+    
 
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
@@ -1415,10 +1414,11 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
     // 2. 从用户空间复制路径字符串
     // copy_from_user_str_until_null 需要 token, ptr, max_len
     let path_kernel_str =  translated_str(token, path_user_ptr);
- 
+ trace!("[sys_faccessat] dirfd: {}, path_ptr: {}, mode: {}, flags: {}",
+                dirfd, path_kernel_str, mode_u32, _flags);
     
     if !path_kernel_str.starts_with('/') { return Err(SysErrNo::EINVAL); }
-
+  
     // 4. 解析得到最终的、已规范化的绝对路径 abs_path
     let abs_path= pcb_arc.resolve_path_from_fd(  dirfd, &path_kernel_str, false)
     .await?;

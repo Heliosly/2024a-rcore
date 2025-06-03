@@ -25,6 +25,7 @@ use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
+use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -252,11 +253,12 @@ pub async fn user_task_top() -> i32 {
                                 -(err as isize) as usize
                             }
                             else{
-                                
+                                bpoint();
                             warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
+                            
                             }
-
+                              
                             // debug!("[Syscall]Err:{}", err.str());
 
                         }
