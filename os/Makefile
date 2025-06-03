@@ -91,6 +91,6 @@ gdbserver: build
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -s -S
 
 gdbclient:
-	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
+	@gdb -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
 
 .PHONY: build env kernel clean disasm disasm-vim run-inner fs-img gdbserver gdbclient

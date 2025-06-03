@@ -193,7 +193,7 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let file = table.get_file(fd)?.any();
-   put_data(token, st, file.fstat())? ;
+    put_data(token, st, file.fstat())? ;
     Ok(0)
          
     
@@ -1470,6 +1470,41 @@ pub async  fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallR
         osfile.inner.lock().inode.unlink(&abs_path)?;
         remove_inode_idx(&abs_path);
     }
+
+    Ok(0)
+}
+
+pub async fn sys_renameat(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+) -> SyscallRet {
+    trace!(
+        "[sys_renameat] olddirfd: {}, oldpath: {:p}, newdirfd: {}, newpath: {:p}",
+        olddirfd, oldpath, newdirfd, newpath
+    );
+
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+
+    let old_path = translated_str(token, oldpath);
+    let new_path = translated_str(token, newpath);
+
+    if old_path.is_empty() || new_path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    let old_abs_path = proc.resolve_path_from_fd(olddirfd, &old_path, false).await?;
+    let new_abs_path = proc.resolve_path_from_fd(newdirfd, &new_path, false).await?;
+
+    if old_abs_path.len() > PATH_MAX || new_abs_path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
+    let old_inode = find_inode(&old_abs_path, OpenFlags::O_RDWR)?;
+    //let new_inode = find_inode(&new_abs_path, OpenFlags::O_RDWR)?;
+
+    old_inode.rename(&old_abs_path,&new_abs_path)?;
 
     Ok(0)
 }

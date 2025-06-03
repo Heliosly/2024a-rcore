@@ -54,7 +54,7 @@ pub fn run_task2(mut curr: CurrentTask) {
                     "count {}",
                     Arc::strong_count(curr.as_task_ref())
                 );
-                panic!("shotdown");
+                panic!("shutdown");
             }
             CurrentTask::clean_current();
             // trace!("current task is cleared1");

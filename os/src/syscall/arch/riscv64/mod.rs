@@ -59,6 +59,7 @@ pub const SYSCALL_READV: usize = 65;
 pub const SYSCALL_WRITEV: usize = 66;
 pub const SYSCALL_PREAD64: usize = 67;
 pub const SYSCALL_PWRITE64: usize = 68;
+pub const SYSCALL_RENAMEAT: usize = 38;
 pub const SYSCALL_SIGPROCMASK :usize =135;
 pub const SYSCALL_RT_SIGACTION :usize =134;
 pub const SYSCALL_GETPPID:usize = 173;
