@@ -322,13 +322,13 @@ impl PageTable {
         })
     }
 
-    pub fn translate_va_with_perm(&self, va: VirtAddr, require_writable: bool) -> Result<PhysAddr, TranslateRefError> {
+    pub fn translate_va_with_perm(&self, va: VirtAddr, require_writable: bool) -> Result<PhysAddr, TranslateError> {
         match self.find_pte(va.clone().floor())
         {
             Some(pte) => {
               
             if require_writable && !pte.writable() {
-                    return Err(TranslateRefError::PermissionDenied(va));
+                    return Err(TranslateError::PermissionDenied(va));
             }
             let aligned_pa: PhysAddr = pte.ppn().into();
             let offset = va.page_offset();
@@ -338,7 +338,7 @@ impl PageTable {
                 
             },
             None => {
-                return Err(TranslateRefError::PermissionDenied(va));
+                return Err(TranslateError::PermissionDenied(va));
             }
         }
           
@@ -578,6 +578,8 @@ pub enum PutDataError {
 
 impl From<PutDataError> for SysErrNo {
     fn from(err: PutDataError) -> Self {
+
+        warn!("[PutDataError]err:{:#?}",err);
         match err {
             PutDataError::TranslationFailed(_) => SysErrNo::ENOMEM,
             PutDataError::UnalignedAccess => SysErrNo::EFAULT,
@@ -690,7 +692,7 @@ pub  fn put_data<T:Copy +'static>(token: usize, ptr: *mut T, data: T) -> PutData
 
 
 #[derive(Debug)]
-pub enum TranslateRefError {
+pub enum TranslateError {
     TranslationFailed(VirtAddr),
     DataCrossesPageBoundary,
     UnexpectedEofOrFault,   
@@ -701,16 +703,17 @@ pub enum TranslateRefError {
     // Add other specific errors if needed, e.g., InsufficientPermissions
 }
 
-impl From<TranslateRefError> for SysErrNo {
-    fn from(err: TranslateRefError) -> Self {
+impl From<TranslateError> for SysErrNo {
+    fn from(err: TranslateError) -> Self {
+        warn!("TranslateError] err:{:#?},err",err);
         match err {
-            TranslateRefError::TranslationFailed(_) => SysErrNo::ENOMEM,
-            TranslateRefError::DataCrossesPageBoundary => SysErrNo::EFAULT, // Or another appropriate error code
-            TranslateRefError::UnexpectedEofOrFault => SysErrNo::EFAULT,
-            TranslateRefError::InternalBufferOverflow => SysErrNo::EFAULT,
-            TranslateRefError::LengthOverflow => SysErrNo::EFAULT,
-            TranslateRefError::PermissionDenied(_)=> SysErrNo::EACCES,
-            TranslateRefError::PartialCopy => SysErrNo::EFAULT,
+            TranslateError::TranslationFailed(_) => SysErrNo::ENOMEM,
+            TranslateError::DataCrossesPageBoundary => SysErrNo::EFAULT, // Or another appropriate error code
+            TranslateError::UnexpectedEofOrFault => SysErrNo::EFAULT,
+            TranslateError::InternalBufferOverflow => SysErrNo::EFAULT,
+            TranslateError::LengthOverflow => SysErrNo::EFAULT,
+            TranslateError::PermissionDenied(_)=> SysErrNo::EACCES,
+            TranslateError::PartialCopy => SysErrNo::EFAULT,
         }
     }
 }
@@ -787,7 +790,7 @@ pub fn fill_str(token: usize, remote_buf: *mut u8, s: &str, max_len: usize) -> R
 /// - The lifetime of the returned reference is tied to the underlying physical mapping.
 ///   Using `'static` here is very strong and implies the mapping is permanent.
 ///   Consider a shorter, more appropriate lifetime if possible.
-pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, TranslateRefError> {
+pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, TranslateError> {
     let va = VirtAddr::from(ptr as usize);
     let size = core::mem::size_of::<T>();
     if size == 0 {
@@ -796,20 +799,20 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
         // Translating the VA is a good check.
         // We can return a well-aligned dangling pointer cast to &T.
         let page_table = PageTable::from_token(token);
-        page_table.translate_va(va).ok_or(TranslateRefError::TranslationFailed(va))?;
+        page_table.translate_va(va).ok_or(TranslateError::TranslationFailed(va))?;
         // SAFETY: For ZSTs, creating a reference from a dangling but aligned pointer is allowed.
         // return Ok(unsafe { &*(core::ptr::null::<T>() as *const T) }); // Or use ptr::NonNull::dangling()
         return Ok(unsafe { &*core::ptr::NonNull::dangling().as_ptr() });
     }
 
     let page_table = PageTable::from_token(token);
-    let start_pa = page_table.translate_va(va).ok_or(TranslateRefError::TranslationFailed(va))?;
+    let start_pa = page_table.translate_va(va).ok_or(TranslateError::TranslationFailed(va))?;
 
     // Check for cross-page boundary for the physical address
     // (va.as_usize() / PAGE_SIZE) != ((va.as_usize() + size - 1) / PAGE_SIZE)
     // Better: start_pa.floor() != (start_pa + size - 1).floor()
     if size > 0 && start_pa.floor() != (start_pa + (size - 1)).floor() {
-        return Err(TranslateRefError::DataCrossesPageBoundary);
+        return Err(TranslateError::DataCrossesPageBoundary);
     }
 
     // TODO: Add permission checks (e.g., readability) from page table entry if possible @Heliosly.
@@ -842,7 +845,7 @@ unsafe fn get_target_continuous_bytes_in_page<'a>(
     token: usize,
     va_start: VirtAddr,
     max_len: usize,
-) -> Result<(&'a [u8], usize), TranslateRefError> {
+) -> Result<(&'a [u8], usize), TranslateError> {
     if max_len == 0 {
         return Ok((&[], 0));
     }
@@ -850,7 +853,7 @@ unsafe fn get_target_continuous_bytes_in_page<'a>(
     let page_table = PageTable::from_token(token);
     let pa_start = page_table
         .translate_va(va_start)
-        .ok_or(TranslateRefError::TranslationFailed(va_start))?;
+        .ok_or(TranslateError::TranslationFailed(va_start))?;
 
     // TODO: 添加权限检查 (例如，可读性) from page table entry for pa_start
 
@@ -898,7 +901,7 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
     token: usize,
     user_src_ptr: *const T,
     count: usize,
-) -> Result<Vec<T>, TranslateRefError> {
+) -> Result<Vec<T>, TranslateError> {
     if count == 0 {
         return Ok(Vec::new());
     }
@@ -918,7 +921,7 @@ pub unsafe fn copy_from_user_array<T: Sized + Copy>( // 添加 Copy bound 以安
         return Ok(result_vec);
     }
 
-    let total_bytes_to_copy = count.checked_mul(type_size).ok_or(TranslateRefError::LengthOverflow)?; // 防止溢出
+    let total_bytes_to_copy = count.checked_mul(type_size).ok_or(TranslateError::LengthOverflow)?; // 防止溢出
 
     // 创建一个内核缓冲区来接收原始字节
     // 使用 MaybeUninit 来避免初始化 Vec<T> 的元素，因为我们将直接写入字节
@@ -994,7 +997,7 @@ pub unsafe fn copy_from_user_bytes(
     kernel_dest_buffer: &mut [u8], // 目标是内核中的 slice
     mut user_src_va: VirtAddr,
     len_to_copy: usize,
-) -> Result<(), TranslateRefError> { // 可以定义一个更通用的 CopyError
+) -> Result<(), TranslateError> { // 可以定义一个更通用的 CopyError
     if len_to_copy > kernel_dest_buffer.len() {
         // return Err(CopyError::BufferTooSmall); // 或者 panic，或调整 API
         // 对于 &mut [u8]，我们假设调用者保证了它足够大。
@@ -1020,7 +1023,7 @@ pub unsafe fn copy_from_user_bytes(
                     // 如果 len_in_page 为0但 remaining_len > 0，意味着无法读取更多数据，可能是 EFAULT。
                     // 不过 get_target_continuous_bytes_in_page 本身会处理 TranslationFailed。
                     // 这里表示一个逻辑问题或无法满足的读取。
-                    return Err(TranslateRefError::UnexpectedEofOrFault); // 需要定义这个错误
+                    return Err(TranslateError::UnexpectedEofOrFault); // 需要定义这个错误
                 }
 
                 // 确定实际要复制的字节数（不能超过目标缓冲区的剩余容量）
@@ -1030,7 +1033,7 @@ pub unsafe fn copy_from_user_bytes(
                     if cfg!(debug_assertions) {
                         panic!("copy_from_user_bytes: kernel_dest_buffer became full unexpectedly");
                     }
-                    return Err(TranslateRefError::InternalBufferOverflow); // 需要定义
+                    return Err(TranslateError::InternalBufferOverflow); // 需要定义
                 }
 
 
@@ -1064,7 +1067,7 @@ unsafe fn get_target_continuous_writable_bytes_in_page<'a>(
     token: usize,
     va_start: VirtAddr,
     max_len: usize,
-) -> Result<(&'a mut [u8], usize), TranslateRefError> {
+) -> Result<(&'a mut [u8], usize), TranslateError> {
     if max_len == 0 {
         return Ok((&mut [], 0));
     }
@@ -1120,7 +1123,7 @@ pub unsafe fn copy_to_user_bytes(
     mut user_dest_va: VirtAddr,      // 用户空间目标虚拟地址
     kernel_src_buffer: &[u8],       // 内核源数据
     // len_to_copy: usize,          // 要复制的字节数，现在由 kernel_src_buffer.len() 决定
-) -> Result<usize, TranslateRefError> { // 返回实际复制的字节数
+) -> Result<usize, TranslateError> { // 返回实际复制的字节数
     let len_to_copy = kernel_src_buffer.len();
     if len_to_copy == 0 {
         return Ok(0);
@@ -1151,7 +1154,7 @@ pub unsafe fn copy_to_user_bytes(
                     // 为了安全，如果 len_writable_in_page 是0但还有数据要写，则认为是错误。
                     if remaining_len_to_copy_from_kernel > 0 {
                         // log::warn!("copy_to_user: Got 0 writable bytes in user page {:?} but still have {} bytes to copy.", user_dest_va, remaining_len_to_copy_from_kernel);
-                        return Err(TranslateRefError::UnexpectedEofOrFault); // 或者 EFAULT
+                        return Err(TranslateError::UnexpectedEofOrFault); // 或者 EFAULT
                     } else {
                         break; // 没有剩余数据要复制了
                     }
@@ -1222,7 +1225,7 @@ pub unsafe fn copy_to_user_bytes_exact(
     token: usize,
     user_dest_va: VirtAddr,
     kernel_src_buffer: &[u8],
-) -> Result<(), TranslateRefError> {
+) -> Result<(), TranslateError> {
     let len_to_copy = kernel_src_buffer.len();
     if len_to_copy == 0 {
         return Ok(()); // 复制0字节总是成功的
@@ -1242,7 +1245,7 @@ pub unsafe fn copy_to_user_bytes_exact(
                 // 可能的原因是用户提供的缓冲区部分无效，或者 get_target_continuous_writable_bytes_in_page
                 // 返回的 len_writable_in_page 累加起来不足 len_to_copy。
                 // TranslateRefError::UnexpectedEofOrFault 比较适合这种情况。
-                Err(TranslateRefError::PartialCopy)
+                Err(TranslateError::PartialCopy)
             }
         }
         Err(e) => {
@@ -1254,7 +1257,7 @@ pub unsafe fn copy_to_user_bytes_exact(
 }
 
 
-pub unsafe fn copy_from_user_exact<T: Copy>(token: usize, user_src: *const T) -> Result<T, TranslateRefError> {
+pub unsafe fn copy_from_user_exact<T: Copy>(token: usize, user_src: *const T) -> Result<T, TranslateError> {
     let mut kernel_val = core::mem::MaybeUninit::<T>::uninit();
     copy_from_user_bytes(
         token,

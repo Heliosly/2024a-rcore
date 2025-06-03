@@ -97,3 +97,6 @@ pub const SYSCALL_MPROTECT:usize =226;
 
 pub const SYSCALL_PIPE2:usize =59; 
 pub const SYSCALL_SENDFILE: usize= 71;
+pub const SYSCALL_STATFS: usize= 43;
+pub const SYSCALL_LOG:usize =116;
+pub const SYSCALL_INFO:usize =179;

@@ -10,7 +10,7 @@ use core::mem;
 use crate::task::{current_process, ProcessControlBlock};
 use crate::fs::{FileDescriptor, PollEvents, PollFd}; // PollFdUser 是用户空间版本
 use crate::mm::page_table::{copy_from_user_array, copy_to_user_bytes_exact}; // 假设有 copy_to_user_bytes_exact
-use crate::mm::{VirtAddr, TranslateRefError};
+use crate::mm::{VirtAddr, TranslateError};
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::timer::{TimeVal, current_time};
 use crate::task::sleeplist::{sleep_until, SleepFuture};

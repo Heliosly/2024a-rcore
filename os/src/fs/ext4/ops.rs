@@ -9,7 +9,7 @@ use crate::drivers::block::disk::Disk;
 use crate::fs::inode::InodeType;
 use crate::fs::stat::Kstat;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
-use crate::fs::{as_inode_type, fix_path, OpenFlags};
+use crate::fs::{as_inode_type, fix_path, OpenFlags, Statfs};
 use crate::utils::error::{SysErrNo, SyscallRet};
 
 use alloc::ffi::CString;
@@ -73,6 +73,28 @@ impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
             .for_each(|s| println!("{}", s));
     }
     
+    fn statfs(&self) -> Result<Statfs,i32> {
+        let stat = self.inner
+        .get_statfs();
+
+
+
+        Ok(Statfs {
+            f_type: stat.f_type as i64,
+            f_bsize: stat.f_bsize as i64,
+            f_blocks: stat.f_blocks as i64,
+            f_bfree: stat.f_bfree as i64,
+            f_bavail: stat.f_bavail as i64,
+            f_files: stat.f_files as i64,
+            f_ffree: stat.f_ffree as i64,
+            f_fsid: stat.f_fsid as i64,
+            f_name_len: stat.f_name_len as i64,
+            f_frsize: stat.f_frsize as i64,
+            f_flags: stat.f_flags as i64,
+            f_spare: stat.f_spare.map(|x| x as i64), // 如果是数组
+        })
+
+    }
    
 }
 

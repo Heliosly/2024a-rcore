@@ -1,11 +1,23 @@
 
 use linux_raw_sys::general::MAX_CLOCKS;
 
-use crate::{mm::{fill_str, get_target_ref, put_data, translated_refmut}, syscall::flags::Utsname, task::{current_process, current_task, current_token, sleeplist::sleep_until}, timer::{self, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{mm::{fill_str, get_target_ref, put_data, translated_refmut}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count}, timer::{self, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+
+pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
 
 
+   current_process().memory_set.lock().await.safe_put_data(
+        info as *mut Sysinfo,
+        Sysinfo::new(get_time_ms() / 1000, 1 << 56, task_count()),
+    ).await?;
+    Ok(0)
+}
 
-
+pub fn sys_syslog(_logtype: isize, _bufp: *const u8, _len: usize) -> SyscallRet {
+    trace!("[sys_syslog] is NOT IMPLEMENTATION");
+    // 伪实现
+    Ok(0)
+}
 pub async  fn sys_uname(buf:  *mut Utsname) -> SyscallRet {
     trace!("[sys_uname],buf:{:#?}",buf);
     fn str2u8(s: &str) -> [u8; 65] {

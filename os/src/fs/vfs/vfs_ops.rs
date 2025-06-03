@@ -2,7 +2,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use lwext4_rust::{bindings::ext4_direntry, InodeTypes};
 
-use crate::{fs::{stat::Kstat, OpenFlags}, utils::error::{SysErrNo, SyscallRet}};
+use crate::{fs::{stat::Kstat, OpenFlags, Statfs}, utils::error::{SysErrNo, SyscallRet}};
 
 /// Filesystem operations.
 pub trait VfsOps: Send + Sync {
@@ -22,7 +22,7 @@ pub trait VfsOps: Send + Sync {
     }
 
     /// Get the attributes of the filesystem.
-    fn statfs(&self) -> Result<usize, i32> {
+    fn statfs(&self) -> Result<Statfs, i32> {
         unimplemented!()
     }
 

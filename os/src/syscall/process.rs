@@ -11,7 +11,7 @@ use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
     fs::{open_file,  OpenFlags, NONE_MODE},
     mm::{
-        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateRefError, VirtAddr, VirtPageNum
+        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
     },
     syscall::flags:: MmapProt,
     task::{
@@ -937,8 +937,8 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
         Err(translate_error) => {
             // log::warn!("sys_getcwd: copy_to_user_bytes failed: {:?}", translate_error);
             match translate_error {
-                TranslateRefError::TranslationFailed(_) | TranslateRefError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
-                TranslateRefError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
+                TranslateError::TranslationFailed(_) | TranslateError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
+                TranslateError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
                 _ => Err(SysErrNo::EFAULT),
             }
         }

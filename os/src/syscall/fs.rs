@@ -15,7 +15,7 @@ use alloc::vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 const NONE_MODE:u32=0;
 use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, SENDFILE_KERNEL_BUFFER_SIZE, UIO_MAXIOV};
-use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest };
+use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest, Statfs };
 use crate::mm::{ put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
@@ -366,7 +366,7 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
 
 
 // 假设的类型和常量 (你需要根据你的项目调整)
-use crate::mm::{VirtAddr, TranslateRefError, PageTable}; // 你的内存管理类型
+use crate::mm::{VirtAddr, TranslateError, PageTable}; // 你的内存管理类型
 
 // 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
 use crate::mm::page_table::{
@@ -379,7 +379,7 @@ use crate::mm::page_table::{
 // --- 1. Syscall::Lseek (lseek) ---
 // lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量
 pub async fn sys_lseek(fd: usize, offset: isize, whence: u32) -> SyscallRet {
-    // log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
+    log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
     let pcb_arc = current_process(); // 假设 current_process 是 async
     let fd_table_guard = pcb_arc.fd_table.lock().await; 
 
@@ -454,7 +454,7 @@ pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: u
 
 
 pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offset: usize) -> SyscallRet {
-    // log::trace!("sys_pwrite64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+    log::trace!("sys_pwrite64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
     if count == 0 {
         return Ok(0);
     }
@@ -860,7 +860,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
 //                     }
 //                 }
 //                 Err(translate_error) => {
-//                     // log::warn!("sys_writev: copy_from_user failed for iov: {:?}", translate_error);
+//                     log::warn!("sys_writev: copy_from_user failed for iov: {:?}", translate_error);
 //                     if total_bytes_written > 0 { return Ok(total_bytes_written); }
 //                     else { return Err(SysErrNo::EFAULT); }
 //                 }
@@ -1348,7 +1348,6 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
         "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
         fd, buf as usize, len
     );
-    let token = proc.memory_set.lock().await.token();
     let fd_table = proc.fd_table.lock().await;
     if fd >= fd_table.len()  {
         return Err(SysErrNo::EINVAL);
@@ -1364,7 +1363,8 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
     };
     let inode=file.file()?;
     let mut buffer =
-        UserBuffer::new(translated_byte_buffer(token, buf, len));
+        UserBuffer::new(proc.memory_set.lock().await.
+        safe_translated_byte_buffer( buf, len).await);
 
     let off;
     let check_off = file.lseek(0, SEEK_CUR );
@@ -1553,7 +1553,7 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
     let file_to_dup = match fd_table.table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
         Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
         None => {
-            // log::warn!("sys_dup2: oldfd({}) is not a valid open file descriptor.", oldfd);
+            log::warn!("sys_dup2: oldfd({}) is not a valid open file descriptor.", oldfd);
             return Err(SysErrNo::EBADF);
         }
     };
@@ -1590,7 +1590,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
     //    如果包含 O_CLOEXEC 之外的其他位，POSIX 要求返回 EINVAL。
     let creation_flags = OpenFlags::from_bits_truncate(flags_u32); // 获取传入的标志
     if !creation_flags.is_empty() && !creation_flags.contains(OpenFlags::FD_CLOEXEC) {
-        // log::warn!("sys_dup3: Invalid flags 0x{:x} provided. Only O_CLOEXEC is supported.", flags_u32);
+        log::warn!("sys_dup3: Invalid flags 0x{:x} provided. Only O_CLOEXEC is supported.", flags_u32);
         return Err(SysErrNo::EINVAL); // 只允许 O_CLOEXEC 或没有标志
     }
 
@@ -1600,7 +1600,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
     // 2. 校验 oldfd 和 newfd 的范围
     if oldfd < 0 || oldfd as usize >= MAX_FD_NUM ||
        newfd < 0 || newfd as usize >= MAX_FD_NUM {
-        // log::warn!("sys_dup3: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
+        log::warn!("sys_dup3: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
         return Err(SysErrNo::EBADF);
     }
 
@@ -1609,7 +1609,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
 
     // 3. 如果 oldfd 等于 newfd，dup3 要求返回 EINVAL
     if oldfd == newfd {
-        // log::warn!("sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.", oldfd, newfd);
+        log::warn!("sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.", oldfd, newfd);
         return Err(SysErrNo::EINVAL);
     }
 
@@ -1617,14 +1617,14 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
     let file_to_dup = match fd_table_guard.table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
         Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
         None => {
-            // log::warn!("sys_dup3: oldfd({}) is not a valid open file descriptor.", oldfd);
+            log::warn!("sys_dup3: oldfd({}) is not a valid open file descriptor.", oldfd);
             return Err(SysErrNo::EBADF);
         }
     };
 
     // 5. 如果 newfd 已经打开，则先关闭它
     if newfd_usize < fd_table_guard.len() && fd_table_guard.table[newfd_usize].is_some() {
-        // log::trace!("sys_dup3: Closing already open newfd({}).", newfd);
+        log::trace!("sys_dup3: Closing already open newfd({}).", newfd);
         fd_table_guard.table[newfd_usize] = None;
     }
 
@@ -1640,16 +1640,16 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
     // dup3 的 flags 参数是用来 *设置* newfd 的 FD_CLOEXEC 状态，而不是从 oldfd 继承。
     if creation_flags.contains(OpenFlags::FD_CLOEXEC) {
         new_fd_instance.flags.insert(OpenFlags::FD_CLOEXEC);
-        // log::trace!("sys_dup3: Setting FD_CLOEXEC for newfd({}).", newfd);
+        log::trace!("sys_dup3: Setting FD_CLOEXEC for newfd({}).", newfd);
     } else {
         new_fd_instance.flags.remove(OpenFlags::FD_CLOEXEC);
-        // log::trace!("sys_dup3: Clearing FD_CLOEXEC for newfd({}).", newfd);
+        log::trace!("sys_dup3: Clearing FD_CLOEXEC for newfd({}).", newfd);
     }
 
     fd_table_guard.table[newfd_usize] = Some(new_fd_instance);
 
-    // log::debug!("sys_dup3: Duplicated fd {} to {} successfully with flags 0x{:x}.",
-    //             oldfd, newfd, flags_u32);
+    log::debug!("sys_dup3: Duplicated fd {} to {} successfully with flags 0x{:x}.",
+                oldfd, newfd, flags_u32);
     Ok(newfd_usize )
 }
 
@@ -1816,7 +1816,7 @@ pub async fn sys_readlinkat(
  
     // 3. 特殊处理 /proc/self/exe 
     if path_kernel_str == "/proc/self/exe" {
-        // log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
+        log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
         // 假设 ProcessControlBlock 或其 fs_info 有 exe_path() 方法
         let exe_path_kernel_str = pcb_arc.exe.lock().await; // 假设返回 Result<String, SysErrNo>
 
@@ -1835,7 +1835,7 @@ pub async fn sys_readlinkat(
                     if copied != len_to_copy { // copy_to_user_bytes 返回实际复制的
                         // 这可能表示用户缓冲区比 len_to_copy 小，但我们已经用了 min
                         // 或者 copy_to_user_bytes 内部有其他限制/错误
-                        // log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
+                        log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
                         return Err(SysErrNo::EFAULT); // 或者返回部分成功？
                     }
                 }
@@ -1902,8 +1902,7 @@ pub async fn sys_symlinkat(
     let linkpath_kernel_str =  translated_str(token, linkpath_user_ptr );
      
 
-    // log::debug!("[sys_symlinkat] target='{}', linkpath='{}', newdirfd={}",
-    //             target_kernel_str, linkpath_kernel_str, newdirfd);
+   
 
     // 3. 解析 linkpath 以确定其父目录和新符号链接的名称
    
@@ -1922,11 +1921,11 @@ pub async fn sys_symlinkat(
         get_parent_path_and_filename(&resolved_linkpath_abs_str);
 
     if symlink_name.is_empty() || symlink_name == "/" || symlink_name == "." || symlink_name == ".." {
-        // log::warn!("[sys_symlinkat] Invalid symlink name derived: '{}'", symlink_name);
+        log::warn!("[sys_symlinkat] Invalid symlink name derived: '{}'", symlink_name);
         return Err(SysErrNo::EISDIR); // 或者 EEXIST，或 EINVAL
     }
 
-    // log::debug!("[sys_symlinkat] Parent dir: '{}', symlink name: '{}'", parent_dir_abs_path, symlink_name);
+    log::debug!("[sys_symlinkat] Parent dir: '{}', symlink name: '{}'", parent_dir_abs_path, symlink_name);
 
     // 5. 检查目标符号链接路径 `resolved_linkpath_abs_str` 是否已存在
     //    使用 lookup_inode，不 follow 符号链接，因为我们想看这个路径本身是否存在。
@@ -1937,7 +1936,7 @@ pub async fn sys_symlinkat(
     let parent_dir_inode_arc = match find_inode(&parent_dir_abs_path,OpenFlags::O_PATH|OpenFlags::O_DIRECTORY){
         Ok(inode) => inode,
         Err(e) => {
-            // log::warn!("[sys_symlinkat] Failed to lookup parent directory '{}': {:?}", parent_dir_abs_path, e);
+            log::warn!("[sys_symlinkat] Failed to lookup parent directory '{}': {:?}", parent_dir_abs_path, e);
             return Err(e); // 父目录不存在或不可访问
         }
     };
@@ -1951,7 +1950,7 @@ pub async fn sys_symlinkat(
     // write_exec_mode.insert(FaccessatMode::W_OK);
     // write_exec_mode.insert(FaccessatMode::X_OK);
     // if !parent_dir_inode_arc.access(uid, gid, write_exec_mode).await { // 假设 OSInode::access 是 async
-    //     // log::warn!("[sys_symlinkat] No write/execute permission in parent directory '{}'", parent_dir_abs_path);
+    //     log::warn!("[sys_symlinkat] No write/execute permission in parent directory '{}'", parent_dir_abs_path);
     //     return Err(SysErrNo::EACCES);
     // }
 
@@ -1995,7 +1994,7 @@ pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> Sys
 /// flags: 创建管道的标志 (例如 O_CLOEXEC, O_NONBLOCK)。
 /// 返回：成功时为 0，失败时为 -错误码。
 pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet {
-    log::trace!("sys_pipe2(pipefd_ptr: {:p}, flags: 0x{:x})", pipefd_user_ptr, flags_u32);
+    log::trace!("[sys_pipe2]:(pipefd_ptr: {:p}, flags: 0x{:x})", pipefd_user_ptr, flags_u32);
 
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
@@ -2062,8 +2061,8 @@ pub async fn sys_sendfile(
     offset_user_ptr: *mut isize,
     count: usize,
 ) -> SyscallRet {
-    // log::trace!("[sys_sendfile] out_fd: {}, in_fd: {}, offset_ptr: {:p}, count: {}",
-    //             out_fd, in_fd, offset_user_ptr, count);
+    log::trace!("[sys_sendfile] out_fd: {}, in_fd: {}, offset_ptr: {:p}, count: {}",
+                out_fd, in_fd, offset_user_ptr, count);
 
     if count == 0 {
         return Ok(0);
@@ -2074,7 +2073,7 @@ pub async fn sys_sendfile(
     // fd_table 的锁现在在 ProcessControlBlock 的 get_file 方法内部处理 (根据你的原始代码风格)
     // let fd_table_guard = proc_arc.fd_table.lock().await;
 
-    // 1. 获取并校验文件描述符 (基于你原始 sys_sendfile 的风格)
+    // 1. 获取并校验文件描述符 
 
     // 校验 fd 范围 (MAX_FD_NUM 需要定义)
     if out_fd < 0 || out_fd as usize >= MAX_FD_NUM ||
@@ -2086,8 +2085,9 @@ pub async fn sys_sendfile(
     let in_file_desc_wrapper = proc_arc.get_file(in_fd as usize).await?;
 
     // 2. 检查文件权限和类型
-    
-    proc_arc.manual_alloc_type_for_lazy(offset_user_ptr).await?;
+    if !offset_user_ptr.is_null()
+  {  proc_arc.manual_alloc_type_for_lazy(offset_user_ptr).await?;
+  }
 
     if !out_file_desc_wrapper.writable()? { 
         log::warn!("[sys_sendfile] out_fd {} is not writable", out_fd);
@@ -2098,9 +2098,9 @@ pub async fn sys_sendfile(
         return Err(SysErrNo::EBADF);
     }
 
-    if out_file_desc_wrapper.is_abs() || in_file_desc_wrapper.is_abs() {
-        return Err(SysErrNo::EINVAL); // 通常 sendfile 不用于抽象/特殊文件
-    }
+    // if out_file_desc_wrapper.is_abs() || in_file_desc_wrapper.is_abs() {
+    //     return Err(SysErrNo::EINVAL); // 通常 sendfile 不用于抽象/特殊文件
+    // }
 
 
     let infile = in_file_desc_wrapper;  // 直接使用
@@ -2261,4 +2261,12 @@ pub async fn sys_sendfile(
     }
 
     Ok(total_bytes_transferred )
+}
+
+
+
+pub async  fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
+    trace!("[sys_statfs] path:{:#?} statfs:{:#?}",_path,statfs);
+    current_process().memory_set.lock().await.safe_put_data( statfs, crate::fs::fs_stat()?).await?;
+    Ok(0)
 }

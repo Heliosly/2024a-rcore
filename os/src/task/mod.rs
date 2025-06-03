@@ -76,26 +76,9 @@ pub fn init_tls() {
 pub type ProcessRef = Arc<ProcessControlBlock>;
 pub static PID2PC: Spin<BTreeMap<usize, ProcessRef>> =Spin::new(BTreeMap::new());
 pub static TID2TC: Spin<BTreeMap<usize, TaskRef>> = Spin::new(BTreeMap::new());
-/// Suspend the current 'Running' task and run the next task in task list.
-pub fn suspend_current_and_run_next() {
-    panic!("undo");
-    // There must be an application running.
-    // let task = take_current_task().unwrap();
-
-    // // ---- access current TCB exclusively
-    // let mut task_inner = task.inner_exclusive_access();
-    // let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // // Change status to Ready
-    // task_inner.set_state(TaskStatus::Runable);
-    // drop(task_inner);
-    // // ---- release current PCB
-
-    // // push back to ready queue.
-    // add_task(task);
-    // // jump to scheduling cycle
-    // schedule(task_cx_ptr);
+pub fn task_count()->usize{
+    TID2TC.lock().len()
 }
-
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
 /// 整个进程退出：把进程里所有线程一起结束，回收所有资源
@@ -108,7 +91,7 @@ pub async fn exit_proc(exit_code: i32) {
 
     // 2. 先把所有线程都标记为 Zombie、设置退出码、清除 child_tid
     {
-        let mut tasks = process.tasks.lock().await;
+        let  tasks = process.tasks.lock().await;
         for thread in tasks.iter() {
             thread.set_state(TaskStatus::Zombie);
             thread.set_exit_code(exit_code as isize);

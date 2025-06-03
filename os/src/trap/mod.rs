@@ -253,7 +253,7 @@ pub async fn user_task_top() -> i32 {
                             }
                             else{
                                 
-                            println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                            warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
                             }
 

@@ -34,6 +34,7 @@ pub use poll::{PollFuture};
 use alloc::boxed::Box;
 pub use dirent::Dirent;
 
+pub use ext4::fs_stat;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;

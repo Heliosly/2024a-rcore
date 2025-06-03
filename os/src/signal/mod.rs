@@ -62,7 +62,7 @@ pub async fn send_signal(
 
     // 1. 找到目标进程的 PCB
     let pcb_arc = PID2PC
-        .lock() // 假设 TID2TC 映射的是 PID 到 PCB 的 Arc
+        .lock() 
         .get(&target_pid)
         .cloned()
         .ok_or(SignalError::NoSuchProcess)?;

@@ -24,7 +24,7 @@ pub struct Kstat {
 
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default,Clone, Copy)]
 pub struct Statfs {
     pub f_type: i64,       // Type of filesystem
     pub f_bsize: i64,      // Optimal transfer block size

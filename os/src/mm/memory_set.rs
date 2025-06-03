@@ -6,7 +6,7 @@ use crate::task::aux::{Aux, AuxType};
 use crate::utils::error::{GeneralRet, SysErrNo, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
-use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateRefError, VirtAddr, VirtPageNum};
+use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
 use alloc::collections::btree_map::BTreeMap;
@@ -681,7 +681,7 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
 
                     }
                 } else {
-                    error!("[manual_alloc_range_for_lazy]err:{:#?}",e);
+                    warn!("[manual_alloc_range_for_lazy]err:{:#?}",e);
                     return Err(e);
                 }
             },
@@ -895,7 +895,7 @@ where
 /// - The lifetime of the returned reference is tied to the underlying physical mapping.
 ///   Using `'static` here is very strong and implies the mapping is permanent.
 ///   Consider a shorter, more appropriate lifetime if possible.
-pub async  fn safe_get_target_ref<'a, T>(&mut self, ptr: *const T) -> Result<&'a T, TranslateRefError> 
+pub async  fn safe_get_target_ref<'a, T>(&mut self, ptr: *const T) -> Result<&'a T, TranslateError> 
 
 where
     T: 'a,
@@ -908,19 +908,19 @@ where
         // However, we still need to ensure the concept of "location" is valid.
         // Translating the VA is a good check.
         // We can return a well-aligned dangling pointer cast to &T.
-        self.safe_translate_va(va).await.ok_or(TranslateRefError::TranslationFailed(va))?;
+        self.safe_translate_va(va).await.ok_or(TranslateError::TranslationFailed(va))?;
         // SAFETY: For ZSTs, creating a reference from a dangling but aligned pointer is allowed.
         // return Ok(unsafe { &*(core::ptr::null::<T>() as *const T) }); // Or use ptr::NonNull::dangling()
         return Ok(unsafe { &*core::ptr::NonNull::dangling().as_ptr() });
     }
 
-    let start_pa = self.safe_translate_va(va).await.ok_or(TranslateRefError::TranslationFailed(va))?;
+    let start_pa = self.safe_translate_va(va).await.ok_or(TranslateError::TranslationFailed(va))?;
 
     // Check for cross-page boundary for the physical address
     // (va.as_usize() / PAGE_SIZE) != ((va.as_usize() + size - 1) / PAGE_SIZE)
     // Better: start_pa.floor() != (start_pa + size - 1).floor()
     if size > 0 && start_pa.floor() != (start_pa + (size - 1)).floor() {
-        return Err(TranslateRefError::DataCrossesPageBoundary);
+        return Err(TranslateError::DataCrossesPageBoundary);
     }
 
     // TODO: Add permission checks (e.g., readability) from page table entry if possible @Heliosly.

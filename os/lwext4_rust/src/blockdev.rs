@@ -32,6 +32,22 @@ pub struct Ext4BlockWrapper<K: KernelDevOp> {
     mount_point: [u8; 32],
     pd: core::marker::PhantomData<K>,
 }
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct Statfs {
+    pub f_type: i64,       // Type of filesystem
+    pub f_bsize: i64,      // Optimal transfer block size
+    pub f_blocks: i64,     // Total data blocks in filesystem
+    pub f_bfree: i64,      // Free blocks in filesystem
+    pub f_bavail: i64,     // Free blocks available to unprivileged user
+    pub f_files: i64,      // Total inodes in filesystem
+    pub f_ffree: i64,      // Free inodes in filesystem
+    pub f_fsid: i64,       // Filesystem ID
+    pub f_name_len: i64,   // Maximum length of filenames
+    pub f_frsize: i64,     // Fragment size
+    pub f_flags: i64,      // Mount flags of filesystem
+    pub f_spare: [i64; 4], // Padding bytes
+}
 
 impl<K: KernelDevOp> Ext4BlockWrapper<K> {
     pub fn new(block_dev: K::DevType) -> Result<Self, i32> {
@@ -375,7 +391,46 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
             ext4_dmask_set(DEBUG_ALL);
         }
     }
+    pub fn get_statfs(&self) -> Statfs {
+        // ====== 一、调用 C 接口拿到 ext4_mount_stats ======
+        // 1. 创建一个马上被填充的 zeroed ext4_mount_stats
+        let mut raw: ext4_mount_stats = unsafe { core::mem::zeroed() };
 
+        // 2. 把 Rust 的 String 转成 *const c_char
+        //    注意：as_ptr() 拿到的是 *const u8，需要转为 *const c_char
+        let c_mountpoint = self.mount_point.as_ptr() as *const c_char;
+
+        // 3. 不安全地调用 C 函数，填充 raw
+        unsafe {
+            ext4_mount_point_stats(c_mountpoint, &mut raw);
+        }
+
+        // （可选）如果你想打印 volume_name，可以这样拿到
+        // let vol_name_cstr = unsafe { CStr::from_ptr(raw.volume_name.as_ptr()) };
+        // let vol_name_str = vol_name_cstr.to_string_lossy();
+
+        // ====== 二、根据 ext4_mount_stats 填充 Statfs ======
+        // ext4 的魔数常量
+        const EXT4_SUPER_MAGIC: i64 = 0xEF53;
+
+        Statfs {
+            f_type:      EXT4_SUPER_MAGIC as i64,           // ext4 的魔数
+            f_bsize:     raw.block_size as i64,             // 每块大小
+            f_blocks:    raw.blocks_count as i64,           // 总共多少块
+            f_bfree:     raw.free_blocks_count as i64,      // 空闲块数
+            f_bavail:    raw.free_blocks_count as i64,      // 对非特权用户可用的空闲块（简化）
+            f_files:     raw.inodes_count as i64,           // 总 inode 数
+            f_ffree:     raw.free_inodes_count as i64,      // 空闲 inode 数
+            f_fsid:      0,                                 // 暂时不填 FS ID
+            f_name_len:  255,                               // ext4 最大文件名长度
+            f_frsize:    raw.block_size as i64,             // fragment size，这里和 block_size 一致
+            f_flags:     0,                                 // 暂不填 mount flag
+            f_spare:     [0, 0, 0, 0],                      // 保留位都置 0
+        }
+    }
+
+
+    
     pub fn print_lwext4_mp_stats(&self) {
         //struct ext4_mount_stats stats;
         let mut stats: ext4_mount_stats = unsafe { core::mem::zeroed() };
