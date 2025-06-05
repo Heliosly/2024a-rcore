@@ -9,6 +9,8 @@ os/last-*
 os/Cargo.lock
 os/.gdb_history
 os/target
+kernel-rv
+os/sdcard*
 easy-fs/Cargo.lock
 easy-fs/target/*
 easy-fs-fuse/Cargo.lock
@@ -19,5 +21,6 @@ pushall.sh
 os/sdcard-rv.img
 os/fs.img
 os/mnt
+os/build
 user/
 ci-user/
