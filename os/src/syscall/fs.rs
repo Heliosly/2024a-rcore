@@ -1826,7 +1826,7 @@ pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {
     let open_flags = OpenFlags::O_CREATE | OpenFlags::O_WRONLY | OpenFlags::O_TRUNC;
     let file_class_instance = open_file(&abs_path, open_flags, mode)?;
     let new_fd = proc.fd_table.lock().await.alloc_fd();
-    proc.fd_table.lock().await.0[new_fd] = Some(file_class_instance);
+    proc.fd_table.lock().await.table[new_fd] = Some(file_class_instance);
     Ok(new_fd)
 }
 
@@ -1860,8 +1860,8 @@ pub async fn sys_rmdir(path_ptr: *const u8) -> SyscallRet {
     }
     inode.unlink(&abs_path)?;
     remove_inode_idx(&abs_path);
-
-
+    Ok(0)
+}
 
 
 
