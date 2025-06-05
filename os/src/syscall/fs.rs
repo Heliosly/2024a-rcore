@@ -1508,3 +1508,61 @@ pub async fn sys_renameat(
 
     Ok(0)
 }
+
+pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {
+    trace!("[sys_creat] path_ptr: {:p}, mode: {}", path_ptr, mode);
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+    let path = translated_str(token, path_ptr);
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    if path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    let abs_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        get_abs_path(&proc.cwd.lock().await, &path)
+    };
+    let open_flags = OpenFlags::O_CREATE | OpenFlags::O_WRONLY | OpenFlags::O_TRUNC;
+    let file_class_instance = open_file(&abs_path, open_flags, mode)?;
+    let new_fd = proc.fd_table.lock().await.alloc_fd();
+    proc.fd_table.lock().await.0[new_fd] = Some(file_class_instance);
+    Ok(new_fd)
+}
+
+pub async fn sys_rmdir(path_ptr: *const u8) -> SyscallRet {
+    trace!("[sys_rmdir] path_ptr: {:p}", path_ptr);
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+    let path = translated_str(token, path_ptr);
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    if path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    let abs_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        get_abs_path(&proc.cwd.lock().await, &path)
+    };
+    let inode = find_inode(&abs_path, OpenFlags::O_DIRECTORY)?;
+    if !inode.is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
+    let (entries, _) = inode.read_dentry(0, 1)?;
+    if !entries.is_empty() {
+        return Err(SysErrNo::ENOTEMPTY);
+    }
+    if proc.fd_table.lock().await.find_fd(&abs_path).is_some() {
+        return Err(SysErrNo::EBUSY);
+    }
+    inode.unlink(&abs_path)?;
+    remove_inode_idx(&abs_path);
+
+    Ok(0)
+}
