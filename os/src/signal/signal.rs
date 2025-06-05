@@ -124,6 +124,8 @@ pub enum Signal {
     SIGSYS = 31, // Also SIGUNUSED
                  // Real-time signals could be added here (SIGRTMIN to SIGRTMAX)
                  // For simplicity, we'll stick to standard signals for now.
+                 SIGRTMIN = 32,
+SIGRTMAX = 64,
 }
 
 impl Signal {
@@ -135,7 +137,7 @@ impl Signal {
         // SAFETY: 假设 Signal 枚举值与 usize 对应且在范围内
         // 这种转换在 repr(usize) 和值正确时是安全的。
         // 更安全的方式是使用 match 语句，但如果信号很多会很长。
-        if signum <= 31 {
+        if signum <= 64 {
             // 假设我们只定义了到 31
             Some(unsafe { mem::transmute(signum) })
         } else {

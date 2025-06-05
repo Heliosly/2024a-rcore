@@ -5,7 +5,8 @@ use core::task::Waker;
 use alloc::boxed::Box;
 use async_trait::async_trait;
 
-use super::{File, PollEvents};
+use super::stat::StMode;
+use super::{File, Kstat, PollEvents};
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task:: yield_now ;
@@ -66,6 +67,14 @@ impl File for Stdin {
        
         return revents;
     }
+
+    fn fstat(&self) -> Kstat {
+        Kstat {
+            st_mode: StMode::FCHR.bits(),
+            st_nlink: 1,
+            ..Kstat::default()
+        }
+    }
  
 }
 #[async_trait]
@@ -91,5 +100,12 @@ impl File for Stdout {
             }
             Ok(buf.len())
      
+    }
+    fn fstat(&self) -> Kstat {
+        Kstat {
+            st_mode: StMode::FCHR.bits(),
+            st_nlink: 1,
+            ..Kstat::default()
+        }
     }
 }

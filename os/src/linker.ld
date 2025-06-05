@@ -35,7 +35,20 @@ SECTIONS
         *(.data .data.*)
         *(.sdata .sdata.*)
     }
+    .tdata : ALIGN(0x10) {
+        _stdata = .;
+        *(.tdata .tdata.*)
+        _etdata = .;
+    }
 
+    .tbss : ALIGN(0x10) {
+        _stbss = .;
+        *(.tbss .tbss.*)
+        *(.tcommon)
+        _etbss = .;
+    }
+
+    . = ALIGN(4K);
     . = ALIGN(4K);
     spercpu = .;
     .percpu : {

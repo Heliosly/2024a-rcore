@@ -18,14 +18,14 @@ mod context;
 mod ucontext;
 use crate::config::PAGE_SIZE;
 use crate::fs::File;
-use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, UserBuffer, VirtAddr};
+use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current_and_run_next,
-    pick_next_task, run_task2, task_tick, CurrentTask,
+    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
+use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -58,6 +58,9 @@ extern "C" {
     fn trap_vector_base();
 }
 
+pub fn set_sum(){
+    unsafe { sstatus::set_sum() };
+}
 fn set_trap_entry() {
     unsafe {
         stvec::write(trap_vector_base as usize, TrapMode::Direct);
@@ -192,6 +195,7 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
 
 
 
+
 ///a future to handle user trap
 /// IMPO
 
@@ -223,19 +227,40 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    debug!("[user_task_top]sys_call start syscall id = {}", syscall_id);
+                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={}", syscall_id,curr.id(),curr.get_process().get_pid());
+                    
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
                     ];
 
                     tf.sepc += 4;
+
+                    curr.update_utime();
                     let result = syscall(syscall_id, args).await;
 
+                    curr.update_stime();
                     let result = match result {
                         Ok(res) => res,
                         Err(err) => {
-                            debug!("[Syscall]Err:{}", err.str());
+
+                            if err==SysErrNo::EAGAIN {
+                               tf.sepc-=4; 
+                               tf.regs.a0
+                            }
+                            else if  err==SysErrNo::ECHILD{
+                               debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+
+                                -(err as isize) as usize
+                            }
+                            else{
+                                bpoint();
+                            warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
+                            
+                            }
+                              
+                            // debug!("[Syscall]Err:{}", err.str());
+
                         }
                     };
                     trace!("[user_task_top]sys_call end result:{}", result);
@@ -262,8 +287,8 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
-                   if !curr.get_process().memory_set.lock().await.  handle_page_fault( scause.cause(), stval).await{
-                       exit_current_and_run_next(-2).await; log_page_fault_error(scause, stval, sepc)
+                   if curr.get_process().memory_set.lock().await.  handle_page_fault(  stval).await.is_err(){
+                       exit_current(-2).await; log_page_fault_error(scause, stval, sepc)
                         }
                 
                 }
@@ -279,18 +304,36 @@ pub async fn user_task_top() -> i32 {
 
                     // page fault exit code
 
-                    exit_current_and_run_next(-2).await;
+                    exit_current(-2).await;
                 }
                 Trap::Exception(Exception::IllegalInstruction) => {
                     println!("[kernel] IllegalInstruction in application, kernel killed it.");
                     // illegal instruction exit code
-                    exit_current_and_run_next(-3).await;
+                    exit_current(-3).await;
                 }
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();
 
                     tf.trap_status = TrapStatus::Done;
                     on_timer_tick();
+                    if let Some(curr) = current_task_may_uninit() {
+                        // if task is already exited or blocking,
+                        // no need preempt, they are rescheduling
+                        if curr.need_resched()
+                            && curr.can_preempt()
+                            && !curr.is_exited()
+                            && !curr.is_blocking()
+                        {
+                            trace!(
+                                "[user_task_top]current {} is to be preempted in user mode, allow {}",
+                                curr.id(),
+                                curr.can_preempt()
+                            );
+                            curr.set_need_resched(false);
+                            tf.trap_status = TrapStatus::Blocked;
+                            yield_now().await;
+                        }
+                    }
                 }
                 _ => {
                     panic!(
@@ -334,6 +377,9 @@ pub async fn user_task_top() -> i32 {
 }
 pub fn on_timer_tick() {
     if let Some(curr) = current_task_may_uninit() {
-        if task_tick(curr.as_task_ref()) {}
+        if task_tick(curr.as_task_ref()) {
+            curr.set_need_resched(true);
+        }
+
     }
 }

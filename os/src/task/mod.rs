@@ -15,6 +15,7 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
+mod tls;
 pub mod aux;
 mod flags;
 mod current;
@@ -52,6 +53,7 @@ pub use task::ProcessControlBlock;
 pub use yieldfut::yield_now;
 pub use waker::custom_noop_waker;
 
+pub use task::RobustList;
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
@@ -60,40 +62,92 @@ use alloc::sync::Arc;
 
 use spin::mutex::Mutex as Spin;
 // pub use manager::{fetch_task, TaskManager,pick_next_task};
+#[inline]
+pub unsafe fn write_thread_pointer(tp: usize) {
+    core::arch::asm!("mv tp, {}", in(reg) tp)
+}
 
 // pub use manager::add_task;
-
+pub fn init_tls() {
+    let main_tls = tls::TlsArea::alloc();
+    unsafe {write_thread_pointer(main_tls.tls_ptr() as usize) };
+    core::mem::forget(main_tls);
+}
 pub type ProcessRef = Arc<ProcessControlBlock>;
 pub static PID2PC: Spin<BTreeMap<usize, ProcessRef>> =Spin::new(BTreeMap::new());
 pub static TID2TC: Spin<BTreeMap<usize, TaskRef>> = Spin::new(BTreeMap::new());
-/// Suspend the current 'Running' task and run the next task in task list.
-pub fn suspend_current_and_run_next() {
-    panic!("undo");
-    // There must be an application running.
-    // let task = take_current_task().unwrap();
-
-    // // ---- access current TCB exclusively
-    // let mut task_inner = task.inner_exclusive_access();
-    // let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // // Change status to Ready
-    // task_inner.set_state(TaskStatus::Runable);
-    // drop(task_inner);
-    // // ---- release current PCB
-
-    // // push back to ready queue.
-    // add_task(task);
-    // // jump to scheduling cycle
-    // schedule(task_cx_ptr);
+pub fn task_count()->usize{
+    TID2TC.lock().len()
 }
-
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
+/// 整个进程退出：把进程里所有线程一起结束，回收所有资源
+pub async fn exit_proc(exit_code: i32) {
+    // 1. 拿到当前进程的 PCB
+    let process = current_process();
+    let pid = process.get_pid();
 
-/// Exit the current 'Running' task and run the next task in task list.
-pub async  fn exit_current_and_run_next(exit_code: i32) {
+    debug!("[kernel] exit_proc pid {}, exit_code: {}", pid, exit_code);
+
+    // 2. 先把所有线程都标记为 Zombie、设置退出码、清除 child_tid
+    {
+        let  tasks = process.tasks.lock().await;
+        for thread in tasks.iter() {
+            thread.set_state(TaskStatus::Zombie);
+            thread.set_exit_code(exit_code as isize);
+            let _ = thread.clear_child_tid(); 
+            // TODO(Heliosly)“唤醒”线程
+        }
+    }
+
+    // 3. 如果有子进程，要把它们 reparent 给 init
+    if pid != 1 {
+        let mut children = process.children.lock().await;
+        for child in children.iter() {
+            child.set_parent(INITPROC.pid.0);
+            INITPROC.children.lock().await.push(child.clone());
+        }
+        children.clear();
+    }
+
+    // 4. 回收“进程级”资源：地址空间、FD 表、信号等
+    {
+        // 回收地址空间的所有用户页
+        process.memory_set.lock().await.recycle_data_pages();
+        // 关闭并清空文件
+        process.fd_table.lock().await.table.clear();
+        // （如果有其他全局结构，比如信号队列、管道、TLS 等，也要在这里清理）
+    }
+
+    // 5. 从全局 TID2TC、tasks 列表里把所有线程移除
+    {
+        let mut tasks = process.tasks.lock().await;
+        for thread in tasks.iter() {
+            let tid = thread.id.as_usize();
+            TID2TC.lock().remove(&tid);
+            // drop(thread) 由 Rust 智能指针自动处理
+        }
+        tasks.clear();
+    }
+
+    // 6. 从全局进程表里把这个进程删掉
+    PID2PC.lock().remove(&pid);
+
+    // 7. 通知父进程：发 SIGCHLD 或者通过 IPC 让父进程 wakeup 执行 wait TODO(HELIOSLY)
+    //   
+    // let ppid = process.get_parent();
+    // if let Some(parent_proc) = PID2PC.lock().get(&ppid) {
+    //     parent_proc.notify_child_exited(pid, exit_code);
+    // }
+
+    
+}
+///Exit the current 'Running' task and run the next task in task list. 
+/// 并不清理资源等waitpid回收
+pub async  fn exit_current(exit_code: i32) {
     // take from Processor
     let task = current_task();
-
+    
     let process = current_process();
 
     debug!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
@@ -102,6 +156,7 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     task.set_state(TaskStatus::Zombie);
     // Record exit code
     task.set_exit_code(exit_code as isize);
+    task.clear_child_tid().unwrap();
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {
@@ -125,10 +180,11 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     // deallocate user space
     process.memory_set.lock().await.recycle_data_pages();
     // drop file descriptors
-    process.fd_table.lock().await.0.clear();
+    process.fd_table.lock().await.table.clear();
 
     } 
     TID2TC.lock().remove(&tid);
+    
     // 从进程中删除当前线程
     let mut tasks = process.tasks.lock().await;
     let len = tasks.len();
@@ -140,20 +196,24 @@ pub async  fn exit_current_and_run_next(exit_code: i32) {
     }
 
     
-
+    
     // drop task manually to maintain rc correctly
     drop(task); 
 }
 
 // static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
-// static INITPROC_STR: &str =          "musl/basic/times";
- static INITPROC_STR: &str =          "musl/busybox";
+// static INITPROC_STR: &str =          "/glibc/basic/brk";
+ static INITPROC_STR: &str =          "/glibc/busybox";
 
+//  static INITPROC_STR: &str =          "/tls";
+
+//  static INITPROC_STR: &str =          "/glibc/busybox";
 //  static INITPROC_STR: &str =          "cosmmap_clone";
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
-static  CWD:&str = "/musl";
+static  CWD:&str = "/glibc";
+// static  PARAMETERS :&str= "/glibc/basic/run-all.sh";
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
@@ -168,7 +228,7 @@ static  CWD:&str = "/musl";
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh  ",INITPROC_STR)
+            format!("{} sh  /glibc/busybox_testcode.sh ",INITPROC_STR)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(
@@ -176,6 +236,7 @@ static  CWD:&str = "/musl";
             CWD.to_string(),
             &binding,
             &mut envs,
+            INITPROC_STR.to_string(),
         );
     
         // . Pin 到堆上

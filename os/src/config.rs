@@ -20,7 +20,7 @@ pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
 pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16;
 /// kernel heap size
-pub const KERNEL_HEAP_SIZE: usize = 0x100_0000;
+pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
 ///于allocuserres中于分配页数
 pub const PRE_ALLOC_PAGES: usize = 8;
 /// page size : 4KB
@@ -70,7 +70,7 @@ pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
 pub const USER_HEAP_SIZE: usize = 0x40000;
 
 /// user app's stack size
-pub const USER_STACK_SIZE: usize = 4096 * 32;
+pub const USER_STACK_SIZE: usize = 4096 * 16*16*10;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data
@@ -84,3 +84,6 @@ pub const MAX_FD_NUM:usize=1024;
 
 // Maximum path length
 pub const PATH_MAX: usize = 4096;
+
+// 定义一个内核中转缓冲区的合理大小
+pub const SENDFILE_KERNEL_BUFFER_SIZE: usize = 4*PAGE_SIZE;

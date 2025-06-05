@@ -19,14 +19,7 @@
 /// `load_trap_for_signal` 函数用于恢复被信号处理函数打断前的 TrapFrame，准备返回用户态。
 /// `perform_default_action_for_process` 函数用于执行信号的默认动作。
 ///
-/// ## 系统调用
-///
-/// `sys_sigaction` 函数实现了 `sigaction` 系统调用，用于设置信号处理动作。
-/// `sys_sigprocmask` 函数实现了 `sigprocmask` 系统调用，用于设置信号掩码。
-/// `sys_kill` 函数实现了 `kill` 系统调用，用于向进程或线程发送信号。
-/// `sys_sigreturn` 函数实现了 `sigreturn` 系统调用，用于从信号处理函数返回。
-/// `sys_pause` 函数实现了 `pause` 系统调用，用于暂停进程的执行，直到收到信号。
-///
+
 /// ## 错误处理
 ///
 /// `SignalError` 枚举定义了信号处理过程中可能发生的错误，如无效信号、没有找到进程或线程等。
@@ -45,6 +38,7 @@ use crate::mm::put_data;
 use crate::task::current_task;
 use crate::task::{ProcessControlBlock, ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
 use crate::trap::{TrapContext, UContext};
+use core::future;
 use crate::utils::error::SysErrNo; // 假设 current_task() 返回 Arc<Task>
 
 // 通常信号编号从 1 开始。0 不是有效信号。
@@ -68,7 +62,7 @@ pub async fn send_signal(
 
     // 1. 找到目标进程的 PCB
     let pcb_arc = PID2PC
-        .lock() // 假设 TID2TC 映射的是 PID 到 PCB 的 Arc
+        .lock() 
         .get(&target_pid)
         .cloned()
         .ok_or(SignalError::NoSuchProcess)?;
@@ -227,6 +221,7 @@ pub async  fn handle_pending_signals() {
         }
 
         if let Some(sig) = signal_to_deliver {
+            debug!("[handle_pending_signals],signal to deliver sig:{:#?}",sig);
             let action = process_state.sigactions[sig as usize].clone(); // 动作是进程共享的
 
             // 从相应的挂起队列中移除
@@ -336,7 +331,7 @@ pub async  fn handle_pending_signals() {
                     if action.flags.contains(SigActionFlags::SA_SIGINFO) {
                         // current_task.set_siginfo(true);
                         task_state.sig_info = true;
-                        let sp_base = (((sp - core::mem::size_of::<SigInfo>()) & !0xf)
+                        let sp_base: usize = (((sp - core::mem::size_of::<SigInfo>()) & !0xf)
                             - core::mem::size_of::<UContext>())
                             & !0xf;
 

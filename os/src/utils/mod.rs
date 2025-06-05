@@ -34,6 +34,12 @@ pub fn backtrace() {
         }
     }
 }
+
+#[inline(always)]
+pub const fn align_up(value: usize, align: usize) -> usize {
+    assert!(align.is_power_of_two());
+    (value + align - 1) & !(align - 1)
+}
 /// 上对齐到页
 pub fn page_round_up(v: usize) -> usize {
     if v % PAGE_SIZE == 0 {
@@ -140,11 +146,9 @@ pub fn normalize_and_join_path(
 
 pub fn bpoint()->i32{
     let mut _a=1;
-    _a +=1;
     return _a;
 }
-pub fn bpoint1(_a: *const FrameTracker) {
-    println!("123\n");
-    // 这里可以直接操作 *a
+pub fn bpoint1(a:usize) {
+   
    
 }

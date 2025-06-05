@@ -18,5 +18,6 @@ pushall.sh
 *.bak
 os/sdcard-rv.img
 os/fs.img
+os/mnt
 user/
 ci-user/

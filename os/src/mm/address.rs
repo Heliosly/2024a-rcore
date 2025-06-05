@@ -80,7 +80,8 @@ impl From<KernelAddr> for PhysPageNum {
 }
 impl From<PhysAddr> for KernelAddr {
     fn from(pa: PhysAddr) -> Self {
-        Self(pa.0 + (KERNEL_DIRECT_OFFSET ))
+     assert!(pa.0!=0);
+     Self(pa.0 + (KERNEL_DIRECT_OFFSET ))
     }
 }
 
@@ -260,6 +261,10 @@ impl PhysAddr {
     pub fn get_ptr<T>(&self)->*const T{
         KernelAddr::from(*self).get_ptr()
     }
+    pub fn get_mut_ptr<T>(&self) -> *mut T {
+        
+        KernelAddr::from(*self).get_mut_ptr()
+    }
 }
 
 /// impl KernelAddr
@@ -277,6 +282,9 @@ impl KernelAddr {
     pub fn get_mut<T>(&self) -> &'static mut T {
         unsafe { (self.0 as *mut T).as_mut().unwrap() }
     }
+    pub fn get_mut_ptr<T>(&self)->*mut T {
+        self.0 as *mut T
+    }
 }
 impl PhysPageNum {
     /// Get the reference of page table(array of ptes)
@@ -289,6 +297,7 @@ impl PhysPageNum {
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
+        
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut u8, 4096) }
     }
     /// Get the mutable reference of physical address
@@ -346,6 +355,10 @@ where
     }
     pub fn empty(&self)->bool{
         self.l==self.r
+    }
+    pub fn set_end(&mut self,val:T){
+        assert!(self.get_start()<=val);
+        self.r=val;
     }
  
 }

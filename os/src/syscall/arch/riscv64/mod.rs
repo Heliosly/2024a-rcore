@@ -25,10 +25,9 @@ pub const SYSCALL_TKILL: usize = 130;
 pub const SYSCALL_TGKILL: usize = 131;
 /// setpriority syscall
 pub const SYSCALL_SET_PRIORITY: usize = 140;
-/// gettime syscall
-pub const SYSCALL_GET_TIME: usize = 169;
 /// getpid syscall
 pub const SYSCALL_GETPID: usize = 172;
+pub const SYSCALL_CLOCK_NANOSLEEP :usize =115;
 /// sbrk syscall
 pub const SYSCALL_BRK: usize = 214;
 /// munmap syscall
@@ -54,6 +53,8 @@ pub const SYSCALL_GETUID :usize = 174;
 ///exit group
 pub const SYSCALL_EXITGROUP :usize=  94;
 ///
+pub const SYSCALL_TIMES : usize =153;
+pub const SYSCALL_GETTIMEOFDAY :usize =169;
 pub const SYSCALL_LSEEK: usize = 62;
 pub const SYSCALL_READV: usize = 65;
 pub const SYSCALL_WRITEV: usize = 66;
@@ -89,6 +90,19 @@ pub const SYSCALL_GETROBUSTLIST :usize =100;
 pub const SYSCALL_DUP2:usize=23;
 
 pub const SYSCALL_DUP3:usize=24;
-
+pub const SYSCALL_PRLIMIT64 :usize =261;
 pub const SYSCALL_MOUNT:usize=40;
 pub const SYSCALL_UMOUNT2:usize=39;
+pub const SYSCALL_SYMLINKAT:usize =36;
+pub const SYSCALL_READLINKAT:usize =78;
+pub const SYSCALL_GETRANDOM:usize =278; 
+
+pub const SYSCALL_MPROTECT:usize =226; 
+
+pub const SYSCALL_PIPE2:usize =59; 
+pub const SYSCALL_SENDFILE: usize= 71;
+pub const SYSCALL_STATFS: usize= 43;
+pub const SYSCALL_LOG:usize =116;
+pub const SYSCALL_INFO:usize =179;
+
+pub const SYSCALL_UTIMENSAT:usize =88;

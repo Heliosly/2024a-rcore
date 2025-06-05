@@ -7,9 +7,9 @@ mod ext4;
 mod vfs;
 mod stat;
 mod fd;
-mod pipe;
-mod dev;
+pub mod pipe;
 mod poll;
+pub mod dev;
 pub mod mount;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
@@ -34,6 +34,7 @@ pub use poll::{PollFuture};
 use alloc::boxed::Box;
 pub use dirent::Dirent;
 
+pub use ext4::fs_stat;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
@@ -234,8 +235,17 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescri
 pub fn is_dynamic_link_file(path: &str) -> bool {
     path.ends_with(".so") || path.contains(".so.")
 }
-pub fn find_inode(abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
+///只能找File文件
+pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOps>, SysErrNo>{
       trace!("[find_inode] abs_path={}", abs_path);
+      // 如果是动态链接文件,转换路径
+      //判断是否是设备文件
+    
+    if is_dynamic_link_file(abs_path) {
+     
+        abs_path = map_dynamic_link_file(abs_path);
+    }
+
       root_inode().find(abs_path, flags, 0)
 }
 ///open file
@@ -328,7 +338,7 @@ pub fn print_inner() {
 
 pub fn map_dynamic_link_file( path: &str) -> &str {
 
-            log::info!("[map_dynamic] path={}",path);
+            log::warn!("[map_dynamic] path={}",path);
     if !path.starts_with('/') { panic!("worth path") };
     if !DYNAMIC_PATH.contains(path) {
        
@@ -357,6 +367,8 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
          "/glibc/lib/libc.so", 
          "/glibc/lib/tls_get_new-dtv_dso.so", 
          "/glibc/lib/ld-linux-riscv64-lp64.so.1",
+    
+         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
           "/glibc/lib/tls_align_dso.so", 
           "/glibc/lib/tls_init_dso.so"
 

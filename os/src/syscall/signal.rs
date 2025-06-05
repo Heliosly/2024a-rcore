@@ -9,7 +9,9 @@
 //     Ok(0)
 // }
 
-use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, TID2TC}, utils::error::{SysErrNo, SyscallRet}};
+use alloc::vec::Vec;
+
+use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, utils::error::{SysErrNo, SyscallRet}};
 
 // pub fn sys_rt_sigaction(
 //     signo: usize,
@@ -45,7 +47,7 @@ pub async fn sys_sigaction(
     oldact_user_ptr: *mut SigAction,
 ) -> SyscallRet {
 
-    trace!("[sys_sigaction]");
+    trace!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -62,7 +64,7 @@ pub async fn sys_sigaction(
     // 如果 oldact 非空，保存旧的动作
     if !oldact_user_ptr.is_null() {
        
-        put_data(token, oldact_user_ptr,  shared_state.sigactions[sig as usize])? ;
+       process.memory_set.lock().await .safe_put_data( oldact_user_ptr,  shared_state.sigactions[sig as usize]).await? ;
           
     }
 
@@ -94,7 +96,7 @@ pub async  fn sys_sigprocmask(
     let old_mask = signal_state.sigmask;
 
     if !set_user_ptr.is_null() {
-        let set = *get_target_ref(token, set_user_ptr)?;
+        let set = * current_process().memory_set.lock().await.safe_get_target_ref( set_user_ptr).await?;
 
         let enum_how = match SigMaskHow::try_from(how) {
             Ok(how) => how,
@@ -140,17 +142,65 @@ pub async  fn sys_sigprocmask(
     drop(signal_state); // 先释放锁，再复制到用户空间
 
     if !oldset_user_ptr.is_null() {
-        *translated_refmut(token, oldset_user_ptr)?=old_mask;
+        *current_process().memory_set.lock().await.
+        safe_translated_refmut( oldset_user_ptr).await?=old_mask;
         
     }
 
     Ok(0) // 成功
 }
+pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
+    trace!("[sys_kill] target_pid: {}, signum: {}", target_pid, signum_usize);
 
+    // 步骤1：验证信号有效性（复用 tkill 的逻辑）
+    let sig = match Signal::from_usize(signum_usize) {
+        Some(s) => s,
+        None => return Err(SysErrNo::EINVAL), // 无效信号
+    };
+
+    // 步骤2：处理信号0（检查进程是否存在）
+    if signum_usize == 0 {
+        let has_thread = PID2PC.lock().contains_key(&target_pid);
+        return if has_thread {
+            Ok(0) // 进程存在（至少有一个线程）
+        } else {
+            Err(SysErrNo::ESRCH) // 进程不存在
+        };
+    };
+
+    // 步骤3：找到目标 PID 下的所有活跃线程（TID）
+     let target_tids: Vec<usize> = PID2PC.lock().get(&target_pid)
+    .map_or(Err(SysErrNo::ESRCH), |s|Ok(s))?.tasks.lock().await
+    .iter()
+    .map(|tcb| tcb.id()) // 提取每个 TCB 的 TID
+    .collect() ;
+
+    if target_tids.is_empty() {
+        return Err(SysErrNo::ESRCH); // 进程无活跃线程（视为进程不存在）
+    }
+
+    // 步骤4：权限检查（TODO：根据实际需求补充，例如检查当前任务是否有权限向目标进程发信号）
+    // if !check_permission(current_task.pid, target_pid) {
+    //     return Err(SysErrNo::EPERM);
+    // }
+
+    // 步骤5：向每个线程发送信号（复用 tkill 的核心逻辑）
+    for tid in target_tids {
+        // 直接复用 tkill 中“根据 TID 查找任务并发送信号”的逻辑
+        let result = sys_tkill(tid, signum_usize).await; 
+        
+        // 可选：记录失败的线程（根据需求决定是否忽略部分失败）
+        if let Err(e) = result {
+            warn!("Failed to send signal to tid {} (pid {}): {:?}", tid, target_pid, e);
+        }
+    }
+
+    Ok(0) // 信号已尝试发送（即使部分线程失败，仍返回成功）
+}
 // int kill(pid_t pid, int sig); (或 tkill/tgkill)
 pub async  fn sys_tkill(target_tid: usize, signum_usize: usize) -> SyscallRet {
     
-    trace!("[sys_tkill]");
+    trace!("[sys_tkill] target_tid: {}, signum: {}", target_tid, signum_usize);
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号

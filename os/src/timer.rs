@@ -75,12 +75,70 @@ impl Add for TimeVal {
         TimeVal::normalize(sec, usec)
     }
 }
+
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default,PartialEq, Eq, PartialOrd, Ord)]
 pub struct UserTimeSpec { // 对应 struct timespec
     pub tv_sec: usize,  // seconds
     pub tv_nsec: usize, // nanoseconds (long)
 }
+impl UserTimeSpec{
+    pub fn as_nanos(&self) -> usize {
+        self.tv_sec * NANO_PER_SEC + self.tv_nsec
+    }
+}
+pub fn usertime2_timeval(usertime :&UserTimeSpec)->TimeVal{
+       
+TimeVal{
+    sec:usertime.tv_sec,
+    usec:usertime.tv_nsec/1000,
+}
+}
+impl Sub for UserTimeSpec {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        // 确保 self >= other，避免负数
+        if self >= other {
+            let mut sec = self.tv_sec - other.tv_sec;
+            let mut nsec = self.tv_nsec as isize - other.tv_nsec as isize;
+
+            if nsec < 0 {
+                sec -= 1;
+                nsec += NANO_PER_SEC as isize;
+            }
+
+            Self {
+                tv_sec: sec,
+                tv_nsec: nsec as usize,
+            }
+        } else {
+            // 如果 self < other，返回 0
+            Self {
+                tv_sec: 0,
+                tv_nsec: 0,
+            }
+        }
+    }
+}
+
+impl Add for UserTimeSpec {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let mut sec = self.tv_sec + other.tv_sec;
+        let mut nsec = self.tv_nsec + other.tv_nsec;
+        if nsec >= NANO_PER_SEC {
+            sec += nsec / NANO_PER_SEC;
+            nsec %= NANO_PER_SEC;
+        }
+        Self {
+            tv_sec: sec,
+            tv_nsec: nsec,
+        }
+    }
+}
+
 impl Sub for TimeVal {
     type Output = TimeVal;
 
@@ -132,8 +190,8 @@ pub fn get_usertime() -> UserTimeSpec {
 
 }
 
-
-
+#[repr(C)]
+#[derive(Default,Clone, Copy)]
 pub struct Tms {
     pub tms_utime: isize,  //用户模式下花费的CPU时间
     pub tms_stime: isize,  //内核模式下花费的CPU时间
@@ -152,7 +210,7 @@ impl Tms {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Copy)]
 pub struct TimeData {
     pub utime: isize,//用户模式下花费的CPU时间
     pub stime: isize, //内核模式下花费的CPU时间
@@ -161,7 +219,20 @@ pub struct TimeData {
     pub lasttime: isize,
 }
 
+impl Default for TimeData{
+    fn default() -> Self {
+        let now = (get_time_ms()) as isize;
+        Self {
+            utime: 0,
+            stime: 0,
+            cutime: 0,
+            cstime: 0,
+            lasttime: now,
+        }
+    }
+}
 impl TimeData {
+    
     pub fn new() -> Self {
         let now = (get_time_ms()) as isize;
         Self {

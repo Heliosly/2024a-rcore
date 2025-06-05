@@ -3,6 +3,8 @@
 
 use core::panic::PanicInfo;
 
+use crate::sbi::shutdown;
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
 
@@ -18,7 +20,5 @@ fn panic(_info: &PanicInfo) -> ! {
     } else {
         println!("[kernel] Panicked: {}", _info.message());
     }
-    loop{
-
-    }
+    shutdown()
 }

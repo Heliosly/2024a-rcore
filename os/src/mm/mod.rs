@@ -23,7 +23,7 @@ pub use memory_set::  MemorySet ;
 pub use area::{ MapPermission,  MapAreaType,VmAreaTree,MapArea,MapType,MmapFile,MmapFlags};
 pub use page_table::{
     translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,
-    PageTableEntry, UserBuffer, UserBufferIterator,fill_str,TranslateRefError
+    PageTableEntry, UserBuffer, UserBufferIterator,fill_str,TranslateError
 };
 use riscv::register::satp;
 

@@ -3,10 +3,7 @@
 
 
 use alloc::{
-    format,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
+   format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::AT_FDCWD;
 
@@ -14,16 +11,15 @@ use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
     fs::{open_file,  OpenFlags, NONE_MODE},
     mm::{
-        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateRefError, VirtAddr, VirtPageNum
+        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
     },
     syscall::flags:: MmapProt,
     task::{
-        current_process, current_task, current_token, exit_current_and_run_next, set_priority,
-        yield_now, CloneFlags, TaskStatus, PID2PC,
+        current_process, current_task, current_token, exit_current, exit_proc, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     },
-    timer::{ get_time_us, TimeVal},
+    timer::{ get_time_us, get_usertime, TimeVal, UserTimeSpec},
     utils::{
-         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
+        error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     },
 };
 
@@ -46,7 +42,7 @@ pub fn sys_getppid() -> SyscallRet {
 pub async  fn sys_exit(exit_code: i32) -> SyscallRet {
     trace!("kernel:pid[{}] sys_exit", current_task().get_pid());
 
-    exit_current_and_run_next(exit_code).await;
+    exit_current(exit_code).await;
     Ok(exit_code as usize)
 }
 
@@ -66,6 +62,7 @@ pub fn sys_getpid() -> SyscallRet {
 /// * `ptid` - usize
 /// * `tls` - usize
 /// * `ctid` - usize
+/// TODO(Heliosly) Ctid and Safe_trans
 pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //解析参数
     let flags = args[0];
@@ -87,6 +84,10 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     //     return Err(SysErrNo::EINVAL);
     // }
 
+    if flags.contains(CloneFlags::CLONE_VM) && user_stack==0{
+        return Err(SysErrNo::EINVAL);
+
+    }
     if flags.contains(CloneFlags::CLONE_SETTLS) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_SETTLS requires CLONE_VM
         return Err(SysErrNo::EINVAL);
@@ -102,15 +103,15 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
-        // CLONE_CHILD_SETTID only makes sense when sharing VM
-        return Err(SysErrNo::EINVAL);
-    }
+    // if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
+    //     // CLONE_CHILD_SETTID only makes sense when sharing VM
+    //     return Err(SysErrNo::EINVAL);
+    // }
 
-    if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) && !flags.contains(CloneFlags::CLONE_VM) {
-        // CLONE_CHILD_CLEARTID only makes sense when sharing VM
-        return Err(SysErrNo::EINVAL);
-    }
+    // if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) && !flags.contains(CloneFlags::CLONE_VM) {
+    //     // CLONE_CHILD_CLEARTID only makes sense when sharing VM
+    //     return Err(SysErrNo::EINVAL);
+    // }
 
     if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && !flags.contains(CloneFlags::CLONE_VM) {
         // CLONE_PARENT_SETTID only makes sense when sharing VM
@@ -130,13 +131,18 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     proc.clone_task(flags, user_stack, ptid, tls, ctid).await
 }
 
-
+///
+/// todo(heliosly)
+/// 更换主线程 ，处理FXCLOSE
 pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
+    
     let process = current_process();
-
+    
     let token = process.get_user_token().await;
-    let mut path = translated_str(token, path);
-    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
+   
+    // if path.is_dir() {
+    //     return Err(SysErrNo::EISDIR);
+    // }
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     // if !argv.is_null() {
@@ -149,9 +155,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     //     }
     // }
     loop {
-        if argv.is_null() {
-            break;
-        }
+      
         let argv_ptr = *get_target_ref(token, argv)?;
         if argv_ptr == 0 {
             break;
@@ -161,14 +165,15 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
             argv = argv.add(1);
         }
     }
+    
+     let mut path = translated_str(token, path);
     if path.ends_with(".sh") {
         //.sh文件不是可执行文件，需要用busybox的sh来启动
         argv_vec.insert(0, String::from("sh"));
         argv_vec.insert(0, String::from("busybox "));
-        path = String::from("/musl/busybox");
+        path = String::from("/glibc/busybox");
     }
-    
-    
+    path = process.resolve_path_from_fd(AT_FDCWD , path.as_str(),true).await?;
     // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
     //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
     //     argv_vec.insert(0, String::from("busybox"));
@@ -219,17 +224,24 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     let app_inode = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
 
     let elf_data = app_inode.file()?.read_all();
+    //在exec前清理clear_tid
+    for tcb in process.tasks.lock().await.iter(){
+        tcb.clear_child_tid().unwrap();
+    }
+
+    process.set_exe(abs_path).await;
     process.exec(&elf_data, &argv_vec, &mut env).await?;
+    
     process.memory_set.lock().await.activate();
-    Ok(argv_vec.len())
+    Ok(0)
 }
 
-pub fn sys_settidaddress() -> SyscallRet {
+pub fn sys_settidaddress(tid_ptr:usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_settidaddress NOT IMPLEMENTED",
         current_task().get_pid()
     );
-    //todo(Heliosly)
+    current_task().set_child_tid_ptr(tid_ptr);
     Ok(current_task().id.as_usize())
 }
 pub fn sys_getuid() -> SyscallRet {
@@ -240,21 +252,210 @@ pub fn sys_getuid() -> SyscallRet {
     //todo(heliosly)
     Ok(0)
 }
-/// If there is not a child process whose pid is same as given, return -1.
-/// Else if there is a child process but it is still running, return -2.
-pub async  fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
-    trace!("kernel: sys_waitpid");
+
+
+// pub async fn sys_wait4(pid: isize, wstatus_ptr: *mut i32, options: i32, rusage_ptr: *mut Rusage) -> SyscallRet {
+//     trace!(
+//         "kernel: sys_wait4 pid={}, options={:#x}",
+//         pid,
+//         options
+//     );
+//     let proc = current_process();
+//     let proc_pid = proc.get_pid();
+//     let proc_pgid = proc.get_pgid().await; // 假设 ProcessControlBlock 有 get_pgid
+
+//     // ---- access current PCB's children list exclusively ----
+//     loop { // Loop for blocking wait (if WNOHANG is not set)
+//         let mut children_guard = proc.children.lock().await;
+//         let mut found_child_info: Option<(usize, ProcessRef, i32, Rusage)> = None; // (idx, child_arc, status_val, rusage_val)
+
+//         // 检查是否有任何子进程，否则根据 pid 类型可能直接返回 ECHILD
+//         if children_guard.is_empty() {
+//             debug!("sys_wait4: No children for parent {}", proc_pid);
+//             return Err(SysErrNo::ECHILD);
+//         }
+
+//         let mut child_exists_matching_criteria = false;
+
+//         for (idx, child_arc) in children_guard.iter().enumerate() {
+//             let child_pid = child_arc.get_pid();
+//             let child_pgid = child_arc.get_pgid().await; // 假设 ProcessControlBlock 有 get_pgid
+//             let child_inner = child_arc.inner.lock().await; // 假设状态和 rusage 在 inner 中
+
+//             // 1. 匹配 pid 条件
+//             let pid_match = match pid {
+//                 p if p < -1 => child_pgid == (pid.abs() as usize),
+//                 -1 => true,
+//                 0 => child_pgid == proc_pgid,
+//                 p if p > 0 => child_pid == (pid as usize),
+//                 _ => { // Should not happen for valid pid values, e.g. pid < -1 and pid is ISIZE_MIN
+//                     warn!("sys_wait4: Invalid pid value {}", pid);
+//                     return Err(SysErrNo::EINVAL);
+//                 }
+//             };
+
+//             if !pid_match {
+//                 continue;
+//             }
+//             child_exists_matching_criteria = true; // A child matching pid criteria exists
+
+//             // 2. 检查子进程状态并根据 options 决定是否采纳
+//             match child_inner.status { // 假设 ProcessControlBlockInner 有 status:TaskStatus 和 rusage_info: Rusage
+//                TaskStatus::Zombie { exit_code } => {
+//                     let status_val = make_wstatus_exited(exit_code);
+//                     found_child_info = Some((idx, Arc::clone(child_arc), status_val, child_inner.rusage_info.clone()));
+//                     break;
+//                 }
+//                TaskStatus::Stopped { signal } => {
+//                     if (options & WUNTRACED) != 0 {
+//                         let status_val = make_wstatus_stopped(signal);
+//                         found_child_info = Some((idx, Arc::clone(child_arc), status_val, child_inner.rusage_info.clone()));
+//                         break;
+//                     }
+//                 }
+//                TaskStatus::Continued => { // 假设有这个状态
+//                     if (options & WCONTINUED) != 0 {
+//                         let status_val = make_wstatus_continued();
+//                         // For continued children, pid is returned, rusage is typically not updated by this event.
+//                         // Status is WIFCONTINUED. Child remains in children list.
+//                         found_child_info = Some((idx, Arc::clone(child_arc), status_val, Rusage::default())); // or child_inner.rusage_info
+//                         // IMPORTANT: A continued child is NOT removed from the children list.
+//                         // The current logic below for `if let Some(...)` assumes removal for zombies.
+//                         // This needs careful handling. For simplicity, this example might not fully handle WCONTINUED correctly regarding cleanup.
+//                         break;
+//                     }
+//                 }
+//                TaskStatus::Running => {
+//                     // Running child, continue searching unless WNOHANG
+//                 }
+//             }
+//         } // End of children iteration
+
+//         if let Some((idx, child_to_reap_arc, status_val, rusage_val)) = found_child_info {
+//             let reaped_pid = child_to_reap_arc.get_pid();
+//             debug!("sys_wait4: Found child {} with status for parent {}", reaped_pid, proc_pid);
+
+//             // 写入 wstatus (如果指针有效)
+//             if !wstatus_ptr.is_null() {
+//                 // 确保 wstatus_ptr 是有效的用户空间指针
+//                 // translated_refmut 是一个很好的抽象，用于安全写入用户空间
+//                 *translated_refmut(proc.get_user_token().await, wstatus_ptr)? = status_val;
+//             }
+
+//             // 写入 rusage (如果指针有效)
+//             if !rusage_ptr.is_null() {
+//                 *translated_refmut(proc.get_user_token().await, rusage_ptr)? = rusage_val;
+//             }
+            
+//             // 只有当子进程是 Zombie 时才从父进程的子进程列表和全局 PID 映射中移除
+//             // WUNTRACED 和 WCONTINUED 不应导致子进程被彻底清理
+//             let child_inner_status = child_to_reap_arc.inner.lock().await.status; // Re-check status, though it shouldn't change here
+//             if matches!(child_inner_status,TaskStatus::Zombie {..}) {
+//                 debug!("sys_wait4: Reaping zombie child idx {}, pid {}", idx, reaped_pid);
+//                 PID2PC.lock().remove(&reaped_pid);
+//                 let removed_child = children_guard.remove(idx); // children_guard is MutexGuard for proc.children
+//                 // 确保子进程在从 children 列表中移除后被释放
+//                 // Arc::strong_count 检查是为了调试，确保没有意外的引用泄漏
+//                 // 在多核或复杂场景下，strong_count 可能暂时大于1，这取决于 Arc 如何传递和 Drop
+//                 // 理想情况下，父进程的 children 列表和 PID2PC 是主要的强引用来源 (除了子进程自身可能持有的 Arc<Self>)
+//                  assert!(
+//                      Arc::strong_count(&removed_child) >= 1, // At least the one we hold
+//                      "Strong count check for child {} before drop: {}", reaped_pid, Arc::strong_count(&removed_child)
+//                  );
+//                  drop(removed_child); // Explicitly drop to see effect on strong_count if needed for debugging
+//             } else {
+//                 debug!("sys_wait4: Child {} (status {:?}) not a zombie, not removing.", reaped_pid, child_inner_status);
+//             }
+
+
+//             drop(children_guard); // Release lock on children list
+//             return Ok(reaped_pid as isize); // 返回子进程的 PID
+//         } else {
+//             // 没有找到符合条件的已改变状态的子进程
+//             if !child_exists_matching_criteria && pid > 0 {
+//                  // 如果指定了特定 PID，但该 PID 不是其子进程 (或者不再是)
+//                  // 或者如果 pid <=0 且没有任何子进程符合进程组等条件
+//                  // (此处的 child_exists_matching_criteria 可能需要更细致的判断，
+//                  //  例如，如果 pid > 0, 检查 child_vec 是否包含该 pid，而不管其状态)
+//                  //  一个更简单的 ECHILD 检查可以在循环前进行，如果指定 pid > 0 但没有该 child。
+//                  //  或者 pid <= 0 且 proc.children 为空
+//                 let has_any_child_with_pid = if pid > 0 {
+//                     children_guard.iter().any(|p| p.get_pid() == pid as usize)
+//                 } else {
+//                     false // For pid <=0, ECHILD is usually if no children at all, or no children in PGID
+//                 };
+
+//                 if (pid > 0 && !has_any_child_with_pid) || (pid <=0 && !children_guard.iter().any(|c| {
+//                     // Simplified check for pid <= 0 cases.
+//                     // A more accurate check for pid=0 or pid < -1 would involve pgid matching.
+//                     // If no children exist at all, it's ECHILD.
+//                     // If children exist but none match the pgid criteria for pid=0 or pid < -1, it's also ECHILD.
+//                     let child_pgid =futures::executor::block_on(c.get_pgid()); // BLOCKING, AVOID IN ASYNC, use .await
+//                     match pid {
+//                         0 => child_pgid == proc_pgid,
+//                         p if p < -1 => child_pgid == (p.abs() as usize),
+//                         -1 => true, // any child exists
+//                          _ => false,
+//                     }
+//                 })) {
+//                     debug!("sys_wait4: No child matching PID criteria exists for parent {}. Returning ECHILD.", proc_pid);
+//                     drop(children_guard);
+//                     return Err(SysErrNo::ECHILD);
+//                 }
+//             }
+
+
+//             if (options & WNOHANG) != 0 {
+//                 // WNOHANG 设置，且没有子进程准备好，返回 0
+//                 debug!("sys_wait4: WNOHANG set, no child ready for parent {}. Returning 0.", proc_pid);
+//                 drop(children_guard);
+//                 return Ok(0);
+//             } else {
+//                 // 需要阻塞等待。在 async 环境中，这意味着释放锁并等待通知。
+//                 // 当前实现没有真正的异步阻塞，它会忙等待或依赖调用者重试。
+//                 // 为了实现真正的阻塞，需要一个条件变量或类似的机制。
+//                 // proc.child_event_notifier.await; (伪代码)
+//                 // 然后 continue; 到 loop 开头重新检查。
+
+//                 // 模拟: 释放锁并让调度器运行其他任务，之后会再次尝试
+//                 // 这不是一个高效的阻塞等待，但符合 async 的非阻塞推进模型
+//                 // 如果没有外部事件唤醒此任务，它可能会在下次轮到时立即再次检查
+//                 debug!("sys_wait4: No child ready, blocking (conceptually) for parent {}.", proc_pid);
+//                 drop(children_guard); // 必须释放锁才能让其他任务（如子进程退出）进行
+                
+//                 // 在真实的 async 内核中，这里会 park 当前任务，并注册一个 waker
+//                 // 子进程退出时会 wake 这个 waker。
+//                 // 简化的做法是让当前任务 yield，等待下次被调度。
+//                 // 或者，如果你的 ProcessControlBlock 有某种通知机制：
+//                 // proc.wait_for_child_event().await; // This would internally handle parking/waking.
+//                 // 如果没有这样的机制，下面的 yield 是一种非常粗略的“等待”。
+//                 crate::task::yield_now().await; // 假设你有一个异步 yield 函数
+//                 // 然后循环会重新开始
+//                 continue;
+//             }
+//         }
+//     } // End of loop
+//     // ---- release current PCB's children list automatically by MutexGuard drop ----
+// }
+//  等待子进程状态发生变化,即子进程终止或被信号停止或被信号挂起
+//  < -1   meaning wait for any child process whose process group ID
+//          is equal to the absolute value of pid.
+// -1     meaning wait for any child process.
+// 0      meaning wait for any child process whose process group ID
+//        is equal to that of the calling process at the time of the call to waitpid().
+// > 0    meaning wait for the child whose process ID is equal to the value of pid.
+//  参考 https://man7.org/linux/man-pages/man2/wait4.2.html
+//唤醒方式有待优化
+pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallRet {
+    trace!("[sys_wait4] pid:{},wstatus:{:?},options:{}",pid,wstatus,options);
     let proc = current_process();
-    // find a child process
-
-    // ---- access current PCB exclusively
-
-    // for i in inner.children.iter(){
-    //     print!(" {}",{i.get_pid()});
-    // }
-
-    // println!(" ");
-
+    
+    if (pid as i32) == i32::MIN {
+        return Err(SysErrNo::ESRCH);
+    }
+    if options < 0 || options > 100 {
+        return Err(SysErrNo::EINVAL);
+    }
     let mut childvec = proc.children.lock().await;
     if !childvec
         .iter()
@@ -277,8 +478,8 @@ pub async  fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
         }
     }
     if let Some((idx, child_task)) = pair {
-        debug!("chiled idx is removed");
-
+        debug!("chiled pid is :{} removed",child_task.get_pid());
+        
         PID2PC.lock().remove(&child_task.get_pid());
         let child = childvec.remove(idx);
         // confirm that child will be deallocated after being removed from children list
@@ -287,7 +488,19 @@ pub async  fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
         let exit_code = child.exit_code();
 
         // ++++ release child PCB
-        *translated_refmut(proc.get_user_token().await, exit_code_ptr)? = exit_code;
+        if wstatus as usize != 0x0 {
+            debug!(
+                "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
+                pid, found_pid, exit_code, wstatus as usize
+            );
+            let mut ms = proc.memory_set.lock().await;
+            if exit_code >= 128 && exit_code <= 255 {
+                //表示由于信号而退出的
+               ms. safe_put_data( wstatus, exit_code).await.unwrap();
+            } else {
+                ms.safe_put_data( wstatus, exit_code << 8).await.unwrap();
+            }
+        }
         assert_eq!(
             Arc::strong_count(&child),
             1,
@@ -296,38 +509,51 @@ pub async  fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> SyscallRet {
         );
         Ok(found_pid)
     } else {
+
         return Err(SysErrNo::EAGAIN);
     }
     // ---- release current PCB automatically
 }
 
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub async fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
+// /// YOUR JOB: get time with second and microsecond
+// /// HINT: You might reimplement it with virtual memory management.
+// /// HINT: What if [`TimeVal`] is splitted by two pages ?
+// pub async fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
+//     trace!(
+//         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+//         current_task().get_pid()
+//     );
+//     let usec = get_time_us().to_ne_bytes();
+
+//     let sec = (get_time_us() / 1000000).to_ne_bytes();
+
+//     let token = current_token().await;
+
+//     let bufs = translated_byte_buffer(token, _ts as *const u8, 16);
+//     let mut i = 0;
+//     for buf in bufs {
+//         for atm in buf {
+//             if i >= 8 {
+//                 *atm = usec[i - 8];
+//             } else {
+//                 *atm = sec[i];
+//             }
+
+//             i += 1;
+//         }
+//     }
+//     Ok(0)
+// }
+
+pub async  fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().get_pid()
     );
-    let usec = get_time_us().to_ne_bytes();
-
-    let sec = (get_time_us() / 1000000).to_ne_bytes();
-
-    let token = current_token().await;
-
-    let bufs = translated_byte_buffer(token, _ts as *const u8, 16);
-    let mut i = 0;
-    for buf in bufs {
-        for atm in buf {
-            if i >= 8 {
-                *atm = usec[i - 8];
-            } else {
-                *atm = sec[i];
-            }
-
-            i += 1;
-        }
-    }
+    let pcb = current_process();
+    let times= get_usertime();
+    pcb.manual_alloc_type_for_lazy(ts).await?;
+    put_data( pcb.get_user_token().await,ts,times)?; 
     Ok(0)
 }
 // pub fn sys_gettimeofday(tp: usize, tz: usize) -> isize {
@@ -346,13 +572,13 @@ pub async fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> SyscallRet {
 //     *translated_refmut(current_token(), tp as *mut TimeVal) = timeval;
 //     0
 // }
-
+///TODO(Heliosly)
 pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     trace!(
         "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
         current_task().get_pid()
     );
-    exit_current_and_run_next(exit_code).await;
+    exit_proc(exit_code).await;
     Ok(0)
 }
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -591,9 +817,13 @@ pub async  fn sys_brk(new_brk:usize) -> SyscallRet {
        
         new_brk
     );
+    let current_brk=current_process().program_brk();
     if new_brk==0{
-        return Ok(current_process().program_brk());
+        return Ok(current_brk);
     }
+    if new_brk == current_brk// 没有变化
+     {   return Ok(current_brk);}
+
     // 地址必须在 heap 合法范围内
     if new_brk < current_process().heap_bottom() {
         return  Err(SysErrNo::EINVAL);
@@ -707,8 +937,8 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
         Err(translate_error) => {
             // log::warn!("sys_getcwd: copy_to_user_bytes failed: {:?}", translate_error);
             match translate_error {
-                TranslateRefError::TranslationFailed(_) | TranslateRefError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
-                TranslateRefError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
+                TranslateError::TranslationFailed(_) | TranslateError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
+                TranslateError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
                 _ => Err(SysErrNo::EFAULT),
             }
         }
@@ -719,32 +949,120 @@ pub fn sys_gettid() -> SyscallRet {
  
     Ok(current_task().id.as_usize())
 }
-pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
-    // if len != crate::task::RobustList::HEAD_SIZE {
-    //     return Err(SysErrNo::EINVAL);
-    // }
-    // let task = current_task().unwrap();
-    // let mut task_inner = task.inner_lock();
-    // task_inner.robust_list.head = head;
-    // //inner.robust_list.len = len;
-    // Ok(0)
+pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
 
+    trace!("[sys_get_robust_list] NOT IMPLEMENT" );
+
+    let tid2tc_lock = TID2TC.lock();
+    let  task =tid2tc_lock.get(&pid);
+    if  pid == 0 {
+       let  task = current_task();
+       let token =unsafe { *task.page_table_token.get() };
+       let robust = task.robust_list.lock().await;
+       put_data(token, head_ptr, robust.head)?;
+       put_data(token, len_ptr, robust.len)?;
+       Ok(0)
+    }
+    else
+    if let Some(task) = task {
+        let token =unsafe { *task.page_table_token.get() };
+        let robust = task.robust_list.lock().await;
+        put_data(token, head_ptr, robust.head)?;
+        put_data(token, len_ptr, robust.len)?;
+        Ok(0)
+    } else {
+        Err(SysErrNo::ESRCH)
+    }
+
+}
+
+pub async fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
+    trace!("[sys_set_robust_list] NOT IMPLEMENT" );
+    if len != RobustList::HEAD_SIZE {
+        return Err(SysErrNo::EINVAL);
+        
+    }
+
+    let task = current_task();
+    task.robust_list.lock().await.head = head;
+    
+    task.robust_list.lock().await.len= len;
     Ok(0)
 }
 
-pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
-    // let mut task = find_task_by_tid(pid);
-    // if task.is_none() && pid == 0 {
-    //     task = current_task();
-    // }
-    // if let Some(task) = task {
-    //     let task_inner = task.inner_lock();
-    //     let token = task_inner.user_token();
-    //     put_data(token, head_ptr, task_inner.robust_list.head);
-    //     put_data(token, len_ptr, task_inner.robust_list.len);
-    //     Ok(0)
-    // } else {
-    //     Err(SysErrNo::ESRCH)
-    // }
+
+pub async  fn sys_prlimit(
+    pid: usize,
+    resource: u32,
+    new_limit: *const RLimit,
+    old_limit: *mut RLimit,
+) -> SyscallRet{
+
+    trace!("[sys_prlimit]: pid:{},resource:{},new_limit:{:?},old_limit:{:?}",pid,resource,new_limit,old_limit);
+    const RLIMIT_NOFILE: u32 = 7;
+        let proc = current_process();
+        if !old_limit.is_null() {
+        proc.manual_alloc_type_for_lazy(old_limit).await?;
+        }
+        if !new_limit.is_null() {
+        proc.manual_alloc_type_for_lazy(new_limit).await?;
+        }
+        let token  = proc.get_user_token().await;
+    if resource != RLIMIT_NOFILE {
+        // 说明是get
+        let limit = translated_refmut(token, old_limit)?;
+        limit.rlim_cur = 0xdeadbeff;
+        limit.rlim_max =  0xdeadbeff;
+        return Ok(0)
+    }
+
+    if pid == 0 {
+       
+        let fd_table =  proc.fd_table.lock().await;
+        if !old_limit.is_null() {
+            // 说明是get
+            let limit = translated_refmut(token, old_limit)?;
+            limit.rlim_cur = fd_table.get_soft_limit();
+            limit.rlim_max = fd_table.get_hard_limit();
+        }
+        if !new_limit.is_null() {
+            // 说明是set
+            let limit: &RLimit = get_target_ref(token, new_limit)?;
+            fd_table.set_limit(limit.rlim_cur, limit.rlim_max);
+        }
+    } else {
+        unimplemented!("pid must equal zero");
+    }
+
     Ok(0)
+//   Err(SysErrNo::ENOSYS )
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RLimit {
+    pub rlim_cur: usize, /* Soft limit */
+    pub rlim_max: usize, /* Hard limit (ceiling for rlim_cur) */
+}
+
+
+
+
+
+
+pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet {
+    trace!("[sys_mprotect] start:{:#x},size:{:#x},flags:{:#x}",start,size,flags);
+     let start_va= VirtAddr::from(start);
+     let pcb_arc= current_process();
+     let mut memory_set = pcb_arc.memory_set.lock().await;
+    match MmapProt::from_bits(flags as u32) {
+       Some(prot) => {
+          memory_set.mprotect(start_va, size, prot.into()).await;
+       }
+       None => {
+          return Err(SysErrNo::EINVAL);
+       }
+    }
+     Ok(0)
+
 }

@@ -1,19 +1,75 @@
-use alloc::vec::Vec;
+use core::sync::atomic::AtomicUsize;
 
-use crate::{config::MAX_FD_NUM, fs::FileDescriptor, utils::error::SysErrNo};
+use alloc::{sync::Arc, vec};
+use alloc::vec:: Vec;
+
+use crate::fs::{Stdin, Stdout};
+use crate::{config::MAX_FD_NUM, fs::{FileClass, FileDescriptor, OpenFlags}, utils::error::SysErrNo};
 
 
-pub struct FdManage(pub Vec<Option<FileDescriptor>>);
+pub struct FdManage{
+    pub table: Vec<Option<FileDescriptor>>,
+    soft_limit: AtomicUsize,
+    hard_limit: AtomicUsize,
+}
 
 impl FdManage {
-    pub fn new() -> Self {
-        FdManage(Vec::new())
+    pub fn new(soft_limit:usize,hard_limit:usize,table:Vec<Option<FileDescriptor>>) -> Self {
+        FdManage{
+          soft_limit: AtomicUsize::new(soft_limit),
+          table:  table,
+            hard_limit:AtomicUsize::new(hard_limit),
+          
+        }
+    }
+    pub fn get_hard_limit(&self) -> usize {
+        self.hard_limit.load(core::sync::atomic::Ordering::Relaxed)
     }
 
+    pub fn get_soft_limit(&self) -> usize {
+        self.soft_limit.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_limit(&self, soft_limit: usize, hard_limit: usize) {
+        self.soft_limit.store(soft_limit, core::sync::atomic::Ordering::Relaxed);
+        self.hard_limit.store(hard_limit, core::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn new_with_stdio() -> Self {
+        FdManage::new(
+            128,
+            256,
+            
+                vec![
+                    Some(FileDescriptor {
+                        flags: OpenFlags::O_RDONLY,
+                        file: FileClass::Abs(Arc::new(Stdin)),
+                    }),
+                    // stdout: 只写
+                    Some(FileDescriptor {
+                        flags: OpenFlags::O_WRONLY,
+                        file: FileClass::Abs(Arc::new(Stdout)),
+                    }),
+                    // stderr: 只写
+                    Some(FileDescriptor {
+                        flags: OpenFlags::O_WRONLY,
+                        file: FileClass::Abs(Arc::new(Stdout)),
+                    }),
+                
+            ],
+        )
+    }
+  
     
+    pub fn from_another(another: &FdManage) -> Self {
+        Self {
+            table: another.table.clone(),
+            soft_limit: AtomicUsize::new(another.soft_limit.load(core::sync::atomic::Ordering::Relaxed)),
+            hard_limit: AtomicUsize::new(another.hard_limit.load(core::sync::atomic::Ordering::Relaxed)),
+        }
+    }
     /// 获取文件描述符表（fd_table）的长度。
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.table.len()
     }
     /// 通过path
     /// 检查 fd_table 中是否存在指定的文件描述符。
@@ -33,7 +89,7 @@ impl FdManage {
     /// * `Some(FileDescriptor)`: 如果存在，则返回文件句柄的克隆。
     /// * `None`: 如果 fd_table 中不存在该 fd，或该 fd 对应的项为 None。
     pub fn get_file(&self, fd: usize) -> Result<FileDescriptor, SysErrNo> {
-        match self.0.get(fd) {
+        match self.table.get(fd) {
             Some(Some(file_desc)) => Ok(file_desc.clone()),
             _ => Err(SysErrNo::EBADF),
         }
@@ -56,9 +112,9 @@ impl FdManage {
 
         // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上
         for fd_candidate in min_fd..MAX_FD_NUM {
-            if fd_candidate < self.0.len() {
+            if fd_candidate < self.table.len() {
                 // 如果 fd_candidate 在当前 fd_table 的范围内
-                if self.0[fd_candidate].is_none() {
+                if self.table[fd_candidate].is_none() {
                     // 找到了一个空的槽位
                     return Some(fd_candidate);
                 }
@@ -99,12 +155,12 @@ impl FdManage {
         if pos>MAX_FD_NUM{
             panic!("fd out of range");
         }
-        if pos<self.0.len(){
-           self.0[pos].replace(fd)
+        if pos<self.table.len(){
+           self.table[pos].replace(fd)
          }
          else{
-            self.0.resize(pos+1, None);
-            self.0[pos].replace(fd)
+            self.table.resize(pos+1, None);
+            self.table[pos].replace(fd)
          }
     }
     /// “取出” fd_table[fd] 对应的文件句柄，
@@ -119,14 +175,14 @@ impl FdManage {
     /// * `Some(FileDescriptor)`: 如果存在，则返回文件句柄。
     /// * `None`: 如果 fd_table 中不存在该 fd，或该 fd 对应的项为 None。
     pub  fn take_file(&mut self, fd: usize) -> Option<FileDescriptor> {
-        self.0.get_mut(fd)
+        self.table.get_mut(fd)
              .and_then(|opt| opt.take())
     }
 
 
     /// 分配一个文件描述符。
     pub fn alloc_fd(&mut self) -> usize {
-        let  fd_table = &mut self.0;
+        let  fd_table = &mut self.table;
         if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
             fd
         } else {
@@ -134,6 +190,9 @@ impl FdManage {
             fd_table.len() - 1
         }
     }
+ 
+    
+
 /// 在文件描述符表中查找与指定路径匹配的文件描述符。
 ///
 /// # 参数
@@ -151,7 +210,7 @@ impl FdManage {
 /// - 如果文件描述符为空或文件路径获取失败，则跳过该项。
 /// - 此函数不会修改文件描述符表。
     pub fn find_fd(&self,path: &str) -> Option<usize> {
-        self.0.iter().position(|fd| {
+        self.table.iter().position(|fd| {
             if let Some(file_desc) = fd {
                 match file_desc.file(){
                     Ok(f) => f.get_path()==path,
@@ -163,4 +222,5 @@ impl FdManage {
         })
     }   
 
+   
 }
