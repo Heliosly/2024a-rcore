@@ -130,6 +130,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_LOG =>sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
         SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,
         SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
+        SYSCALL_NANOSLEEP=>sys_nanosleep(args[0] as *const UserTimeSpec, args[1] as *mut UserTimeSpec).await,
         
         
         

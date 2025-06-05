@@ -109,9 +109,6 @@ impl MountTable {
 
         // 检查特殊设备 'special' 是否已被挂载 (通常一个设备只能挂载一次，除非特殊情况)
         if self.entries.iter().any(|entry| entry.special_device == special) {
-            // 注意：某些文件系统类型（如 tmpfs, procfs）的 special device可能是"none"或重复的
-            // 这里需要根据你的文件系统设计来决定是否允许。
-            // 为了简单，我们先假设一个设备只能挂载一次。
             if fstype != "proc" && fstype != "tmpfs" { // 示例：允许 proc 和 tmpfs 重复 "none"
                  warn!("Special device '{}' already mounted (EBUSY)", special);
                  return Err(SysErrNo::EBUSY);

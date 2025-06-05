@@ -15,7 +15,7 @@ use crate::{
     },
     syscall::flags:: MmapProt,
     task::{
-        current_process, current_task, current_token, exit_current, exit_proc, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
+        current_process, current_task, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     },
     timer::{ get_time_us, get_usertime, TimeVal, UserTimeSpec},
     utils::{
@@ -509,8 +509,25 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
         );
         Ok(found_pid)
     } else {
-
-        return Err(SysErrNo::EAGAIN);
+        let res=  
+        if pid==-1{
+            let mut task_refs = Vec::new();
+            for p in childvec.iter() {
+                // 用你自己的解锁方式拿到 TaskRef，然后 clone 一份放到 Vec 中
+                let t = p.main_task.lock().await;
+                task_refs.push(t.clone());
+            }
+            
+            // 把转换好的 Vec<TaskRef> 传给 WaitAnyFuture::new
+            WaitAnyFuture::new(task_refs).await
+        }
+        else{
+            let task = PID2PC.lock()[&(pid as usize)].main_task.lock().await.clone();
+         JoinFuture::new(task).await;
+         pid as usize
+        };
+        
+        return Ok(res);
     }
     // ---- release current PCB automatically
 }

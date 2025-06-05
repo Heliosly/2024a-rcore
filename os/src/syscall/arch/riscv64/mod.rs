@@ -28,6 +28,8 @@ pub const SYSCALL_SET_PRIORITY: usize = 140;
 /// getpid syscall
 pub const SYSCALL_GETPID: usize = 172;
 pub const SYSCALL_CLOCK_NANOSLEEP :usize =115;
+
+pub const SYSCALL_NANOSLEEP :usize =101;
 /// sbrk syscall
 pub const SYSCALL_BRK: usize = 214;
 /// munmap syscall

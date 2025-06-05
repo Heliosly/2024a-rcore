@@ -825,10 +825,6 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
 
 
 
-// 假设你的 PageTable, VirtAddr, PhysAddr, TranslateRefError 定义
-// 以及 PAGE_SIZE 常量
-// use crate::mm::{PageTable, VirtAddr, PhysAddr, TranslateRefError, PAGE_SIZE, page_offset};
-// fn page_offset(addr: usize) -> usize { addr % PAGE_SIZE } // 示例
 
 /// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内
 /// 最多 `max_len` 字节的连续内存区域的引用。

@@ -36,6 +36,7 @@ pub use dirent::Dirent;
 
 pub use ext4::fs_stat;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
+pub const DEFAULT_EXE_MODE: u32 = 0o755;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
 bitflags! {
@@ -389,6 +390,15 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 
 //
+const INITPROC_SH:&str = "
+cd /glibc
+./busybox_testcode.sh
+./basic_testcode.sh
+cd /musl
+./busybox_testcode.sh
+./basic_testcode.sh
+
+";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
 const MEMINFO: &str = r"
@@ -549,6 +559,21 @@ pub async  fn create_init_files() -> GeneralRet {
     let localtimebuf = UserBuffer::new(localtimevec);
     let localtimesize = localtimefile.write(localtimebuf).await?;
     debug!("create /etc/localtime with {} sizes", localtimesize);
+
+     let initshfile = open_file(
+        "/initproc.sh",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        DEFAULT_EXE_MODE,
+    )?
+    .file()?;
+    let mut initsh = String::from(INITPROC_SH);
+    let mut initshvec = Vec::new();
+    unsafe {
+        let sh = initsh.as_bytes_mut();
+        initshvec.push(core::slice::from_raw_parts_mut(sh.as_mut_ptr(), sh.len()));
+    }
+    let initshbuf=UserBuffer::new(initshvec);
+    let initshsize = initshfile.write(initshbuf).await?;
 
     //创建/etc/passwd记录用户信息
     let passwdfile = open_file(

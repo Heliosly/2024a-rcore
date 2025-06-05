@@ -1,14 +1,11 @@
 use alloc::{
     boxed::Box,
-    collections::VecDeque, // 如果你用 VecDeque 作为底层 buffer
     sync::{Arc, Weak},
     vec::Vec,
 };
-use async_trait::async_trait; // 如果你的 File trait 是 async_trait
+use async_trait::async_trait; 
 use core::{
-    cmp::Ordering,
     future::Future,
-    mem,
     pin::Pin,
     task::{Context, Poll, Waker},
 };

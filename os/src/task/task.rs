@@ -17,7 +17,7 @@ use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
-use crate::task::{add_task, current_task, PID2PC, TID2TC};
+use crate::task::{add_task, current_task, Task, PID2PC, TID2TC};
 use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
@@ -57,7 +57,6 @@ pub struct ProcessControlBlock {
 
     /// Memeryset
     pub memory_set: Arc<Mutex<MemorySet>>,
-
     /// trap上下文的bottom
     /// 用户栈顶
     user_stack_top: AtomicUsize,
@@ -421,7 +420,7 @@ impl ProcessControlBlock {
     /// Create a new process
     ///
     /// At present, it is only used for the creation of initproc
-    pub async fn new(
+    pub async  fn new(
         elf_data: &[u8],
         cwd: String,
         argv: &Vec<String>,
@@ -468,6 +467,7 @@ impl ProcessControlBlock {
             exe: Mutex::new(exe),
             signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
         };
+
         process_control_block.alloc_user_res().await;
         let mut user_sp = process_control_block.user_stack_top();
         //环境变量内容入栈
@@ -1004,6 +1004,10 @@ impl ProcessControlBlock {
             .await?;
         Ok(())
     }
+
+    pub async fn join_proc(&self,waker:Waker){
+         self.main_task.lock().await.join(waker);
+    }
 }
 
 /// A unique identifier for a thread.
@@ -1248,6 +1252,12 @@ impl TaskControlBlock {
 }
 pub fn set_lead(&self){
       self.is_leader.store(true, Ordering::Release);
+}
+pub fn join(&self, waker: Waker) {
+    let task = waker.data() as *const Task;
+    unsafe { &*task }.set_state(TaskStatus::Blocking);
+    let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
+    wait_wakers.push_back(waker);
 }
 }
 

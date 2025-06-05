@@ -365,8 +365,7 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
 
 
 
-// 假设的类型和常量 (你需要根据你的项目调整)
-use crate::mm::{VirtAddr, TranslateError, PageTable}; // 你的内存管理类型
+use crate::mm::{VirtAddr, TranslateError, PageTable}; 
 
 // 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
 use crate::mm::page_table::{
@@ -630,7 +629,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
     // 获取当前进程控制块 (PCB) 和内存集 token
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token(); // token 用于后续内存操作的上下文
-    let fd_table_guard = pcb_arc.fd_table.lock(); // 获取文件描述符表锁
+    let fd_table_guard = pcb_arc.fd_table.lock().await; // 获取文件描述符表锁
 
     // 校验文件描述符 fd 是否有效
     // fd 是 usize 类型，所以它不可能是负数，只需检查是否超出范围
@@ -648,7 +647,6 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
     //    这一步仍然是必要的，因为我们需要 iovec 结构本身在内核中。
     //    `translated_byte_buffer` 用于数据缓冲区，而不是 iovec 描述符数组。
     let kernel_iovs: Vec<IoVec> = match unsafe {
-        // `token` 可能会被你的 `copy_from_user_array` 实现用来校验用户内存的合法性
         copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count)
     } {
         Ok(iovs) => iovs,
@@ -1012,6 +1010,7 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
     // (可能每个都被完全写入，或者在最后一个 iovec 中发生了部分写入或EOF(对于写来说不常见)的情况然后返回)
     Ok(total_bytes_written)
 }
+//TODO(HELIOSLY) 不应该放进sleep_until。
 // --- sys_poll 系统调用实现 ---
 pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -> SyscallRet {
     if nfds == 0 {
@@ -2247,7 +2246,6 @@ pub async fn sys_sendfile(
 
         if let Some(offset_val) = current_read_offset_from_in_file {
             // 从指定偏移读取 (不改变 infile 的持久文件指针)
-            // 你的 File::read() 是从当前文件指针读。所以需要先 lseek。
             infile.lseek(offset_val as isize, SEEK_SET)?;
             bytes_read_from_in_fd = match infile.read(in_user_buffer).await {
                 Ok(n) => n,

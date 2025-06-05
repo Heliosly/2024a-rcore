@@ -156,6 +156,8 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
             trap_from_kernel();
             return;
         } else {
+              crate::task::sleeplist::process_timed_events();
+              
             // debug!("into trampoline from taskcount:{},task",get_task_count());
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
@@ -176,7 +178,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
-                debug!("no tasks available in run_tasks");
+                error!("no tasks available in run_tasks");
 
                 wait_for_irqs();
             }
@@ -235,7 +237,6 @@ pub async fn user_task_top() -> i32 {
 
                     tf.sepc += 4;
 
-                    curr.update_utime();
                     let result = syscall(syscall_id, args).await;
 
                     curr.update_stime();
@@ -243,11 +244,7 @@ pub async fn user_task_top() -> i32 {
                         Ok(res) => res,
                         Err(err) => {
 
-                            if err==SysErrNo::EAGAIN {
-                               tf.sepc-=4; 
-                               tf.regs.a0
-                            }
-                            else if  err==SysErrNo::ECHILD{
+                           if  err==SysErrNo::ECHILD{
                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
                                 -(err as isize) as usize

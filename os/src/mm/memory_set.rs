@@ -18,7 +18,6 @@ use riscv::register::scause::{Exception,  Trap};
 use xmas_elf::ElfFile;
 use core::arch::asm;
 use core::{ptr, slice};
-use core::sync::atomic::AtomicBool;
 use riscv::register::satp;
 
 extern "C" {

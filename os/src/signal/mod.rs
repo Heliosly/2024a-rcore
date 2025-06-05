@@ -88,8 +88,7 @@ pub async fn send_signal(
         drop(process_signal_state);
 
         // 尝试唤醒目标线程 (如果它可被中断)
-        // target_task_arc.try_interrupt_if_blocked(); // 需要这样的机制
-        // 或者你的 wakeup_task 能处理这种情况
+        // target_task_arc.try_interrupt_if_blocked();
         let task_ptr: *const Task = Arc::as_ptr(&task_arc);
         unsafe { crate::task::waker::wakeup_task(task_ptr) }; // 假设可以安全调用
     } else {

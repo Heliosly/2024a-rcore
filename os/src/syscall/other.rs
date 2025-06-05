@@ -51,7 +51,47 @@ pub async fn sys_clock_gettime(clock_id: usize, tp: usize) -> SyscallRet {
 
     Ok(0)
 }
+pub async fn sys_nanosleep(req: *const UserTimeSpec, rem: *mut UserTimeSpec) -> SyscallRet {
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+    if proc.manual_alloc_type_for_lazy(req).await.is_err() {
+        return Err(SysErrNo::EFAULT);
+    }
 
+    // 2. 从用户空间读出 “请求的相对睡眠时间”
+    let request_time: &UserTimeSpec = get_target_ref(token, req)?;
+    // request_time 是一个 &UserTimeSpec，表示用户传来的 { tv_sec, tv_nsec }
+
+    // 3. 计算“绝对”睡眠结束时刻 = 当前内核时间 + 相对时长
+    let now = get_usertime();
+    let deadline = now + (*request_time);
+
+    // 4. 让出 CPU，直到“绝对时刻”到来或者被唤醒
+    sleep_until(Some(usertime2_timeval(&deadline))).await;
+
+    // 5. 睡醒后，检查是否真到 deadline，或者被信号打断
+    let current_time = get_usertime();
+    if current_time < deadline && !rem.is_null() {
+        // 如果当前时间还没到 deadline，就说明被信号打断，需要把剩余时间写回 rem
+        if proc.manual_alloc_type_for_lazy(rem).await.is_err() {
+            return Err(SysErrNo::EFAULT);
+        }
+        // 计算剩余的纳秒数
+        let remaining = deadline - current_time;
+        let delta_nanos = remaining.as_nanos() as usize;
+        let remaining_spec = UserTimeSpec {
+            tv_sec:  (delta_nanos / 1_000_000_000) as usize,
+            tv_nsec: (delta_nanos % 1_000_000_000) as usize,
+        };
+        // 将剩余时间写回用户空间
+        put_data(token, rem, remaining_spec)?;
+        // 被信号打断，返回 EINTR
+        return Err(SysErrNo::EINTR);
+    }
+
+    // 6. 如果 current_time >= deadline，就正常返回 0
+    Ok(0)
+}
 pub async fn sys_clock_nanosleep(
     clock_id: usize,
     flags: usize,

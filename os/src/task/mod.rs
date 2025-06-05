@@ -22,6 +22,7 @@ mod current;
 mod id;
 mod kstack;
 mod processor;
+pub mod future;
 pub mod fdmanage;
 mod schedule;
 #[allow(clippy::module_inception)]
@@ -29,7 +30,7 @@ mod schedule;
 mod task;
 pub(crate) mod waker;
 pub mod sleeplist;
-mod yieldfut;
+
 use alloc::boxed::Box;
 // mod timelist;
 use alloc::{format, vec};
@@ -50,7 +51,7 @@ pub use kstack::{TaskStack,current_stack_top};
 pub use processor::{init, run_task2};
 pub use schedule::{add_task, pick_next_task, put_prev_task, set_priority, task_tick,Task,TaskRef};
 pub use task::ProcessControlBlock;
-pub use yieldfut::yield_now;
+pub use future::yield_now;
 pub use waker::custom_noop_waker;
 
 pub use task::RobustList;
@@ -130,10 +131,7 @@ pub async fn exit_proc(exit_code: i32) {
         tasks.clear();
     }
 
-    // 6. 从全局进程表里把这个进程删掉
-    PID2PC.lock().remove(&pid);
 
-    // 7. 通知父进程：发 SIGCHLD 或者通过 IPC 让父进程 wakeup 执行 wait TODO(HELIOSLY)
     //   
     // let ppid = process.get_parent();
     // if let Some(parent_proc) = PID2PC.lock().get(&ppid) {
@@ -194,10 +192,6 @@ pub async  fn exit_current(exit_code: i32) {
             break;
         }
     }
-
-    
-    
-    // drop task manually to maintain rc correctly
     drop(task); 
 }
 
@@ -213,7 +207,6 @@ pub async  fn exit_current(exit_code: i32) {
 //  static INITPROC_STR: &str =          "cosshell";
 pub static INITPROC :LazyInit<ProcessRef> = LazyInit::new();
 static  CWD:&str = "/glibc";
-// static  PARAMETERS :&str= "/glibc/basic/run-all.sh";
     /// Creation of initial process
     ///
     /// the name "initproc" may be changed to any other app name like "usertests",
@@ -222,18 +215,18 @@ static  CWD:&str = "/glibc";
 //  pub  static KERNEL_IDLE_PROCESS:LazyInit<ProcessRef> = LazyInit::new();
 
 
-    pub fn add_initproc() {
-        let inode = open_file(INITPROC_STR, OpenFlags::O_RDONLY, 0o777).unwrap();
+pub fn add_initproc(cwd:&str,exe:&str,sh:&str) {
+        let inode = open_file(exe, OpenFlags::O_RDONLY, 0o777).unwrap();
         let data = inode.file().unwrap().read_all();
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh  /glibc/busybox_testcode.sh ",INITPROC_STR)
+            format!("{} sh  {} ",exe,sh)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(
             data.as_slice(),
-            CWD.to_string(),
+            cwd.to_string(),
             &binding,
             &mut envs,
             INITPROC_STR.to_string(),
@@ -259,6 +252,10 @@ static  CWD:&str = "/glibc";
     
         trace!("add_initproc ok");
     }
+
+    
+
+  
 #[allow(unused)]
 /// 分割命令行参数，支持双引号
 fn get_args(command_line: &[u8]) -> Vec<String> {
