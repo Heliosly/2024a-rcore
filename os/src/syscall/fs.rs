@@ -196,7 +196,7 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let file = table.get_file(fd)?.any();
-   put_data(token, st, file.fstat())? ;
+    put_data(token, st, file.fstat())? ;
     Ok(0)
          
     
@@ -1771,7 +1771,97 @@ pub async  fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallR
     Ok(0)
 }
 
+pub async fn sys_renameat(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+) -> SyscallRet {
+    trace!(
+        "[sys_renameat] olddirfd: {}, oldpath: {:p}, newdirfd: {}, newpath: {:p}",
+        olddirfd, oldpath, newdirfd, newpath
+    );
 
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+
+    let old_path = translated_str(token, oldpath);
+    let new_path = translated_str(token, newpath);
+
+    if old_path.is_empty() || new_path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    let old_abs_path = proc.resolve_path_from_fd(olddirfd, &old_path, false).await?;
+    let new_abs_path = proc.resolve_path_from_fd(newdirfd, &new_path, false).await?;
+
+    if old_abs_path.len() > PATH_MAX || new_abs_path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
+    let old_inode = find_inode(&old_abs_path, OpenFlags::O_RDWR)?;
+    //let new_inode = find_inode(&new_abs_path, OpenFlags::O_RDWR)?;
+
+    old_inode.rename(&old_abs_path,&new_abs_path)?;
+
+    Ok(0)
+}
+
+pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {
+    trace!("[sys_creat] path_ptr: {:p}, mode: {}", path_ptr, mode);
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+    let path = translated_str(token, path_ptr);
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    if path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    let abs_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        get_abs_path(&proc.cwd.lock().await, &path)
+    };
+    let open_flags = OpenFlags::O_CREATE | OpenFlags::O_WRONLY | OpenFlags::O_TRUNC;
+    let file_class_instance = open_file(&abs_path, open_flags, mode)?;
+    let new_fd = proc.fd_table.lock().await.alloc_fd();
+    proc.fd_table.lock().await.table[new_fd] = Some(file_class_instance);
+    Ok(new_fd)
+}
+
+pub async fn sys_rmdir(path_ptr: *const u8) -> SyscallRet {
+    trace!("[sys_rmdir] path_ptr: {:p}", path_ptr);
+
+    let proc = current_process();
+    let token = proc.memory_set.lock().await.token();
+    let path = translated_str(token, path_ptr);
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+    if path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    let abs_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        get_abs_path(&proc.cwd.lock().await, &path)
+    };
+    let inode = find_inode(&abs_path, OpenFlags::O_DIRECTORY)?;
+    if !inode.is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
+    let (entries, _) = inode.read_dentry(0, 1)?;
+    if !entries.is_empty() {
+        return Err(SysErrNo::ENOTEMPTY);
+    }
+    if proc.fd_table.lock().await.find_fd(&abs_path).is_some() {
+        return Err(SysErrNo::EBUSY);
+    }
+    inode.unlink(&abs_path)?;
+    remove_inode_idx(&abs_path);
+    Ok(0)
+}
 
 
 
@@ -1965,25 +2055,25 @@ pub async fn sys_symlinkat(
 
 
 
-pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
-    trace!("[sys_getrandom] buf_ptr: {:p}, buflen: {}, flags: {}", buf_ptr, buflen, flags);
-    let proc= current_process();
-    let token = proc.get_user_token().await;
+// pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
+//     trace!("[sys_getrandom] buf_ptr: {:p}, buflen: {}, flags: {}", buf_ptr, buflen, flags);
+//     let proc= current_process();
+//     let token = proc.get_user_token().await;
 
-    if (flags as i32) < 0 {
-        return Err(SysErrNo::EINVAL);
-    }
+//     if (flags as i32) < 0 {
+//         return Err(SysErrNo::EINVAL);
+//     }
 
     
 
-    if buf_ptr.is_null() {
-        return Err(SysErrNo::EINVAL);
-    }
+//     if buf_ptr.is_null() {
+//         return Err(SysErrNo::EINVAL);
+//     }
 
-    open_device_file("/dev/random")?.read(UserBuffer::new(
-        translated_byte_buffer(token, buf_ptr, buflen),
-    )).await
-}
+//     open_device_file("/dev/random")?.read(UserBuffer::new(
+//         translated_byte_buffer(token, buf_ptr, buflen),
+//     )).await
+// }
 
 
 
