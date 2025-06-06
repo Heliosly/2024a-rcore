@@ -10,11 +10,11 @@ linker = "/home/ustc/buildroot/output/host/bin/riscv64-linux-musl-cc"
 [term]
 verbose = true
 
+[net]
+offline = true
+
 [source.crates-io]
 replace-with = "vendored-sources"
 
-[source."vendored-sources"]
+[source.vendored-sources]
 directory = "vendor"
-
-[net]
-offline = true
