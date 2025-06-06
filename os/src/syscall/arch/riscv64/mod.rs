@@ -60,6 +60,10 @@ pub const SYSCALL_READV: usize = 65;
 pub const SYSCALL_WRITEV: usize = 66;
 pub const SYSCALL_PREAD64: usize = 67;
 pub const SYSCALL_PWRITE64: usize = 68;
+pub const SYSCALL_RENAMEAT: usize = 38;
+pub const SYSCALL_CREAT: usize = 85;
+pub const SYSCALL_RMDIR: usize = 84;
+pub const SYSCALL_GETRANDOM: usize = 278;
 pub const SYSCALL_SIGPROCMASK :usize =135;
 pub const SYSCALL_RT_SIGACTION :usize =134;
 pub const SYSCALL_GETPPID:usize = 173;
@@ -91,7 +95,6 @@ pub const SYSCALL_MOUNT:usize=40;
 pub const SYSCALL_UMOUNT2:usize=39;
 pub const SYSCALL_SYMLINKAT:usize =36;
 pub const SYSCALL_READLINKAT:usize =78;
-pub const SYSCALL_GETRANDOM:usize =278; 
 
 pub const SYSCALL_MPROTECT:usize =226; 
 
