@@ -11,9 +11,9 @@ bitflags = "1.2.1"
 buddy_system_allocator = "0.6"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 log = "0.4"
-riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
+riscv = { path = "riscv", features = ["inline-asm"] }
 xmas-elf = "0.7.0"
-virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers", rev = "61ece509" }
+virtio-drivers = { path = "virtio-drivers" }
 cfg-if = { path = "vendor/cfg-if" }
 kernel_guard = { path = "src/kernel_guard" ,features = ["preempt"]}
 lazy_init = { path = "vendor/lazy_init"}
@@ -25,13 +25,13 @@ lwext4_rust = { path = "lwext4_rust" }
 async-trait = { path="vendor/async-trait" }
 
 [profile.release]
+debug = false       
+opt-level = "z"     
+strip = true        
 
-debug = true
-
-opt-level = 0
 [profile.dev]
 debug = true
-opt-level = 0
+opt-level = 0  
 [env]
 RUST_LOG = "debug,lwext4_rust=off"
 [source.crates-io]
