@@ -1,6 +1,4 @@
-# Building
- 
-export ARCH := riscv64 
+
 TARGET := riscv64gc-unknown-none-elf
 MODE ?= debug
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
