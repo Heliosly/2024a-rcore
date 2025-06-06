@@ -44,7 +44,7 @@ DISASM ?= -x
 build: env $(KERNEL_BIN) 
 
 env:
-ifeq ($(OFFLINE),)
+ifeq ($(OFFLINE),1)
 	(rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add $(TARGET)
 	cargo install cargo-binutils
 	rustup component add rust-src
@@ -55,7 +55,7 @@ $(KERNEL_BIN): kernel
 	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
 kernel:
 	@echo Platform: $(BOARD)
-	@cargo build $(MODE_ARG)
+	@cargo build $(MODE_ARG) --offline
 
 clean:
 	@cargo clean
