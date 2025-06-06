@@ -3,8 +3,7 @@ all:
 	$(MAKE) -C os kernel MODE=release
 	cp os/target/riscv64gc-unknown-none-elf/release/os ./kernel-rv
 	touch kernel-la
-	mv os/cargotemp os/.cargo
-
+	cp -rT os/cargotemp os/.cargo	
 run:
 	qemu-system-riscv64 \
    	  -machine virt \
