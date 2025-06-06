@@ -139,6 +139,7 @@ pub struct Sysinfo {
 }
 extern "C" {
     fn ekernel();
+    fn skernel();
 }
 impl Sysinfo {
     pub fn new(newuptime: usize, newtotalram: usize, newprocs: usize) -> Self {
@@ -146,7 +147,7 @@ impl Sysinfo {
             uptime: newuptime,
             loads: [0; 3],
             totalram: newtotalram,
-            freeram: newtotalram - ekernel as usize,
+            freeram: newtotalram - (ekernel as usize-skernel as usize) ,
             sharedram: 0,
             bufferram: 0,
             totalswap: 0,

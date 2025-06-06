@@ -252,7 +252,7 @@ pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOp
 ///open file
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
 
-    log::debug!("[open] abs_path={}", abs_path);
+    log::debug!("[open] abs_path={},flags={:#?},mode:{}", abs_path,flags,mode);
 
     //判断是否是设备文件
     if find_device(abs_path) {
@@ -276,9 +276,11 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     } else {
         let found_res = root_inode().find(abs_path, flags, 0);
         if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
+            warn!("[open_file] Error: A component in the path is not a directory: {:?}", abs_path);
             return Err(SysErrNo::ENOTDIR);
         }
         if found_res.clone().err() == Some(SysErrNo::ELOOP) {
+            warn!("[open_file] Error: Too many symbolic links (possible symlink loop) in path: {:?}", abs_path);
             return Err(SysErrNo::ELOOP);
         }
         if let Ok(t) = found_res {
@@ -291,6 +293,7 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     }
     if let Some(inode) = inode {
         if flags.contains(OpenFlags::O_DIRECTORY) && !inode.is_dir() {
+            warn!("[open_file] Error: A component in the path is not a directory: {:?}", abs_path);
             return Err(SysErrNo::ENOTDIR);
         }
         let (readable, writable) = flags.read_write();
@@ -308,6 +311,7 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     if flags.contains(OpenFlags::O_CREATE) {
         return create_file(abs_path, flags, mode);
     }
+    warn!("[open_file] Error: File or directory not found: {:?}", abs_path);
     Err(SysErrNo::ENOENT)
 }
 
@@ -392,9 +396,6 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 //
 const INITPROC_SH:&str = "
 cd /glibc
-./busybox_testcode.sh
-./basic_testcode.sh
-cd /musl
 ./busybox_testcode.sh
 ./basic_testcode.sh
 

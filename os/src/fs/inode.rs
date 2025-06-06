@@ -19,32 +19,32 @@ pub const NONE_MODE: u32 = 0;
 // 定义一份打开文件的标志
 bitflags! {
     pub struct OpenFlags: u32 {
-        // 保留低 3 位表示访问模式
-        const O_RDONLY      = 0;           // 只读
-        const O_WRONLY      = 1;           // 只写
-        const O_RDWR        = 2;           // 读写
-        const O_ACCMODE     = 3;           // 文件访问模式的掩码（用于提取只读/只写/读写）
+        const O_RDONLY      = 0;
+        const O_WRONLY      = 1;
+        const O_RDWR        = 2;
+        const O_ACCMODE     = 3;
 
-        const O_CREATE      = 0o100;       // 若文件不存在则创建
-        const O_EXCL        = 0o200;       // 与 O_CREATE 同用时，若文件已存在则打开失败
-        const O_NOCTTY      = 0o400;       // 如果路径名指向终端设备，不将其设置为控制终端
-        const O_TRUNC       = 0o1000;      // 若文件存在并成功打开，则将其截断为长度 0
-        const O_APPEND      = 0o2000;      // 以追加模式写入（所有写入都追加到文件末尾）
-        const O_NONBLOCK    = 0o4000;      // 非阻塞模式
-        const O_DSYNC       = 0o10000;     // 写操作时，等待数据物理写入完成（不包括元数据）
-        const O_SYNC        = 0o4010000;   // 写操作时，等待数据与元数据物理写入完成
-        const O_RSYNC       = 0o4010000;   // 同步读操作（通常与 O_SYNC 效果相同）
-        const O_DIRECTORY   = 0o200000;    // 打开目标必须是目录
-        const O_NOFOLLOW    = 0o400000;    // 如果路径是符号链接，则打开失败（不跟随符号链接）
-        const FD_CLOEXEC     = 0o2000000;   // exec 调用时自动关闭该文件描述符
-        const O_ASYNC       = 0o20000;     // 启用异步 I/O，I/O 事件会产生信号
-        const O_DIRECT      = 0o40000;     // 尽可能绕过页缓存进行直接磁盘访问
-        const O_LARGEFILE   = 0o100000;    // 允许打开大于 2GB 的文件（32 位系统相关）
-        const O_NOATIME     = 0o1000000;   // 不更新文件访问时间
-        const O_PATH        = 0o10000000;  // 仅打开目录本身，不进行实际访问，可用于遍历路径
-        const O_TMPFILE     = 0o20200000;  // 创建一个匿名临时文件（不会出现在目录中）
+        const O_CREATE      = 0o100;
+        const O_EXCL        = 0o200;
+        const O_NOCTTY      = 0o400;
+        const O_TRUNC       = 0o1000;
+        const O_APPEND      = 0o2000;
+        const O_NONBLOCK    = 0o4000;
+        const O_DSYNC       = 0o10000;
+        const O_SYNC        = 0o4010000;
+        const O_RSYNC       = 0o4010000;
+        const O_DIRECTORY   = 0o200000;
+        const O_NOFOLLOW    = 0o400000;
+        const FD_CLOEXEC  = 0o2000000;
+        const O_ASYNC       = 0o20000;
+        const O_DIRECT      = 0o40000;
+        const O_LARGEFILE   = 0o100000;
+        const O_NOATIME     = 0o1000000;
+        const O_PATH        = 0o10000000;
+        const O_TMPFILE     = 0o20200000;
 
-        const O_ASK_SYMLINK = 0o400000000; // 自定义：用于识别是否访问符号链接本身（而不是其目标）
+       
+        const O_ASK_SYMLINK = 0x80000000; 
     }
 }
 
@@ -212,6 +212,7 @@ impl File for OsInode {
                 inner.offset += n;
                 total += n;
             }
+            trace!("[read] off:{}",inner.offset);
             Ok(total)
         
     }
@@ -225,6 +226,8 @@ impl File for OsInode {
                 inner.offset += n;
                 total += n;
             }
+            
+            trace!("[write] off:{}",inner.offset);
             Ok(total)
       
     }
@@ -234,10 +237,14 @@ impl File for OsInode {
         }
         let mut inner = self.inner.lock();
         if whence == SEEK_SET {
+            if offset<0 {
+                return Err(SysErrNo::EINVAL);
+            }
             inner.offset = offset as usize;
         } else if whence == SEEK_CUR {
             let newoff = inner.offset as isize + offset;
             if newoff < 0 {
+                warn!("[OsInode::lseek]err: off < 0,off = {}",newoff);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = newoff as usize;

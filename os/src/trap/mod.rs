@@ -157,7 +157,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
         } else {
               crate::task::sleeplist::process_timed_events();
               
-            debug!("into trampoline from taskcount:{},task",task_count());
+            // debug!("into trampoline from taskcount:{},task",task_count());
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
                 if let Some(task) = pick_next_task() {

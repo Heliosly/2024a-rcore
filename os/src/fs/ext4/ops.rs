@@ -11,6 +11,7 @@ use crate::fs::stat::Kstat;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
 use crate::fs::{as_inode_type, fix_path, OpenFlags, Statfs};
 use crate::utils::error::{SysErrNo, SyscallRet};
+use crate::utils::string::get_parent_path_and_filename;
 
 use alloc::ffi::CString;
 use alloc::format;
@@ -145,7 +146,68 @@ impl FileWrapper {
 
 /// The [`VfsNodeOps`] trait provides operations on a file or a directory.
 impl VfsNodeOps for FileWrapper {
+    
+    fn exchange(&self, path1: &str, path2: &str) -> Result<(), SysErrNo> {
+        // 1. 从 path1 中拆出父目录和文件名
+        //    比如 path1 = "/foo/bar/a.txt"，那么：
+        //      parent1 = "/foo/bar"
+        //      name1   = "a.txt"
+        assert!(path1.starts_with('/'));
 
+        assert!(path2.starts_with('/'));
+        let (p1,name1) =  get_parent_path_and_filename(path1);
+                  
+
+        // 2. 构造一个临时文件名：确保它在 p1（也就是 path1 所在目录）下是唯一的
+        //    这里我们简单用 “.swap_{name1}_{name2}” 作为临时名字；
+        let (p2,name2) = get_parent_path_and_filename(path2);
+        let tmp_name = format!(".swap_{}_{}", name1, name2);
+        let temp_path = if p1 != "/" {
+            let mut path = String::from(p1);
+            path.push_str(&tmp_name);
+            path
+        } else {
+            let mut path = String::from(p1);
+            path.push_str(&tmp_name[1..]); // 去掉 tmp_name 的开头 '/'
+            path
+        };
+           
+
+        // 如果临时路径与 path1 或 path2 恰好相同，就报错（否则后面会覆盖原文件）
+        if temp_path == path1 || temp_path == path2 {
+            warn!("[impl VfsNodeOps for FileWrapper exchange] err: exchange path is same");
+            return Err(SysErrNo::EEXIST); // 自定义一个错误码，或者使用 SysErrNo::EEXIST
+        }
+
+
+        // 步骤 1：把 path1 → temp_path
+        //      如果这一步失败，就直接返回 Err，不做回滚
+        self.rename(path1, &temp_path)
+            .map_err(|e| {
+                warn!("[exchange] step1: rename {} → {} failed: err={}", path1, temp_path, e);
+                e
+            })?;
+
+        // 步骤 2：把 path2 → path1
+        //      注意：此时 path1 已经移动到 temp_path 了，所以可以直接把 path2 改到 path1
+        //      如果这一步失败，你可以选择回滚：把 temp_path 再改回 path1，但这里示例先不做回滚
+        self.rename(path2, path1)
+            .map_err(|e| {
+                warn!("[exchange] step2: rename {} → {} failed: err={}", path2, path1, e);
+                e
+            })?;
+
+        // 步骤 3：把 temp_path → path2
+        //      如果这一步失败，同样可以选择回滚：把 path1 移回 path2，然后把 temp_path 移回 path1
+        self.rename(&temp_path, path2)
+            .map_err(|e| {
+                warn!("[exchange] step3: rename {} → {} failed: err={}", temp_path, path2, e);
+                e
+            })?;
+
+        // 三步都成功，则两个路径对应的节点已经交换完毕
+        Ok(())
+    }
     
 
  fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {

@@ -6,7 +6,8 @@ use super::{
     TaskStatus,
 };
 use crate::config::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
-use crate::fs::{find_inode, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
+use crate::fs::inode::NONE_MODE;
+use crate::fs::{find_inode, open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
     flush_tlb, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr,
     VirtPageNum,
@@ -963,10 +964,10 @@ impl ProcessControlBlock {
         // 3. 准备传递给 VFS `find` 方法的 OpenFlags
         let find_flags = OpenFlags::empty(); // 或者一个基础的查找模式，如 O_PATH
         if follow_last_symlink {
-            match find_inode(&normalized_path_to_find, find_flags) {
+            match open_file(&normalized_path_to_find, find_flags,NONE_MODE) {
                 Ok(found_vfs_node) => {
                     // 5. 从找到的 VfsNodeOps 获取其最终的绝对路径
-                    return Ok(found_vfs_node.path()); // 返回 Result<String, SysErrNo>
+                    return Ok(found_vfs_node.file().unwrap().get_path()); // 返回 Result<String, SysErrNo>
                 }
                 Err(SysErrNo::ENOENT) => {
                     // 如果 find 返回 ENOENT，但我们不 follow 最后一个符号链接，

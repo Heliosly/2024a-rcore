@@ -90,6 +90,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_LSEEK=>sys_lseek(args[0], args[1] as isize, args[2] as u32 ).await, 
         SYSCALL_PWRITE64=>sys_pwrite64(args[0], args[1] as *const u8, args[2], args[3]).await,
         SYSCALL_RENAMEAT=>sys_renameat(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8).await,
+        SYSCALL_RENAMEAT2=>sys_renameat2(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8,args[4] as u32).await,
         SYSCALL_CREAT => sys_creat(args[0] as *const u8, args[1] as u32).await,
         SYSCALL_RMDIR => sys_rmdir(args[0] as *const u8).await,
         SYSCALL_GETRANDOM => sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32).await,

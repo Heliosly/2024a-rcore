@@ -1416,7 +1416,6 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
  trace!("[sys_faccessat] dirfd: {}, path_ptr: {}, mode: {}, flags: {}",
                 dirfd, path_kernel_str, mode_u32, _flags);
     
-    if !path_kernel_str.starts_with('/') { return Err(SysErrNo::EINVAL); }
   
     // 4. 解析得到最终的、已规范化的绝对路径 abs_path
     let abs_path= pcb_arc.resolve_path_from_fd(  dirfd, &path_kernel_str, false)
@@ -1803,6 +1802,69 @@ pub async fn sys_renameat(
     old_inode.rename(&old_abs_path,&new_abs_path)?;
 
     Ok(0)
+}
+pub async fn sys_renameat2(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+    flags: u32,
+) -> SyscallRet{
+    const RENAME_NOREPLACE: u32 = 1 << 0;
+    const RENAME_EXCHANGE:  u32 = 1 << 1;
+    const RENAME_WHITEOUT:  u32 = 1 << 2;
+
+    trace!(
+        "[sys_renameat2] olddirfd: {}, oldpath: {:p}, newdirfd: {}, newpath: {:p}, flags: {:#x}",
+        olddirfd, oldpath, newdirfd, newpath, flags
+    );
+
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+
+    let old_path = translated_str(token, oldpath);
+    let new_path = translated_str(token, newpath);
+
+    if old_path.is_empty() || new_path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+
+    let old_abs_path = proc.resolve_path_from_fd(olddirfd, &old_path, false).await?;
+    let new_abs_path = proc.resolve_path_from_fd(newdirfd, &new_path, false).await?;
+
+    if old_abs_path.len() > PATH_MAX || new_abs_path.len() > PATH_MAX {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
+    // 查找 old 和 new inode
+    let old_inode = find_inode(&old_abs_path, OpenFlags::O_RDWR)?;
+    let new_inode_result = find_inode(&new_abs_path, OpenFlags::O_RDWR);
+
+    // 处理 NOREPLACE
+    if (flags & RENAME_NOREPLACE) != 0 {
+        if new_inode_result.is_ok() {
+            warn!("[sys_renameat2] RENAME_NOREPLACE flag set and target exists");
+            return Err(SysErrNo::EEXIST);
+        }
+    }
+
+    // 处理 EXCHANGE
+    if (flags & RENAME_EXCHANGE) != 0 {
+        old_inode.exchange(&old_abs_path,  &new_abs_path)?;
+        return Ok(0);
+    }
+
+    // 暂不支持 WHITEOUT
+    if (flags & RENAME_WHITEOUT) != 0 {
+        warn!("[sys_renameat2] RENAME_WHITEOUT not supported");
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 默认重命名行为
+    old_inode.rename(&old_abs_path, &new_abs_path)?;
+
+    Ok(0)
+
 }
 
 pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {

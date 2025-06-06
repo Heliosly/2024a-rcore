@@ -63,6 +63,8 @@ pub const SYSCALL_WRITEV: usize = 66;
 pub const SYSCALL_PREAD64: usize = 67;
 pub const SYSCALL_PWRITE64: usize = 68;
 pub const SYSCALL_RENAMEAT: usize = 38;
+
+pub const SYSCALL_RENAMEAT2: usize = 276;
 pub const SYSCALL_CREAT: usize = 85;
 pub const SYSCALL_RMDIR: usize = 84;
 pub const SYSCALL_GETRANDOM: usize = 278;

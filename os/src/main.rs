@@ -102,9 +102,9 @@ pub fn rust_main() -> ! {
     fs::init();
     // fs::list_app();
     
-    task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
+    // task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
 
-    // task::add_initproc("/glibc", "/glibc/busybox", "./basic_testcode.sh");
+    task::add_initproc("/glibc", "/glibc/busybox", "busybox_testcode.sh");
 
     extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;

@@ -24,7 +24,7 @@ OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
 # GDB Dashboard 支持
-GDB_PATH := ~/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
+GDB_PATH := /home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 gdb := $(GDB_PATH) 
 
 # Building mode argument
@@ -90,6 +90,7 @@ gdbserver: build
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -s -S
 
 gdbclient:
-	@gdb -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
+	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
+
 
 .PHONY: build env kernel clean disasm disasm-vim run-inner fs-img gdbserver gdbclient

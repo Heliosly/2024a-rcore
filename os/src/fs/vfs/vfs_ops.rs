@@ -126,7 +126,9 @@ pub trait VfsNodeOps: Send + Sync {
     fn rename(&self, _src_path: &str, _dst_path: &str) -> Result<usize, i32> {
         unimplemented!()
     }
-
+    fn exchange(&self, path1: &str, path2: &str) -> Result<(), SysErrNo> {
+        unimplemented!()
+    }
     /// Convert `&self` to [`&dyn Any`][1] that can use
     /// [`Any::downcast_ref`][2].
     ///
