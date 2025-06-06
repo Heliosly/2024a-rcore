@@ -25,6 +25,7 @@ use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
+use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -228,7 +229,8 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={}", syscall_id,curr.id(),curr.get_process().get_pid());
+                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={},sepc:{:#x}",
+                     syscall_id,curr.id(),curr.get_process().get_pid(),sepc);
                     
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
@@ -246,6 +248,11 @@ pub async fn user_task_top() -> i32 {
                            if  err==SysErrNo::ECHILD{
                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
+                                -(err as isize) as usize
+                            }
+                            else if err == SysErrNo::EINVAL{
+                                bpoint();
+                                warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                                 -(err as isize) as usize
                             }
                             else{

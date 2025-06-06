@@ -238,19 +238,23 @@ impl File for OsInode {
         let mut inner = self.inner.lock();
         if whence == SEEK_SET {
             if offset<0 {
+                
+                warn!("[OsInode::lseek]err:SEEK_SET off < 0,off = {}",offset);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = offset as usize;
         } else if whence == SEEK_CUR {
             let newoff = inner.offset as isize + offset;
             if newoff < 0 {
-                warn!("[OsInode::lseek]err: off < 0,off = {}",newoff);
+                warn!("[OsInode::lseek]err:SEEK_CUR off < 0,off = {}",newoff);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = newoff as usize;
         } else if whence == SEEK_END {
             let newoff = inner.inode.size() as isize + offset;
             if newoff < 0 {
+                
+                warn!("[OsInode::lseek]err:SEEK_END off < 0,off = {}",newoff);
                 return Err(SysErrNo::EINVAL);
             }
             inner.offset = newoff as usize;

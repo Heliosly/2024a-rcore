@@ -720,6 +720,7 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
+    ///如果读完返回-1
     pub fn read_dir_from(&self, off: u64) -> Result<Vec<OsDirent>, i32> {
         if self.this_type != InodeTypes::EXT4_DE_DIR {
             return Err(22);

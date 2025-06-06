@@ -1374,7 +1374,12 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
     }
     let (de, off) = inode.read_dentry(off, len)?;
     buffer.write(de.as_slice());
-    let _ = file.lseek(off , SEEK_SET )?;
+    if off!=-1{
+        let _ = file.lseek(off , SEEK_SET )?;
+    }
+    else{
+        return Ok(0);
+    }
     return Ok(de.len());
 }
 

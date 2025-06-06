@@ -3,7 +3,7 @@ use core::arch::asm;
 
 use riscv::register::{scause::{Exception, Interrupt, Trap}, sstatus::{self, Sstatus, SPP}};
 
-use crate::{signal::{SigSet, SignalStack}, task::{current_stack_top, current_task, TaskStatus}, utils::{bpoint, page_round_up}};
+use crate::{signal::{SigSet, SignalStack}, task::{current_stack_top, current_task, TaskStatus}, utils::{ page_round_up}};
 
 
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
@@ -223,7 +223,6 @@ impl TrapContext{
 }
 /// 用户态返回恢复
     pub fn user_return(ctx:*mut TrapContext) -> ! {
-        bpoint();
         unsafe {
             let ctx_ptr = ctx as *const _ as usize;
             asm!(

@@ -24,12 +24,20 @@ impl FileClass {
     pub fn file(&self) -> Result<Arc<OsInode>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
-            FileClass::Abs(_) => Err(SysErrNo::EINVAL),
+            FileClass::Abs(_) => {
+
+                debug!("[FileClass::file] err:not is file");
+                Err(SysErrNo::EINVAL)
+            },
         }
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         match self {
-            FileClass::File(_) => Err(SysErrNo::EINVAL),
+            FileClass::File(_) => {
+
+                debug!("[FileClass::abs] err:not is abs");
+                Err(SysErrNo::EINVAL)
+            },
             FileClass::Abs(f) => Ok(f.clone()),
         } 
     }
