@@ -24,7 +24,7 @@ OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
 # GDB Dashboard 支持
-GDB_PATH := /root/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
+GDB_PATH := ~/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 gdb := $(GDB_PATH) 
 
 # Building mode argument

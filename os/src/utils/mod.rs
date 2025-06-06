@@ -143,8 +143,11 @@ pub fn normalize_and_join_path(
 
     Ok(result)
 }
-
-pub fn bpoint()->i32{
+#[inline(never)]         // 禁止内联
+#[no_mangle]            
+               
+#[export_name = "bpoint"] 
+pub const    fn bpoint()->i32{
     let mut _a=1;
     return _a;
 }

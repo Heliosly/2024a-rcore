@@ -12,7 +12,6 @@ use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::sleeplist::init_sleeper_queue;
 use crate::task::{put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
-use crate::utils::{bpoint, bpoint1};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;

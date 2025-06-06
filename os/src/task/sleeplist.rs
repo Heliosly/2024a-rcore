@@ -243,7 +243,7 @@ pub fn process_timed_events() {
 
 fn process_sleepers() {
     if !GLOBAL_SLEEPER_QUEUE.is_init() {
-        // log::warn!("GLOBAL_SLEEPER_QUEUE not initialized in process_sleepers");
+        log::warn!("GLOBAL_SLEEPER_QUEUE not initialized in process_sleepers");
         return;
     }
     let now = current_time();

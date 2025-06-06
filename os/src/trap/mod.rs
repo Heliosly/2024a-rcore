@@ -22,10 +22,9 @@ use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_tick, yield_now, CurrentTask
+    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
-use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -158,7 +157,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
         } else {
               crate::task::sleeplist::process_timed_events();
               
-            // debug!("into trampoline from taskcount:{},task",get_task_count());
+            debug!("into trampoline from taskcount:{},task",task_count());
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
                 if let Some(task) = pick_next_task() {
@@ -250,7 +249,6 @@ pub async fn user_task_top() -> i32 {
                                 -(err as isize) as usize
                             }
                             else{
-                                bpoint();
                             warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
                             

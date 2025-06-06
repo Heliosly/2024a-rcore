@@ -223,6 +223,7 @@ impl TrapContext{
 }
 /// 用户态返回恢复
     pub fn user_return(ctx:*mut TrapContext) -> ! {
+        bpoint();
         unsafe {
             let ctx_ptr = ctx as *const _ as usize;
             asm!(
