@@ -1,4 +1,6 @@
 # Building
+ 
+export ARCH := riscv64 
 TARGET := riscv64gc-unknown-none-elf
 MODE := release
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
@@ -36,7 +38,6 @@ endif
 CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | sed -E 's/ch([0-9])/\1/')
 TEST ?= 6
 BASE ?= 1
-
 # Disassembly
 DISASM ?= -x
 
