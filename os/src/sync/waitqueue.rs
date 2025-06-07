@@ -1,6 +1,7 @@
 
 use alloc::sync::Arc;
 use alloc::collections::LinkedList;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -47,6 +48,9 @@ pub struct GeneralWaitTaskList {
 }
 
 impl GeneralWaitTaskList {
+    pub fn is_empty(&self)->bool{
+        self.list.is_empty()
+    }
     /// 创建一个新的、空的 `GeneralWaitTaskList`。
     pub fn new() -> Self {
         Default::default()
@@ -127,6 +131,18 @@ impl GeneralWaitTaskList {
         } else {
             false
         }
+    }
+    pub fn notify_n(&mut self, num_to_wake: usize) -> usize { // 返回唤醒的数量
+        let mut woken_count = 0;
+        for _ in 0..num_to_wake {
+            if let Some(node_arc) = self.list.pop_front() {
+                node_arc.waker.wake_by_ref();
+                woken_count += 1;
+            } else {
+                break; // 队列已空
+            }
+        }
+        woken_count
     }
 }
 

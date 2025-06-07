@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, utils::error::{SysErrNo, SyscallRet}};
+use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigInfo, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, timer::UserTimeSpec, utils::error::{SysErrNo, SyscallRet}};
 
 // pub fn sys_rt_sigaction(
 //     signo: usize,
@@ -197,6 +197,41 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
 
     Ok(0) // 信号已尝试发送（即使部分线程失败，仍返回成功）
 }
+pub async fn sys_tgkill(target_pid: usize, target_tid: usize, signum_usize: usize)->SyscallRet{
+    trace!("[sys_tkill] target_pid:{} target_tid: {}, signum: {}", target_pid,target_tid, signum_usize);
+    let pcb = match PID2PC.lock().get(&target_pid){
+         Some(p) => p.clone(),
+        None => return Err(SysErrNo::ESRCH), // 线程组（pid）不存在
+    };
+    if !pcb.containing_tid(target_tid).await{
+        return Err(SysErrNo::ESRCH);
+    }
+    let sig = match Signal::from_usize(signum_usize) {
+        Some(s) => s,
+        None => return Err(SysErrNo::EINVAL), // 无效信号
+    };
+
+    if signum_usize == 0 {
+        // 发送信号0是检查进程是否存在，不实际发送信号
+
+        if TID2TC.lock().contains_key(&target_tid) {
+            return Ok(0); // 存在
+        } else {
+            return Err(SysErrNo::ESRCH); // 不存在
+        }
+    }
+
+    let target_task_arc = match TID2TC.lock().get(&target_tid) {
+        Some(task_ref) => task_ref.clone(),
+        None => return Err(SysErrNo::ESRCH), // No such process/task
+    };
+
+    // TODO: 权限检查 (例如，当前任务是否有权限向目标任务发送信号)  @Heliosly.
+    // ...
+
+    send_signal_to_task(&target_task_arc, sig).await?;
+    Ok(0) // 成功 (信号已加入挂起队列或被处理)
+}
 // int kill(pid_t pid, int sig); (或 tkill/tgkill)
 pub async  fn sys_tkill(target_tid: usize, signum_usize: usize) -> SyscallRet {
     
@@ -265,3 +300,10 @@ pub async  fn sys_pause() -> SyscallRet {
     Err(SysErrNo::EINTR) // 表示被信号中断
 }
 
+pub fn sys_rt_sigtimedwait(
+    _sig: *const SigSet,
+    _info: *mut SigInfo,
+    _timeout: *const UserTimeSpec,
+) -> SyscallRet {
+    Ok(0)
+}

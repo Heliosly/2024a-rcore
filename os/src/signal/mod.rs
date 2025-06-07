@@ -29,16 +29,13 @@
 mod sigact;
 mod signal;
 use alloc::sync::Arc;
-use alloc::task;
 pub use sigact::*;
 pub use signal::*;
 use crate::config::{ SS_DISABLE, USER_SIGNAL_PROTECT};
-use crate::mm::page_table::copy_from_user_exact;
 use crate::mm::put_data;
-use crate::task::current_task;
-use crate::task::{ProcessControlBlock, ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
+use crate::task::{current_task, exit_proc};
+use crate::task::{ ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
 use crate::trap::{TrapContext, UContext};
-use core::future;
 use crate::utils::error::SysErrNo; // 假设 current_task() 返回 Arc<Task>
 
 // 通常信号编号从 1 开始。0 不是有效信号。
@@ -235,23 +232,18 @@ pub async  fn handle_pending_signals() {
 
             // 特殊处理 SIGKILL 和 SIGSTOP (它们不能被捕获或忽略，动作是固定的)
             if sig == Signal::SIGKILL {
-                // TODO: 终止整个进程 (所有线程) @Heliosly.
-                // log::info!("Process {} (task {}) received SIGKILL, terminating all tasks.", pcb_arc.pid.0, task_arc.id());
-                // pcb_arc.terminate_all_tasks_and_self(); // 假设有此方法
+                exit_proc((128+sig as usize) as i32).await;
+                log::info!("Process {} (task {}) received SIGKILL, terminating all tasks.", pcb_arc.pid.0, task_arc.id());
                 return; // 进程终止，无需继续
             }
             if sig == Signal::SIGSTOP {
-                // TODO: 停止整个进程 (所有线程) @Heliosly.
-                // log::info!("Process {} (task {}) received SIGSTOP, stopping all tasks.", pcb_arc.pid.0, task_arc.id());
-                // pcb_arc.stop_all_tasks(); // 假设有此方法
-                // SIGSTOP 后，此线程也应停止，可能不会继续循环。或者由调度器处理。
-                // 这里我们先假设它处理完这个信号后，如果还有其他信号，可以继续。
-                // 但通常 SIGSTOP 会导致任务状态改变，不再执行。
-                // 为了简单，我们先 continue loop。
+                log::info!("Process {} (task {}) received SIGSTOP, stopping all tasks.", pcb_arc.pid.0, task_arc.id());
+                unimplemented!();
                 continue;
             }
             // 同样，SIGCONT 需要唤醒进程中的所有线程
             if sig == Signal::SIGCONT {
+                unimplemented!();
                 // log::info!("Process {} (task {}) received SIGCONT, continuing all tasks.", pcb_arc.pid.0, task_arc.id());
                 // pcb_arc.continue_all_tasks(); // 假设有此方法
                 // SIGCONT 的默认动作是 Ignore (如果之前是Stop) 或 Continue。

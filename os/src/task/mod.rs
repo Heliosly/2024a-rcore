@@ -15,7 +15,7 @@
 //! might not be what you expect.
 #![allow(missing_docs)]
 
-mod tls;
+// mod tls;
 pub mod aux;
 mod flags;
 mod current;
@@ -69,11 +69,11 @@ pub unsafe fn write_thread_pointer(tp: usize) {
 }
 
 // pub use manager::add_task;
-pub fn init_tls() {
-    let main_tls = tls::TlsArea::alloc();
-    unsafe {write_thread_pointer(main_tls.tls_ptr() as usize) };
-    core::mem::forget(main_tls);
-}
+// pub fn init_tls() {
+//     let main_tls = tls::TlsArea::alloc();
+//     unsafe {write_thread_pointer(main_tls.tls_ptr() as usize) };
+//     core::mem::forget(main_tls);
+// }
 pub type ProcessRef = Arc<ProcessControlBlock>;
 pub static PID2PC: Spin<BTreeMap<usize, ProcessRef>> =Spin::new(BTreeMap::new());
 pub static TID2TC: Spin<BTreeMap<usize, TaskRef>> = Spin::new(BTreeMap::new());
@@ -215,13 +215,13 @@ static  CWD:&str = "/glibc";
 //  pub  static KERNEL_IDLE_PROCESS:LazyInit<ProcessRef> = LazyInit::new();
 
 
-pub fn add_initproc(cwd:&str,exe:&str,sh:&str) {
+pub fn add_initproc(cwd:&str,exe:&str,argv:&str){
         let inode = open_file(exe, OpenFlags::O_RDONLY, 0o777).unwrap();
         let data = inode.file().unwrap().read_all();
     
         let mut envs = get_envs(); // 注意：new 需要 &mut envs
         let binding = get_args(
-            format!("{} sh  {} ",exe,sh)
+            format!("{} {} ",exe,argv)
             
         .as_bytes());
         let pcb_fut = ProcessControlBlock::new(

@@ -5,22 +5,16 @@
 use alloc::{
    format, string::{String, ToString}, sync::Arc, vec::Vec
 };
-use linux_raw_sys::general::AT_FDCWD;
+use linux_raw_sys::general::{AT_FDCWD};
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE},
-    fs::{open_file,  OpenFlags, NONE_MODE},
-    mm::{
+    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
         flush_tlb, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
-    },
-    syscall::flags:: MmapProt,
-    task::{
+    }, sync::futex::{FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ MmapProt, WaitFlags}, task::{
         current_process, current_task, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
-    },
-    timer::{ get_time_us, get_usertime, TimeVal, UserTimeSpec},
-    utils::{
+    }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
-    },
+    }
 };
 
 /// Task information
@@ -238,7 +232,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
 
 pub fn sys_settidaddress(tid_ptr:usize) -> SyscallRet {
     trace!(
-        "kernel:pid[{}] sys_settidaddress NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_settidaddress ",
         current_task().get_pid()
     );
     current_task().set_child_tid_ptr(tid_ptr);
@@ -446,8 +440,11 @@ pub fn sys_getuid() -> SyscallRet {
 // > 0    meaning wait for the child whose process ID is equal to the value of pid.
 //  参考 https://man7.org/linux/man-pages/man2/wait4.2.html
 //唤醒方式有待优化
-pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallRet {
+pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRet {
     trace!("[sys_wait4] pid:{},wstatus:{:?},options:{}",pid,wstatus,options);
+    if pid == 0 {
+        warn!("Don't support for process group.");
+    }
     let proc = current_process();
     
     if (pid as i32) == i32::MIN {
@@ -488,18 +485,12 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
         let exit_code = child.exit_code();
 
         // ++++ release child PCB
-        if wstatus as usize != 0x0 {
+        if !wstatus .is_null() {
             debug!(
                 "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
                 pid, found_pid, exit_code, wstatus as usize
             );
-            let mut ms = proc.memory_set.lock().await;
-            if exit_code >= 128 && exit_code <= 255 {
-                //表示由于信号而退出的
-               ms. safe_put_data( wstatus, exit_code).await.unwrap();
-            } else {
-                ms.safe_put_data( wstatus, exit_code << 8).await.unwrap();
-            }
+            proc.memory_set.lock().await. safe_put_data( wstatus,  exit_code << 8).await.unwrap();
         }
         assert_eq!(
             Arc::strong_count(&child),
@@ -509,6 +500,10 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
         );
         Ok(found_pid)
     } else {
+        let waitflags=WaitFlags::from_bits(options ).unwrap();
+        if waitflags == WaitFlags::WNOHANG{
+            return Ok(0);
+        }
         let res=  
         if pid==-1{
             let mut task_refs = Vec::new();
@@ -526,8 +521,47 @@ pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: i32) -> SyscallR
          JoinFuture::new(task).await;
          pid as usize
         };
+        for (idx, p) in childvec.iter().enumerate() {
+            if p.get_pid() == res {
+                assert!(p.is_zombie().await);
+                pair = Some((idx, p));
+                break;
+            }
+            
+        }
+        assert!(pair.is_some());
+        if let Some((idx, child_task)) = pair {
+            debug!("[reap_child_by_pid] removing child pid {}", res);
+    
+            PID2PC.lock().remove(&res);
+            let child = childvec.remove(idx);
+    
+            let exit_code = child.exit_code();
+            if !wstatus.is_null() {
+                debug!(
+                    "[sys_wait4] child pid :{}  wait  by pid:{} ,exit_code ={}",
+                    res, proc.get_pid(), exit_code
+                );
+                proc.memory_set
+                    .lock()
+                    .await
+                    .safe_put_data(wstatus, exit_code << 8)
+                    .await
+                    ?;
+            }
+    
+            assert_eq!(
+                Arc::strong_count(&child),
+                1,
+                "strong_count is incorrect after child removal: {}",
+                Arc::strong_count(&child)
+            );
+    
+             Ok(res)
+        } else {
+            unreachable!();
+        }
         
-        return Ok(res);
     }
     // ---- release current PCB automatically
 }
@@ -1027,9 +1061,9 @@ pub async  fn sys_prlimit(
         let token  = proc.get_user_token().await;
     if resource != RLIMIT_NOFILE {
         // 说明是get
-        let limit = translated_refmut(token, old_limit)?;
-        limit.rlim_cur = 0xdeadbeff;
-        limit.rlim_max =  0xdeadbeff;
+        // let limit = translated_refmut(token, old_limit)?;
+        // limit.rlim_cur = 0xdeadbeff;
+        // limit.rlim_max =  0xdeadbeff;
         return Ok(0)
     }
 
@@ -1082,4 +1116,143 @@ pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet 
     }
      Ok(0)
 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// futex 系统调用实现
+/// uaddr_user_ptr: 指向用户空间 futex 字 (u32) 的指针。
+/// futex_op_full: Futex 操作码，可能包含 FUTEX_PRIVATE_FLAG 等。
+/// val: 操作依赖的值 (例如，FUTEX_WAIT 中期望的 futex 字的值)。
+/// timeout_or_val2_or_ptr:
+///   - 对于 FUTEX_WAIT (带超时): 指向用户空间 UserTimeSpec 的指针 (usize)。
+///   - 对于 FUTEX_WAKE: 要唤醒的任务数量 (usize)。
+///   - 对于不带超时的 FUTEX_WAIT: 可以是0。
+/// uaddr2_user_ptr: (对于本简化版，未使用)
+/// val3: (对于本简化版，未使用)
+pub async fn sys_futex(
+    uaddr_user_ptr: *const u32,
+    futex_op_full: i32,
+    val_expected_or_count: u32, // 在 WAIT 时是期望值，在 WAKE 时是数量
+    timeout_user_ptr_or_ignored: usize, // 对 WAIT 是 *const UserTimeSpec, 对 WAKE 通常是0
+    _uaddr2_user_ptr: *mut u32, // 暂不使用
+    _val3_ignored: u32,         // 暂不使用
+) -> SyscallRet {
+    log::trace!("sys_futex(uaddr: {:p}, op: {}, val_exp_count: {}, timeout_ptr: {:#x})",
+                uaddr_user_ptr, futex_op_full, val_expected_or_count, timeout_user_ptr_or_ignored);
+    const FUTEX_WAIT: i32 = 0;
+    const FUTEX_WAKE: i32 = 1;
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+
+    // 1. 校验 uaddr_user_ptr 是否有效且对齐 (对 u32)
+    if uaddr_user_ptr.is_null() || (uaddr_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+        return Err(SysErrNo::EFAULT);
+    }
+    let uaddr_usize= uaddr_user_ptr as usize;
+    
+
+    // 3. 解析操作码
+    
+    let op = futex_op_full ; // & !FUTEX_PRIVATE_FLAG; // 先不区分 private
+
+    let futex_key: FutexKey = (token,uaddr_usize );
+
+    match op {
+        FUTEX_WAIT /* | FUTEX_WAIT_PRIVATE */ => {
+            let expected_val = val_expected_or_count;
+
+            // a. 再次检查用户空间的 futex 值
+            //    这是 futex 的核心：在任务睡眠前，必须再次检查条件。
+            //    如果值已经改变，则不睡眠，立即返回 EAGAIN。
+            let current_val_in_user = *match get_target_ref(token, uaddr_user_ptr) {
+                Ok(v) => v,
+                Err(e) => return Err(e.into()), // 读取失败
+            };
+
+            if current_val_in_user != expected_val {
+                return Err(SysErrNo::EAGAIN);
+            }
+
+            // b. 处理超时
+            let deadline_opt: Option<TimeVal> = if timeout_user_ptr_or_ignored == 0 {
+                None // 无限等待
+            } else {
+                let timespec_user_ptr = timeout_user_ptr_or_ignored as *const UserTimeSpec;
+                let timeout_spec = match  get_target_ref(token,timespec_user_ptr){
+                    Ok(ts) => ts,
+                    Err(_) => return Err(SysErrNo::EFAULT), // 复制 timespec 失败
+                };
+                // 校验 timespec
+                if  timeout_spec.tv_nsec >= 1_000_000_000 {
+                    return Err(SysErrNo::EINVAL);
+                }
+                if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 {
+                 
+                    return Ok(0);
+                }
+                Some(current_time().add_timespec(&timeout_spec)) // 计算绝对截止时间
+            };
+
+            // c. 创建并等待 FutexWaitInternalFuture
+            let futex_wait_internal_future = FutexWaitInternalFuture::new(
+                token,
+                uaddr_usize,
+                expected_val,
+                deadline_opt,
+            );
+
+            match futex_wait_internal_future.await {
+                Ok(()) => Ok(0), // 被 FUTEX_WAKE 成功唤醒
+             
+                Err(e) => Err(e), 
+            }
+        }
+
+        FUTEX_WAKE /* | FUTEX_WAKE_PRIVATE */ => {
+            let num_to_wake = val_expected_or_count as usize;
+            if num_to_wake == 0 {
+                return Ok(0);
+            }
+
+            let mut futex_system_guard = GLOBAL_FUTEX_SYSTEM.lock();
+            let mut woken_count = 0;
+
+            if let Some(wait_queue) = futex_system_guard.get_mut(&futex_key) {
+                 woken_count = wait_queue.wake_num(num_to_wake);
+                // 必须先释放 futex_system_guard 的锁，再调用 waker.wake()
+                // 因为 waker.wake() 可能导致任务切换和重入内核，甚至再次操作 futex_system_guard
+                drop(futex_system_guard);
+
+                               // 唤醒后，重新获取锁（如果需要清理空队列）
+                // 这一步可选，可以等下次访问时再清理
+                // let mut futex_system_guard_cleanup = GLOBAL_FUTEX_SYSTEM.lock();
+                // if let Some(wait_queue_after_wake) = futex_system_guard_cleanup.get_mut(&futex_key) {
+                //     if wait_queue_after_wake.is_empty() {
+                //         futex_system_guard_cleanup.remove(&futex_key);
+                //     }
+                // }
+
+            } else {
+                drop(futex_system_guard); // 没有等待者
+            }
+            Ok(woken_count)
+        }
+        _ => {
+            log::warn!("sys_futex: Unsupported futex_op: {}", futex_op_full);
+            Err(SysErrNo::ENOSYS) // Operation not supported by OS
+        }
+    }
 }

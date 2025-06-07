@@ -88,6 +88,7 @@ pub fn run_task2(mut curr: CurrentTask) {
                             //                             );
                             enable_irqs();
 
+                    trace!("[user_return]  result:{}", tf.regs.a0);
                             user_return(tf);
                         }
                     }

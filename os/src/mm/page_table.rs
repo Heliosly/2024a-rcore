@@ -318,7 +318,11 @@ impl PageTable {
             let aligned_pa: PhysAddr = pte.ppn().into();
             let offset = va.page_offset();
             let aligned_pa_usize: usize = aligned_pa.into();
-            (aligned_pa_usize + offset).into()
+             let res= aligned_pa_usize + offset;
+             if res ==0{
+               warn!("[translate_va] translate res=0,va={:#x},pte:{}",va.0,pte.bits);
+             };
+            (res).into()
         })
     }
 

@@ -349,6 +349,9 @@ impl ProcessControlBlock {
             .find(|t| t.id() == id)
             .cloned()
     }
+    pub async fn containing_tid(&self, tid: usize) -> bool {
+        !self.tasks.lock().await .iter().any(|tcb| tcb.id() == tid)
+    }
 }
 //  Non
 
@@ -558,9 +561,9 @@ impl ProcessControlBlock {
         let trap_cx = new_task.get_trap_cx().unwrap();
         trap_cx.init(user_sp, entry_point);
         trap_cx.trap_status = TrapStatus::Done;
-        trap_cx.regs.a0 = argv.len();
-        trap_cx.regs.a1 = argv_base;
-        trap_cx.regs.a2 = envp_base;
+        trap_cx.regs.a1 = argv.len();
+        trap_cx.regs.a2 = argv_base;
+        trap_cx.regs.a3 = envp_base;
 
         add_task(new_task.clone());
         TID2TC.lock().insert(new_task.id.0, new_task);

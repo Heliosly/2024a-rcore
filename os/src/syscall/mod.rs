@@ -17,7 +17,7 @@ mod other;
 mod arch;
 pub mod flags;
 use flags::{IoVec, Utsname};
-use crate::timer::{Tms, UserTimeSpec};
+use crate::{signal::SigInfo, timer::{Tms, UserTimeSpec}};
 use fs::*;
 use process::*;
 use other::*;
@@ -41,7 +41,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETUID=>sys_getuid(),
         SYSCALL_SETTIDADDRESS=>sys_settidaddress(args[0]),
         SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32).await,
-        SYSCALL_WAITPID => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32).await,
+        SYSCALL_WAITPID => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as u32).await,
         // SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]).await,
         SYSCALL_GETTIMEOFDAY=>sys_gettimeofday(args[0] as *mut UserTimeSpec, args[1] as usize).await,
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
@@ -75,6 +75,11 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
+        SYSCALL_SIGTIMEDWAIT=>sys_rt_sigtimedwait(
+            args[0] as *const SigSet,
+            args[1] as *mut SigInfo,
+            args[2] as *const UserTimeSpec,
+        ),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]).await,
         SYSCALL_UNAME => sys_uname(args[0] as  *mut Utsname).await,
         SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
@@ -83,7 +88,10 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
         SYSCALL_SIGNALRET =>sys_sigreturn().await,
         SYSCALL_KILL => sys_kill(args[0], args[1]).await,
+        SYSCALL_TGKILL => sys_tgkill(args[0], args[1],args[2]).await,
+
         SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
+
         SYSCALL_WRITEV=>sys_writev(args[0] , args[1] as *const IoVec, args[2] as i32).await,
         SYSCALL_READV=>sys_readv(args[0], args[1] as *const IoVec, args[2] as i32).await,
         SYSCALL_PREAD64=>sys_pread64(args[0] as i32, args[1] as *mut u8, args[2], args[3] ).await,
@@ -123,7 +131,6 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_CLOCK_SETTIME=>     Err(crate::utils::error::SysErrNo::ENOSYS),
         SYSCALL_SYMLINKAT=>sys_symlinkat(args[0] as *const u8,args[2] as i32, args[2] as *const u8).await,
         SYSCALL_READLINKAT=>sys_readlinkat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8, args[3]).await,
-        SYSCALL_GETRANDOM=>sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32).await,
         SYSCALL_MPROTECT=>sys_mprotect(args[0], args[1],args[2] ).await,
         SYSCALL_PIPE2=> sys_pipe2(args[0] as *mut i32 , args[1]as u32).await,
         SYSCALL_SENDFILE=>sys_sendfile(args[0]  as i32,args[1] as i32 , args[2] as *mut isize , args[3]).await,
@@ -132,7 +139,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,
         SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
         SYSCALL_NANOSLEEP=>sys_nanosleep(args[0] as *const UserTimeSpec, args[1] as *mut UserTimeSpec).await,
-        
+        SYSCALL_FUTEX =>sys_futex(args[0] as  *const u32,args[1] as  i32,args[2] as u32,args[3],args[4] as *mut u32,args[5] as u32).await,
         
         
         

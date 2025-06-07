@@ -40,6 +40,7 @@ pub const SYSCALL_MUNMAP: usize = 215;
 pub const SYSCALL_EXEC: usize = 221;
 /// mmap syscall
 pub const SYSCALL_MMAP: usize = 222;
+pub const SYSCALL_SIGTIMEDWAIT :usize= 137;
 /// waitpid syscall
 pub const SYSCALL_WAITPID: usize = 260;
 /// spawn syscall
@@ -109,3 +110,4 @@ pub const SYSCALL_LOG:usize =116;
 pub const SYSCALL_INFO:usize =179;
 
 pub const SYSCALL_UTIMENSAT:usize =88;
+pub const SYSCALL_FUTEX:usize = 98;

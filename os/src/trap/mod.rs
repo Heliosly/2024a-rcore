@@ -149,7 +149,7 @@ pub use context::TrapContext;
 ///
 /// 只有通过 trap 进入这个入口时，是处于关中断的状态，剩下的任务切换是没有关中断
 #[no_mangle]
-pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
+pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
     loop {
         if !from_user && has_trap {
             // 在内核中发生了 Trap，只处理中断，目前不支持抢占
@@ -178,7 +178,7 @@ pub fn trampoline(_tc: &mut TrapContext, has_trap: bool, from_user: bool) {
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
-                error!("no tasks available in run_tasks");
+                warn!("no tasks available in run_tasks");
 
                 wait_for_irqs();
             }
@@ -245,7 +245,12 @@ pub async fn user_task_top() -> i32 {
                         Ok(res) => res,
                         Err(err) => {
 
-                           if  err==SysErrNo::ECHILD{
+                            if err ==SysErrNo::EAGAIN{
+                                tf.sepc-=4;
+                                -(err as isize) as usize 
+
+                            }
+                          else if  err==SysErrNo::ECHILD{
                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
                                 -(err as isize) as usize
@@ -265,7 +270,6 @@ pub async fn user_task_top() -> i32 {
 
                         }
                     };
-                    trace!("[user_task_top]sys_call end result:{}", result);
 
                     tf.regs.a0 = result;
 

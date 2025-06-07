@@ -1010,7 +1010,6 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
     // (可能每个都被完全写入，或者在最后一个 iovec 中发生了部分写入或EOF(对于写来说不常见)的情况然后返回)
     Ok(total_bytes_written)
 }
-//TODO(HELIOSLY) 不应该放进sleep_until。
 // --- sys_poll 系统调用实现 ---
 pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -> SyscallRet {
     if nfds == 0 {
