@@ -14,7 +14,7 @@ use log::warn;
 
 pub mod string;
 pub mod error;
-use crate::{config::{PAGE_SIZE, PATH_MAX}, mm::{FrameTracker, VirtAddr}};
+use crate::{config::{PAGE_SIZE, PATH_MAX}, mm::{FrameTracker, VirtAddr}, trap::TrapContext};
 
 /// 跟踪函数的调用栈
 pub fn backtrace() {
@@ -151,7 +151,7 @@ pub const    fn bpoint()->i32{
     let mut _a=1;
     return _a;
 }
-pub fn bpoint1(a:usize) {
+pub fn bpoint1(tf:&TrapContext) {
    
    
 }

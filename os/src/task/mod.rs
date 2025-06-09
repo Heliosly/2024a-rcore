@@ -57,6 +57,7 @@ pub use waker::custom_noop_waker;
 pub use task::RobustList;
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
+use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
 use alloc::sync::Arc;
 
 
@@ -148,13 +149,29 @@ pub async  fn exit_current(exit_code: i32) {
     
     let process = current_process();
 
-    debug!("[kernel]exit pid {},exit code:{}", task.get_pid(), exit_code);
+    debug!("[kernel]exit tid {},exit code:{}", task.id(), exit_code);
     // **** access current TCB exclusively
     // Change status to Zombie
     task.set_state(TaskStatus::Zombie);
     // Record exit code
     task.set_exit_code(exit_code as isize);
-    task.clear_child_tid().unwrap();
+    if task.clear_child_tid().unwrap()
+     {
+        if let Some(ctid) = &task.child_tid_ptr {
+        let ctid = ctid.load(core::sync::atomic::Ordering::Acquire);
+        let token = process.memory_set.lock().await.token();
+       
+            // println!("ctid :{:#x}",ctid);
+            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
+            if let Some(wait_queue) = futex_guard.get_mut(&(token, ctid)) {
+                wait_queue.wake_matching_waiters(1, u32::MAX); // 唤醒一个等待者
+                if wait_queue.is_empty() {
+                    futex_guard.remove(&(token, ctid));
+                }
+            }
+        
+    }
+}
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();
     if task.is_leader() {

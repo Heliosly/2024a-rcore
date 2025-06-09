@@ -25,7 +25,7 @@ use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
-use crate::utils::bpoint;
+use crate::utils::{bpoint, bpoint1};
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -162,11 +162,13 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
                 if let Some(task) = pick_next_task() {
-                    trace!("take a task");
                     unsafe {
                         CurrentTask::init_current(task);
                     }
-                    Some(CurrentTask::get())
+                    let res= CurrentTask::get();
+                    // trace!("take a task tid = {}",res.id());
+
+                    Some(res)
                 } else {
                     None
                 }
@@ -175,10 +177,12 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
 
                 //                    Arc::strong_count(&curr)
                 //                        );
+
+                    trace!("run task tid = {}",curr.id());
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
-                warn!("no tasks available in run_tasks");
+                // warn!("no tasks available in run_tasks");
 
                 wait_for_irqs();
             }
@@ -203,9 +207,10 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
 
 pub async fn user_task_top() -> i32 {
     loop {
-        // debug!("into user_task_top");
+        debug!("into user_task_top");
         let curr = current_task();
 
+        let mut syscall_ret = None;
         let tf = curr.get_trap_cx().unwrap();
         // debug!("trap_status:{:?}",tf.trap_status);
         if tf.trap_status == TrapStatus::Blocked {
@@ -213,7 +218,7 @@ pub async fn user_task_top() -> i32 {
             let stval = stval::read();
             let sepc = sepc::read();
             trace!(
-                "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x}",
+                "Trap: cause={:?}, addr={:#x}, sepc={:#x}, satp={:#x} ",
                 scause.cause(),
                 stval,
                 sepc,
@@ -229,8 +234,8 @@ pub async fn user_task_top() -> i32 {
                     enable_irqs();
                     let syscall_id = tf.regs.a7;
 
-                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={},sepc:{:#x}",
-                     syscall_id,curr.id(),curr.get_process().get_pid(),sepc);
+                    debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={},sepc:{:#x},a0:{}",
+                     syscall_id,curr.id(),curr.get_process().get_pid(),sepc,tf.regs.a0);
                     
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
@@ -247,8 +252,13 @@ pub async fn user_task_top() -> i32 {
 
                             if err ==SysErrNo::EAGAIN{
                                 tf.sepc-=4;
-                                -(err as isize) as usize 
+                               bpoint();
+                               debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
+                               yield_now().await;
+
+                                tf.regs.a0
+                 
                             }
                           else if  err==SysErrNo::ECHILD{
                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
@@ -256,8 +266,7 @@ pub async fn user_task_top() -> i32 {
                                 -(err as isize) as usize
                             }
                             else if err == SysErrNo::EINVAL{
-                                bpoint();
-                                warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                                println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                                 -(err as isize) as usize
                             }
                             else{
@@ -270,8 +279,8 @@ pub async fn user_task_top() -> i32 {
 
                         }
                     };
-
-                    tf.regs.a0 = result;
+            
+                    syscall_ret =  Some(result);
 
                     // trace!("sys_call end1");
                     // 判断任务是否退出
@@ -349,12 +358,18 @@ pub async fn user_task_top() -> i32 {
                     );
                 }
             }
-            {
+            
+            tf.trap_status = TrapStatus::Done;
+           {
                 //处理完系统调用过后，对应的信号处理和时钟更新
                 crate::signal::handle_pending_signals().await;
                 crate::task::sleeplist::process_timed_events();
             }
-            tf.trap_status = TrapStatus::Done;
+
+            if let Some(res) = syscall_ret{
+
+                 tf.set_arg0(res);
+            }
             // trace!("sys_call end3");
             // 判断任务是否退出
 

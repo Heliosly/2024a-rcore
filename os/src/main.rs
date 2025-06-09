@@ -22,7 +22,7 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(naked_functions)]
-
+#![feature(linked_list_retain)]
 #![feature(linked_list_cursors)]
 #[macro_use]
 extern crate bitflags;
@@ -104,9 +104,11 @@ pub fn rust_main() -> ! {
     
     // task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
 
+    //  task::add_initproc("/basic", "/basic/sigtest", "");
 
     // task::add_initproc("/glibc", "/glibc/busybox", "sh libctest_testcode.sh");
 
+    //  task::add_initproc("/disk", "/glibc/busybox", "sh /disk/run-static.sh");
      task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
 
     extern  "C" {

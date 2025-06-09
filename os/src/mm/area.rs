@@ -200,6 +200,8 @@ bitflags! {
         const MAP_STACK = 1 << 17;
         /// MAP_FIXED_NOREPLACE: Don't replace existing mapping
         const MAP_FIXED_NOREPLACE = 1 << 16;
+        /// Don't reserve swap space
+        const MAP_NORESERVE = 1 << 14; // 0x4000
     }
 }
 

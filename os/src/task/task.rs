@@ -9,8 +9,7 @@ use crate::config::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::inode::NONE_MODE;
 use crate::fs::{find_inode, open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    flush_tlb, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr,
-    VirtPageNum,
+    flush_tlb, get_target_ref, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::syscall::flags::AT_FDCWD;
@@ -21,7 +20,7 @@ use crate::task::schedule::CFSTask;
 use crate::task::{add_task, current_task, Task, PID2PC, TID2TC};
 use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
-use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
+use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use crate::utils::string::normalize_absolute_path;
 use alloc::boxed::Box;
 use alloc::collections::vec_deque::VecDeque;
@@ -349,8 +348,8 @@ impl ProcessControlBlock {
             .find(|t| t.id() == id)
             .cloned()
     }
-    pub async fn containing_tid(&self, tid: usize) -> bool {
-        !self.tasks.lock().await .iter().any(|tcb| tcb.id() == tid)
+    pub async fn contains_tid(&self, tid: usize) -> bool {
+        self.tasks.lock().await .iter().any(|tcb| tcb.id() == tid)
     }
 }
 //  Non
@@ -737,22 +736,17 @@ impl ProcessControlBlock {
 
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
-        let (child_tid, need_set_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
+        let (child_tid,need_clear_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
             || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
         {
             assert!(ctid != 0);
 
-            if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-                (Some(ctid), true)
-            } else {
-                (Some(ctid), false)
-            }
+            (Some(ctid),flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))
         } else {
             (None, false)
         };
 
         let trap_cx = Box::new(*current_task().get_trap_cx().unwrap());
-
         let fut = UTRAP_HANDLER();
         let tcb = Arc::new(CFSTask::new(TaskControlBlock::new(
             false,
@@ -762,9 +756,10 @@ impl ProcessControlBlock {
             trap_cx,
             new_sig_state,
             child_tid,
-            need_set_tid,
+            need_clear_tid,
         )));
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+            self.manual_alloc_type_for_lazy(ptid as *const u32).await?;
             let parent_token = self.memory_set.lock().await.token();
             *translated_refmut(parent_token, ptid as *mut u32)? = tcb.id.0 as u32;
         }
@@ -773,7 +768,11 @@ impl ProcessControlBlock {
         //生成线程或者进程
         let res = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.tasks.lock().await.push(tcb.clone());
-
+            trace!(
+                "[kernel]:clonethread pid[{}] -> tid[{}]",
+                self.pid.0,
+                tcb.id()
+            );
             tcb.id.0
         } else {
             let new_proc_sig_state = if flags.contains(CloneFlags::CLONE_SIGHAND) {
@@ -814,7 +813,7 @@ impl ProcessControlBlock {
                 }
             }
             trace!(
-                "[kernel]:clone pid[{}] -> pid[{}]",
+                "[kernel]:cloneproc pid[{}] -> pid[{}]",
                 self.pid.0,
                 process_control_block.pid.0
             );
@@ -852,15 +851,14 @@ impl ProcessControlBlock {
             }
         }
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            *translated_refmut(clone_token, ctid as *mut u32)? = tcb.id() as u32;
+            *translated_refmut(clone_token, ctid as *mut u32)? =  tcb.id() as u32;
         }
-
         add_task(tcb.clone());
         TID2TC.lock().insert(tcb.id.0, tcb);
         // return
         // **** release child PCB
         // ---- release parent PCB
-        yield_now().await;
+        // yield_now().await;
 
         Ok(res)
     }
@@ -1161,15 +1159,19 @@ impl TaskControlBlock {
         self.exit_code.store(code, Ordering::Relaxed);
     }
 
-    pub fn clear_child_tid(&self) -> GeneralRet {
-        if self.need_clear_child_tid.load(Ordering::Acquire) {
-            *translated_refmut(
+    pub fn clear_child_tid(&self) -> TemplateRet<bool>{
+        let res=self.need_clear_child_tid.load(Ordering::Acquire);
+        if res {
+            let ctid=translated_refmut(
                 unsafe { *self.page_table_token.get() },
                 self.child_tid_ptr().unwrap() as *mut u32,
-            )? = 0;
+            )? ;
+            debug!("[clear_child_tid]clear ctid:{:#?}",ctid);
+            *ctid=0;
         }
+        
         self.need_clear_child_tid.store(false, Ordering::Relaxed);
-        Ok(())
+        Ok(res)
     }
     pub fn is_exited(&self) -> bool {
         *(self.state.lock()) == TaskStatus::Zombie

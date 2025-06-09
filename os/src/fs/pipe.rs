@@ -342,6 +342,7 @@ impl File for Pipe {
                             Poll::Ready(())
                         } else {
                             guard.register_reader_waker(cx.waker());
+                            trace!("Pipe Read Pending");
                             Poll::Pending
                         }
                     }
@@ -422,6 +423,8 @@ impl File for Pipe {
                             Poll::Ready(())
                         } else {
                             guard.register_writer_waker(cx.waker());
+
+                            trace!("Pipe Wroie Pending");
                             Poll::Pending
                         }
                     }

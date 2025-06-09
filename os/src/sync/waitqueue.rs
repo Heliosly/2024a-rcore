@@ -296,6 +296,8 @@ impl<'a, F: Fn() -> bool + Unpin> Future for WaitUntilFuture<'a, F> {
         // 现在的逻辑是：一旦注册，除非条件满足或 Future 被 drop，否则不改变注册。
 
         // 条件不满足，且我们（可能）已经注册了 waker。等待被唤醒。
+
+        trace!("WaitUntilFutex Pending in ?");
         Poll::Pending
     }
 }

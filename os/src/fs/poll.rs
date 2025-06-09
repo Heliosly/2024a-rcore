@@ -150,11 +150,15 @@ impl Future for PollFuture {
                         }
                     } else {
                         // 不是实际时间超时
+
+                            trace!("Poll pending Not timeout");
                         return Poll::Pending;
                     }
                 }
                 Poll::Pending => {
                     //让权
+
+                            trace!("Poll pending yield now");
                     return Poll::Pending;
                 }
             }
@@ -165,6 +169,8 @@ impl Future for PollFuture {
                      Err(e) => return Poll::Ready(Err(e)),
                  }
             }
+
+                   trace!("Poll pending yield now  infinity timeout");
             return Poll::Pending;
         }
     }

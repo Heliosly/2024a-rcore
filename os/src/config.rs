@@ -18,7 +18,7 @@ pub const UIO_MAXIOV: usize = 1024;
 
 pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16*10;
+pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16*10*2;
 /// kernel heap size
 pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
 ///于allocuserres中于分配页数

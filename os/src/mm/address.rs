@@ -176,6 +176,7 @@ impl VirtAddr {
 
     /// Get the (ceil) virtual page number
     pub fn ceil(&self) -> VirtPageNum {
+        assert!(self.0!=0);
         VirtPageNum((self.0 - 1 + PAGE_SIZE) / PAGE_SIZE)
     }
 

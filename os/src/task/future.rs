@@ -116,6 +116,7 @@ impl Future for JoinFuture {
                             this.target_task.id());
                 Poll::Ready(this.target_task.get_exit_code())
             } else {
+                trace!("JoinFuture Pending In Wait");
                 Poll::Pending // 等待目标任务退出并唤醒我们
             }
         }
@@ -162,6 +163,7 @@ impl Future for WaitAnyFuture {
         }
 
         this.futures = pending;
+        trace!("WaitAnyFuture  Pending  in init");
         Poll::Pending
     }
 }

@@ -74,7 +74,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_FSTATAT => sys_fstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
         SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4],args[5]).await,
+        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4]as isize,args[5] ).await,
         SYSCALL_SIGTIMEDWAIT=>sys_rt_sigtimedwait(
             args[0] as *const SigSet,
             args[1] as *mut SigInfo,

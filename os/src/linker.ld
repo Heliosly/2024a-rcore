@@ -14,8 +14,11 @@ SECTIONS
         . = ALIGN(4);           /* 强制4字节对齐 */
         *(.text.trap_entries)   /* 存放 trap_from_kernel 和 __trap_from_user */
     . = ALIGN(4K);
-        strampoline = .;
+        PROVIDE(strampoline = .);
+        *(.text.signal_trampoline)
         . = ALIGN(4K);
+
+        PROVIDE(etrampoline = .);
         *(.text .text.*)
 }
     

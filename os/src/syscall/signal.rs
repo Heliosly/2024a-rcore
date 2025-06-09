@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigInfo, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, timer::UserTimeSpec, utils::error::{SysErrNo, SyscallRet}};
+use crate::{mm::get_target_ref, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigInfo, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, timer::UserTimeSpec, utils::error::{SysErrNo, SyscallRet}};
 
 // pub fn sys_rt_sigaction(
 //     signo: usize,
@@ -23,7 +23,7 @@ use crate::{mm::{get_target_ref, put_data, translated_refmut}, signal::{load_tra
 // 通常由 trampoline 调用，用于从信号处理函数返回
 pub async  fn sys_sigreturn()-> SyscallRet {
  
-    trace!("[sys_sigreturn]");
+    debug!("[sys_sigreturn] sp on entry: {:#x}", current_task().get_trap_cx().unwrap().get_sp());
     if load_trap_for_signal().await {
         // 说明确实存在着信号处理函数的trap上下文
         // 此时内核栈上存储的是调用信号处理前的trap上下文
@@ -47,7 +47,7 @@ pub async fn sys_sigaction(
     oldact_user_ptr: *mut SigAction,
 ) -> SyscallRet {
 
-    trace!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
+    debug!("[sys_sigaction] signo: {}, act: {:?}, oldact: {:?}", signum_usize, act_user_ptr, oldact_user_ptr);
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -69,14 +69,18 @@ pub async fn sys_sigaction(
     }
 
     if !act_user_ptr.is_null() {
-        
          let new_action=get_target_ref(token, act_user_ptr)?;
 
+        shared_state.sigactions[sig as usize] = *new_action;
+        let handler = shared_state.sigactions[sig as usize].handler;
+        let flags = shared_state.sigactions[sig as usize].flags;
+        info!("step 1: sig={:?}", sig as usize);
+info!("step 2: handler={:#x}", handler);
+info!("step 3: flags={:?}", flags);
         // 校验 new_action 的合法性 (例如 handler 地址)
         // ...
 
-        shared_state.sigactions[sig as usize] = *new_action;
-        // log::debug!("Task {} set action for signal {:?} to handler 0x{:x}", current_task_arc.id(), sig, new_action.handler);
+
     }
 
    
@@ -198,12 +202,12 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
     Ok(0) // 信号已尝试发送（即使部分线程失败，仍返回成功）
 }
 pub async fn sys_tgkill(target_pid: usize, target_tid: usize, signum_usize: usize)->SyscallRet{
-    trace!("[sys_tkill] target_pid:{} target_tid: {}, signum: {}", target_pid,target_tid, signum_usize);
+    trace!("[sys_tgkill] target_pid:{} target_tid: {}, signum: {}", target_pid,target_tid, signum_usize);
     let pcb = match PID2PC.lock().get(&target_pid){
          Some(p) => p.clone(),
         None => return Err(SysErrNo::ESRCH), // 线程组（pid）不存在
     };
-    if !pcb.containing_tid(target_tid).await{
+    if !pcb.contains_tid(target_tid).await{
         return Err(SysErrNo::ESRCH);
     }
     let sig = match Signal::from_usize(signum_usize) {

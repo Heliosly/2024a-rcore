@@ -3,6 +3,7 @@ use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_TABLE_TOKEN};
 use crate::task::aux::{Aux, AuxType};
+use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
@@ -30,9 +31,9 @@ extern "C" {
     fn sbss_with_stack();
     fn ebss();
     fn ekernel();
-    // fn spercpu();
-    // fn epercpu();
-    // fn strampoline();
+     fn strampoline();
+
+     fn etrampoline();
 }
 
    
@@ -208,17 +209,42 @@ pub fn munmap(
             ".bss [{:#x}, {:#x})",
             sbss_with_stack as usize, ebss as usize
         );
-        info!("mapping .text section");
-        memory_set.push(
-            MapArea::new(
-                (stext as usize).into(),
-                (etext as usize).into(),
-                MapType::Direct,
-                MapPermission::R | MapPermission::X,
-                MapAreaType::Elf,
-            ),
-            None,
-        );
+info!("mapping .text[stext..stextsig] (kernel only) range:{:#x}-{:#x}",stext as usize,strampoline as usize);
+memory_set.push(
+    MapArea::new(
+        (stext as usize).into(),
+        (strampoline as usize).into(),
+        MapType::Direct,
+        MapPermission::R | MapPermission::X,   // kernel only
+        MapAreaType::Elf,
+    ),
+    None,
+);
+
+
+info!("mapping .text.signal_trampoline[stextsig..etextsig] (user-exec),range:{:#x}-{:#x}",strampoline as usize,etrampoline as usize);
+memory_set.push(
+    MapArea::new(
+        (strampoline as usize).into(),
+        (etrampoline as usize).into(),
+        MapType::Direct,
+        MapPermission::R | MapPermission::X | MapPermission::U, // allow user to execute
+        MapAreaType::Elf,  // 或者专门定义一个 MapAreaType::SignalTrampoline
+    ),
+    None,
+);
+info!("mapping .text[etextsig..etext] (kernel only),range:{:#x}-{:#x}",etrampoline as usize,etext as usize);
+memory_set.push(
+    MapArea::new(
+        (etrampoline as usize).into(),
+        (etext as usize).into(),
+        MapType::Direct,
+        MapPermission::R | MapPermission::X,   // kernel only
+        MapAreaType::Elf,
+    ),
+    None,
+);
+
         info!("mapping .rodata section");
         memory_set.push(
             MapArea::new(
@@ -681,6 +707,7 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
                     }
                 } else {
                     warn!("[manual_alloc_range_for_lazy]err:{:#?}",e);
+                    bpoint();
                     return Err(e);
                 }
             },

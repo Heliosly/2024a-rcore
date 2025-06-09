@@ -3,6 +3,7 @@
 use core::task::Waker;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use async_trait::async_trait;
 
 use super::stat::StMode;
@@ -15,6 +16,8 @@ use crate::utils::error::{ SysErrNo, TemplateRet} ;
 /// stdin file for getting chars from console
 pub struct Stdin;
 
+const LF: usize = 0x0a;
+const CR: usize = 0x0d;
 /// stdout file for putting chars to console
 pub struct Stdout;
 #[async_trait]
@@ -27,25 +30,39 @@ impl File for Stdin {
     }
     async fn read<'a>( 
         & self,                
-        mut buf: UserBuffer<'a>  
+        mut user_buf: UserBuffer<'a>  
     ) -> Result<usize, SysErrNo>{
      
-            assert_eq!(buf.len(), 1);
-    
-            loop {
-                let c = console_getchar();
-                if c == 0 {
-                    yield_now().await;  // 使用异步 yield
+
+        let mut c: usize;
+        let mut count: usize = 0;
+        let mut buf = Vec::new();
+        while count < user_buf.len() {
+            c = console_getchar();
+            match c {
+                // `c > 255`是为了兼容OPENSBI，OPENSBI未获取字符时会返回-1
+                0 | 256.. => {
+                    yield_now().await;
                     continue;
-                } else {
-                    let ch = c as u8;
-        unsafe {
-            buf.buffers[0].as_mut_ptr().write_volatile(ch);
-        }
-        
-                    break Ok(1);  // 返回一个成功的结果，结果是 Ok(1)
+                }
+                CR => {
+                    buf.push(LF as u8);
+                    count += 1;
+                    break;
+                }
+                LF => {
+                    buf.push(LF as u8);
+                    count += 1;
+                    break;
+                }
+                _ => {
+                    buf.push(c as u8);
+                    count += 1;
                 }
             }
+        }
+        user_buf.write(buf.as_slice());
+        Ok(count)
        
     }
     async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo>{

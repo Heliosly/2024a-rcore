@@ -167,6 +167,7 @@ impl Future for SleepFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = self.get_mut();
 
+        
         if let Some(deadline_val) = mut_self.deadline {
             // 如果有截止时间，检查是否已到期
             if current_time() >= deadline_val {
@@ -181,7 +182,9 @@ impl Future for SleepFuture {
         if mut_self.registered_node_arc.is_some() {
             // 已注册，现在被 poll。这通常意味着 Waker 被调用了。
             // （超时情况已在上面处理，如果 deadline 是 Some）
-            mut_self.registered_node_arc.take();
+            if let Some(node_arc) = mut_self.registered_node_arc.take() {
+                GLOBAL_SLEEPER_QUEUE.lock().remove_sleeper(&node_arc);
+            }
             return Poll::Ready(());
         }
 
@@ -219,6 +222,7 @@ impl Future for SleepFuture {
         GLOBAL_SLEEPER_QUEUE.lock().add_sleeper(node_arc.clone());
         mut_self.registered_node_arc = Some(node_arc);
 
+        trace!("Sleep Pending in init sleep");
         Poll::Pending
     }
 }
@@ -236,7 +240,7 @@ impl Drop for SleepFuture {
     }
 }
 
-/// 6. 定时事件处理
+///  定时事件处理
 pub fn process_timed_events() {
     process_sleepers();
 }

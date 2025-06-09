@@ -5,7 +5,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use crate::config::SS_DISABLE;
 
 use super::{sigact::SignalDefaultAction, NSIG};
-
+const PADDING_SIZE: usize = if cfg!(target_pointer_width = "64") { 4 } else { 0 };
 /// ## 信号编号和元数据
 ///
 /// `NSIG` 定义了支持的信号数量。
@@ -21,30 +21,23 @@ pub struct SigInfo {
     pub si_signo: u32,
     pub si_errno: u32,
     pub si_code: u32,
+    pub _pad0: [u8; PADDING_SIZE],
+    
     // unsupported fields
-    pub __pad: [u8; 128 - 3 * core::mem::size_of::<u32>()],
+    pub _sifields: [u8; 112],
 }
-
-impl SigInfo {
-    pub fn new(si_signo: usize, si_errno: usize, si_code: usize) -> Self {
-        Self {
-            si_signo: si_signo as u32,
-            si_errno: si_errno as u32,
-            si_code: si_code as u32,
-            __pad: [0; 128 - 3 * core::mem::size_of::<u32>()],
-        }
-    }
+#[repr(C)]
+pub struct SigInfoKill {
+   pub pid: u32, 
+   pub uid: u32, 
 }
+// 实现 Default，确保所有字段都被初始化为0
 impl Default for SigInfo {
     fn default() -> Self {
-        Self {
-            si_signo: 0,
-            si_errno: 0,
-            si_code: 0,
-            __pad: [0; 128 - 3 * core::mem::size_of::<u32>()],
-        }
+        unsafe { core::mem::zeroed() }
     }
 }
+
 
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]

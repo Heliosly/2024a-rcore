@@ -28,15 +28,25 @@
 //
 mod sigact;
 mod signal;
+use core::panic;
+pub const SI_USER: i32 = 0; // kill, raise, abort
+pub const SI_KERNEL: i32 = 0x80; // Sent by kernel
+pub const SI_QUEUE: i32 = -1; // sigqueue
+pub const SI_TIMER: i32 = -2; // POSIX timer
+pub const SI_MESGQ: i32 = -3; // POSIX message queue
+pub const SI_ASYNCIO: i32 = -4; // AIO completed
+pub const SI_SIGIO: i32 = -5; // Queued SIGIO
+pub const SI_TKILL: i32 = -6; // tkill or tgkill
+use crate::config::{SS_DISABLE, USER_SIGNAL_PROTECT};
+use crate::mm::{get_target_ref, put_data, translated_refmut};
+use crate::task::{current_process, current_task, current_token, exit_proc};
+use crate::task::{ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
+use crate::trap::{TrapContext, TrapStatus, UContext};
+use crate::utils::error::SysErrNo;
+use crate::utils::{bpoint, bpoint1};
 use alloc::sync::Arc;
 pub use sigact::*;
-pub use signal::*;
-use crate::config::{ SS_DISABLE, USER_SIGNAL_PROTECT};
-use crate::mm::put_data;
-use crate::task::{current_task, exit_proc};
-use crate::task::{ ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
-use crate::trap::{TrapContext, UContext};
-use crate::utils::error::SysErrNo; // 假设 current_task() 返回 Arc<Task>
+pub use signal::*; // 假设 current_task() 返回 Arc<Task>
 
 // 通常信号编号从 1 开始。0 不是有效信号。
 pub const NSIG: usize = 64; // 支持的信号数量 (Linux x86_64 通常是64)
@@ -59,7 +69,7 @@ pub async fn send_signal(
 
     // 1. 找到目标进程的 PCB
     let pcb_arc = PID2PC
-        .lock() 
+        .lock()
         .get(&target_pid)
         .cloned()
         .ok_or(SignalError::NoSuchProcess)?;
@@ -178,9 +188,10 @@ pub async fn send_signal_to_task(task_arc: &Arc<Task>, sig: Signal) -> Result<()
 
     Ok(())
 }
-pub async  fn handle_pending_signals() {
+pub async fn handle_pending_signals() {
     let task_arc = current_task();
-    let pcb_arc=&task_arc.get_process();
+    let pcb_arc = &task_arc.get_process();
+
     // 1. 获取线程和进程的信号状态锁
     let mut task_state = task_arc.signal_state.lock().await;
     let mut process_state = pcb_arc.signal_shared_state.lock().await;
@@ -217,7 +228,12 @@ pub async  fn handle_pending_signals() {
         }
 
         if let Some(sig) = signal_to_deliver {
-            debug!("[handle_pending_signals],signal to deliver sig:{:#?}",sig);
+            info!(
+                "[handle_pending_signals]signal to deliver sig:{:#?} tid:{},pid:{}",
+                sig,
+                task_arc.id(),
+                pcb_arc.get_pid()
+            );
             let action = process_state.sigactions[sig as usize].clone(); // 动作是进程共享的
 
             // 从相应的挂起队列中移除
@@ -232,12 +248,20 @@ pub async  fn handle_pending_signals() {
 
             // 特殊处理 SIGKILL 和 SIGSTOP (它们不能被捕获或忽略，动作是固定的)
             if sig == Signal::SIGKILL {
-                exit_proc((128+sig as usize) as i32).await;
-                log::info!("Process {} (task {}) received SIGKILL, terminating all tasks.", pcb_arc.pid.0, task_arc.id());
+                exit_proc((128 + sig as usize) as i32).await;
+                log::info!(
+                    "Process {} (task {}) received SIGKILL, terminating all tasks.",
+                    pcb_arc.pid.0,
+                    task_arc.id()
+                );
                 return; // 进程终止，无需继续
             }
             if sig == Signal::SIGSTOP {
-                log::info!("Process {} (task {}) received SIGSTOP, stopping all tasks.", pcb_arc.pid.0, task_arc.id());
+                log::info!(
+                    "Process {} (task {}) received SIGSTOP, stopping all tasks.",
+                    pcb_arc.pid.0,
+                    task_arc.id()
+                );
                 unimplemented!();
                 continue;
             }
@@ -272,8 +296,13 @@ pub async  fn handle_pending_signals() {
                 }
                 SIG_IGN => { /* 忽略 */ }
                 user_handler_addr => {
-                    // log::info!("Task {} (in process {}) delivering signal {:?} to handler 0x{:x}",
-                    //          task_arc.id(), pcb_arc.pid.0, sig, user_handler_addr);
+                    log::info!(
+                        "Task {} (in process {}) delivering signal {:?} to handler 0x{:x}",
+                        task_arc.id(),
+                        pcb_arc.pid.0,
+                        sig,
+                        user_handler_addr
+                    );
                     let sig_num: usize = sig.into();
                     // 此时需要调用信号处理函数，注意调用的方式是：
                     // 通过修改trap上下文的pc指针，使得trap返回之后，直接到达信号处理函数
@@ -285,9 +314,22 @@ pub async  fn handle_pending_signals() {
                     // 读取当前的trap上下文
                     // let mut trap_frame = read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
                     let mut task_state = task_arc.signal_state.lock().await;
-
+                    let tf = task_arc.get_trap_cx().unwrap();
+                    const USER_ENV_CALL: usize = 8;
+                    const SYSCALL_SIGNALRET: usize = 139;
+                    if tf.regs.a7 == SYSCALL_SIGNALRET {
+                        panic!("ub");
+                    }
+                    if action.flags.contains(SigActionFlags::SA_RESTART)
+                        && tf.scause == USER_ENV_CALL
+                    {
+                        bpoint1(tf);
+                        tf.sepc -= 4;
+                        tf.trap_status = TrapStatus::Blocked;
+                    }
+                    task_state.last_context = Some(*tf);
                     let trap_frame = task_arc.get_trap_cx().unwrap();
-
+                    task_state.sig_info = false;
                     // // 新的trap上下文的sp指针位置，由于SIGINFO会存放内容，所以需要开个保护区域
                     let mut sp = if action.flags.contains(SigActionFlags::SA_ONSTACK)
                         && task_state.alternate_stack.flags != SS_DISABLE
@@ -299,7 +341,7 @@ pub async  fn handle_pending_signals() {
                         trap_frame.get_sp() - USER_SIGNAL_PROTECT
                     };
 
-                    info!("use stack: {:#x}", sp);
+                    info!("signal use stack: {:#x}", sp);
                     let restorer = if let Some(addr) = action.get_restorer() {
                         addr
                     } else {
@@ -307,20 +349,12 @@ pub async  fn handle_pending_signals() {
                     };
 
                     info!(
-                        "restorer :{:#x}, handler: {:#x}",
-                        restorer, user_handler_addr
+                        "restorer :{:#x}, handler: {:#x},a0:{} signal flags:{:#?}",
+                        restorer, user_handler_addr, trap_frame.regs.a0, action.flags
                     );
-                    #[cfg(not(target_arch = "x86_64"))]
-                    trap_frame.set_ra(restorer);
 
-                    let old_pc = trap_frame.get_pc();
-
-                    trap_frame.set_pc(user_handler_addr);
-                    // 传参
-                    trap_frame.set_arg0(sig.into());
                     // 若带有SIG_INFO参数，则函数原型为fn(sig: SignalNo, info: &SigInfo, ucontext: &mut UContext)
                     if action.flags.contains(SigActionFlags::SA_SIGINFO) {
-                        // current_task.set_siginfo(true);
                         task_state.sig_info = true;
                         let sp_base: usize = (((sp - core::mem::size_of::<SigInfo>()) & !0xf)
                             - core::mem::size_of::<UContext>())
@@ -334,29 +368,55 @@ pub async  fn handle_pending_signals() {
 
                         // 注意16字节对齐
                         sp = (sp - core::mem::size_of::<SigInfo>()) & !0xf;
-                        let info = SigInfo {
-                            si_signo: sig_num as u32,
-                            ..Default::default()
-                        };
+                        let mut info_to_write = SigInfo::default();
+
+                        // 3. 填充基本字段
+                        info_to_write.si_signo = sig as u32;
+                        info_to_write.si_errno = 0; 
+                        info_to_write.si_code = SI_TKILL as u32;
+
                         unsafe {
-                            *(sp as *mut SigInfo) = info;
+                            let kill_fields =
+                                &mut *(info_to_write._sifields.as_mut_ptr() as *mut SigInfoKill);
+
+                            // 设置 pid 和 uid
+                            kill_fields.pid = current_process().get_pid() as u32;
+                            kill_fields.uid = 0;
                         }
-                        trap_frame.set_arg1(sp);
+                        let info_sp = sp;
+                        *translated_refmut(token, sp as *mut SigInfo).unwrap() = info_to_write;
 
                         // 接下来存储ucontext
                         sp = (sp - core::mem::size_of::<UContext>()) & !0xf;
 
-                        let ucontext = UContext::init(old_pc, original_thread_mask);
+                        let ucontext =
+                            UContext::new(task_arc.get_trap_cx().unwrap(), original_thread_mask);
+
+                        debug!(
+                            "[Signal Delivery] Putting UContext at sp: {:#x} a0:{}",
+                            sp, ucontext.mcontext.regs.a0
+                        );
+                        debug!(
+                            "[Signal Delivery] UContext contains pc: {:#x}",
+                            ucontext.mcontext.pc
+                        );
                         put_data(token, sp as *mut UContext, ucontext).unwrap();
 
                         trap_frame.set_arg2(sp);
+
+                        trap_frame.set_arg1(info_sp);
                     }
 
+                    trap_frame.set_ra(restorer);
+                    trap_frame.set_pc(user_handler_addr);
+                    // 传参
+                    trap_frame.set_arg0(sig.into());
                     trap_frame.set_sp(sp);
                     if action.flags.contains(SigActionFlags::SA_RESETHAND) {
                         let mut temp_proc_state = pcb_arc.signal_shared_state.lock().await;
                         temp_proc_state.sigactions[sig as usize].handler = SIG_DFL;
                     }
+
                     return; // 信号已交付给用户处理程序，本次内核处理结束
                 }
             }
@@ -378,33 +438,52 @@ pub async  fn handle_pending_signals() {
 /// 如果存在 saved_trap，则返回 true（表示已装载），否则返回 false。
 #[no_mangle]
 pub async fn load_trap_for_signal() -> bool {
-    // 1. 找到当前任务
     let task = current_task();
-    // 2. 拿到它的信号状态
     let mut sig_state = task.signal_state.lock().await;
 
-    // 3. 如果之前有保存的 TrapFrame，就拿出来
-    if let Some(saved_frame) = sig_state.last_context.take() {
+    // `sigreturn` 应该只在从一个 SA_SIGINFO 信号处理器返回时发生。
+    if let Some(old_trap_frame) = sig_state.last_context.take() {
+        // 既然要返回，就清除 sig_info 标志
+
         unsafe {
-            // 4. 拿到实际用于中断/异常的内核栈上的 TrapFrame 指针
+            // 1. 获取当前的中断上下文。对于一个系统调用，它的 `sp` 指向用户栈。
             let now_trap_frame: &mut TrapContext = task.get_trap_cx().unwrap();
 
-            // 5. 拷贝回去，恢复原先全部寄存器状态
-            *now_trap_frame = saved_frame;
+            let ucontext_ptr = now_trap_frame.get_sp() as *const UContext;
+            *now_trap_frame = old_trap_frame;
 
-            // 6. 如果当时用的是 SA_SIGINFO（sig_info = true），
-            //    需要从用户栈上的 UContext 里再拿一次 PC
             if sig_state.sig_info {
-                // 用户态信号上下文结构在用户栈顶
-                let sp = now_trap_frame.regs.sp;
-                let user_ctx = &*(sp as *const UContext);
-                let pc = user_ctx.get_pc();
-                now_trap_frame.set_pc(pc);
+                let user_ctx = match get_target_ref(current_token().await, ucontext_ptr) {
+                    Ok(ctx) => &*ctx,
+                    Err(e) => {
+                        // 严重错误：无法从用户栈读取上下文，说明用户进程已损坏。
+                        error!("sigreturn failed can read UContext from user");
+                        // 此处可以杀死进程或返回错误
+                        return false;
+                    }
+                };
+
+                user_ctx.mcontext.restore(now_trap_frame);
+
+                sig_state.sigmask = user_ctx.sigmask;
             }
+            // 3. 从用户空间读取 UContext 结构。
+
+            // 4. 使用你已经写好的 MContext::restore 辅助函数来恢复所有寄存器和PC。
+            //    这是最关键的一步，它能正确地恢复完整的机器状态。
+
+            info!(
+                "[sys_sigreturn]after restore now trap frame sepc:{:#x} mcontext sp:{:#?},a0:{} ",
+                now_trap_frame.sepc, ucontext_ptr, now_trap_frame.regs.a0
+            );
+            // 5. 从 UContext 中恢复信号掩码。
         }
+
+        // 成功准备好了返回到用户态的上下文。
         true
     } else {
-        // 没有未处理的信号上下文
+        // 如果在不该调用的时候被调用了（例如，不是从 SA_SIGINFO 处理器返回），
+        // 说明可能有其他逻辑错误。目前我们只报告说没有加载任何上下文。
         false
     }
 }
@@ -417,16 +496,24 @@ pub fn perform_default_action_for_process(
     // 默认动作现在可能需要作用于整个进程
     match sig.default_action() {
         SignalDefaultAction::Terminate | SignalDefaultAction::CoreDump => {
-            // log::info!("Process {} terminating due to signal {:?}", pcb_arc.pid.0, sig);
+            log::info!(
+                "Process {} terminating due to signal {:?}",
+                pcb_arc.pid.0,
+                sig
+            );
             // pcb_arc.terminate_all_tasks_and_self();
         }
         SignalDefaultAction::Ignore => {}
         SignalDefaultAction::Stop => {
-            // log::info!("Process {} stopping due to signal {:?}", pcb_arc.pid.0, sig);
+            log::info!("Process {} stopping due to signal {:?}", pcb_arc.pid.0, sig);
             // pcb_arc.stop_all_tasks();
         }
         SignalDefaultAction::Continue => {
-            // log::info!("Process {} continuing due to signal {:?}", pcb_arc.pid.0, sig);
+            log::info!(
+                "Process {} continuing due to signal {:?}",
+                pcb_arc.pid.0,
+                sig
+            );
             // pcb_arc.continue_all_tasks();
         }
         SignalDefaultAction::ForceTerminateOrStop => {
@@ -434,6 +521,3 @@ pub fn perform_default_action_for_process(
         }
     }
 }
-
-
-

@@ -16,7 +16,7 @@ use core::{ task::{RawWaker, RawWakerVTable, Waker}};
 
 use alloc::sync::Arc;
 
-use crate::task::add_task;
+use crate::{task::add_task, utils::bpoint};
 
 use super::{schedule::Task,   TaskStatus};
 
@@ -62,6 +62,7 @@ pub fn wakeup_task(task_ptr: *const Task) {
             let task_ref = unsafe { Arc::from_raw(task_ptr) };
 
             info!("task wakeup   tid:{}",task_ref.id());
+            bpoint();
              add_task(task_ref);
 
         }

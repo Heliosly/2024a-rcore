@@ -7,7 +7,7 @@ use super::context::{GeneralRegisters, TrapContext};
 #[derive(Clone,Copy)]
 pub struct MContext {
     pub pc: usize,
-    regs: GeneralRegisters,
+    pub regs: GeneralRegisters,
     fpstate: [usize; 66],
 }
 
