@@ -397,13 +397,13 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 //
 const INITPROC_SH:&str = "
 cd /glibc
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
-./libctest_testcode.sh
 cd /musl
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
-./libctest_testcode.sh
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";

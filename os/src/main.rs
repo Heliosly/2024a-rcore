@@ -102,7 +102,7 @@ pub fn rust_main() -> ! {
     fs::init();
     // fs::list_app();
     
-    task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
+    task::add_initproc("/", "/glibc/busybox",  "sh /initproc.sh");
 
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
