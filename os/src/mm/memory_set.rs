@@ -1,10 +1,12 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
-use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, PAGE_SIZE_BITS};
+use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_TABLE_TOKEN};
+use crate::syscall::flags::MremapFlags;
 use crate::task::aux::{Aux, AuxType};
+use crate::task::{current_process, current_token};
 use crate::utils::bpoint;
-use crate::utils::error::{GeneralRet, SysErrNo, TemplateRet};
+use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
 use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
@@ -15,6 +17,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
+use riscv::addr::page;
 use riscv::register::scause::{Exception,  Trap};
 use xmas_elf::ElfFile;
 use core::arch::asm;
@@ -107,12 +110,14 @@ pub fn munmap(
 
         // **中间这部分 [r0, r1) 是要给新 area 用的**，
         // 先把对应的 PTE 一个个清掉
-        if area.allocated(r0)
-    {
+    
         for vpn in r0.0.. r1.0 {
-            self.page_table.unmap(VirtPageNum(vpn));
+            
+        if area.allocated(VirtPageNum(vpn))
+
+           { self.page_table.unmap(VirtPageNum(vpn));}
         }
-    }
+    
         flush_tlb();
     }
 
@@ -160,12 +165,12 @@ pub fn munmap(
         end_va: VirtAddr,
         permission: MapPermission,
         area_type: MapAreaType,
-    ) {
+    ) ->GeneralRet{
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission, area_type),
             None,
 
-        );
+        )
     }
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
@@ -176,22 +181,24 @@ pub fn munmap(
     }
 
     ///有页内偏移的push
-    fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>)  {
-        map_area.map(&mut self.page_table);
+    fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>) ->GeneralRet {
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, offset);
         }
         self.areatree.push(map_area);
+        Ok(())
     }
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>)->GeneralRet{
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data,0);
         }
         self.areatree.push(map_area);
+        Ok(())
     }
 
    
@@ -210,7 +217,7 @@ pub fn munmap(
             sbss_with_stack as usize, ebss as usize
         );
 info!("mapping .text[stext..stextsig] (kernel only) range:{:#x}-{:#x}",stext as usize,strampoline as usize);
-memory_set.push(
+let _ = memory_set.push(
     MapArea::new(
         (stext as usize).into(),
         (strampoline as usize).into(),
@@ -223,7 +230,7 @@ memory_set.push(
 
 
 info!("mapping .text.signal_trampoline[stextsig..etextsig] (user-exec),range:{:#x}-{:#x}",strampoline as usize,etrampoline as usize);
-memory_set.push(
+let _ = memory_set.push(
     MapArea::new(
         (strampoline as usize).into(),
         (etrampoline as usize).into(),
@@ -234,7 +241,7 @@ memory_set.push(
     None,
 );
 info!("mapping .text[etextsig..etext] (kernel only),range:{:#x}-{:#x}",etrampoline as usize,etext as usize);
-memory_set.push(
+let _ = memory_set.push(
     MapArea::new(
         (etrampoline as usize).into(),
         (etext as usize).into(),
@@ -246,7 +253,7 @@ memory_set.push(
 );
 
         info!("mapping .rodata section");
-        memory_set.push(
+        let _ = memory_set.push(
             MapArea::new(
                 (srodata as usize).into(),
                 (erodata as usize).into(),
@@ -258,7 +265,7 @@ memory_set.push(
             None,
         );
         info!("mapping .data section");
-        memory_set.push(
+        let _ = memory_set.push(
             MapArea::new(
                 (sdata as usize).into(),
                 (edata as usize).into(),
@@ -270,7 +277,7 @@ memory_set.push(
             None,
         );
         info!("mapping .bss section");
-        memory_set.push(
+        let _ = memory_set.push(
             MapArea::new(
                 (sbss_with_stack as usize).into(),
                 (ebss as usize).into(),
@@ -281,7 +288,7 @@ memory_set.push(
             None,
         );
         info!("mapping physical memory");
-        memory_set.push(
+        let _ = memory_set.push(
             MapArea::new(
                 (ekernel as usize).into(),
                 MEMORY_END.into(),
@@ -295,7 +302,7 @@ memory_set.push(
       
         for pair in MMIO {
   debug!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
-            memory_set.push(
+            let _ = memory_set.push(
                 MapArea::new(
                     ((*pair).0+KERNEL_DIRECT_OFFSET).into(),
                     ((*pair).0 + (*pair).1+KERNEL_DIRECT_OFFSET).into(),
@@ -308,8 +315,8 @@ memory_set.push(
         }
         memory_set
     }
-    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> (VirtPageNum, VirtAddr,usize) {
-        let mut tls=0;
+    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> TemplateRet<(VirtPageNum, VirtAddr,usize)> {
+        let tls=0;
         let elf_header = elf.header;
         let ph_count = elf_header.pt2.ph_count();
 
@@ -360,7 +367,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
                     map_area,
                     data_offset,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-                );
+                )?;
             } 
             else  if ph.get_type().unwrap()== xmas_elf::program::Type::Tls  {
 
@@ -410,7 +417,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
                 // // 记录 TLS 基址，方便 TLS 访问
                        }
         }
-        (max_end_vpn, header_va.into(),tls)
+        Ok((max_end_vpn, header_va.into(),tls))
     }
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp_base and entry point.
@@ -461,7 +468,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             let interp_file = interp_inode.unwrap();
             let interp_elf_data = interp_file.read_all();
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).unwrap();
-            memory_set.map_elf(&interp_elf, DL_INTERP_OFFSET.into());
+            memory_set.map_elf(&interp_elf, DL_INTERP_OFFSET.into()).unwrap();
 
             let interp_entry_point = interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET;
 
@@ -487,7 +494,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         auxv.push(Aux::new(AuxType::CLKTCK, 100 as usize));
         auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
-        let (max_end_vpn, head_va,_tls) = memory_set.map_elf(&elf, VirtAddr(0));
+        let (max_end_vpn, head_va,_tls) = memory_set.map_elf(&elf, VirtAddr(0)).unwrap();
          // Get ph_head addr for auxv
          let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
          auxv.push(Aux {
@@ -511,7 +518,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
                 MapAreaType::Brk,
             ),
             None,
-        );
+        ).unwrap();
 //  println!("sbrk ppn :");
         // for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
         //     println!("ppn:{:#x}",frame.ppn().0);
@@ -574,12 +581,12 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
                 }
                 // area.data_frames.iter() 的借用在这里结束
                 for vpn_to_map in vpns_to_map_one {
-                    area.map_one(&mut old_page_table_ref, vpn_to_map);
+                    area.map_one(&mut old_page_table_ref, vpn_to_map).unwrap();
                 }
             }
 
             let area_to_push = new_area; 
-            memory_set.push(area_to_push, None);
+            memory_set.push(area_to_push, None).unwrap();
             // area.debug_print();
 
             // copy data from another space
@@ -689,7 +696,7 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
         }
     }
     pub async  fn manual_alloc_range_for_lazy(&mut self, start_va: VirtAddr, end_va: VirtAddr)->Result<(), PageFaultError>{
-        assert!(start_va < end_va);
+        assert!(start_va <= end_va);
         
         let mut vpn = start_va.floor();
         let end=end_va.ceil();
@@ -828,7 +835,7 @@ pub async fn handle_page_fault(
     // 4. 如果 vpn 在范围内，则进行懒分配处理
     if area.vpn_range.contains(vpn) {
         // 映射一个页（lazy allocate）
-        area.map_one(page_table, vpn);
+        area.map_one(page_table, vpn).expect("no memery ");
 
         if let Some(mmap_file) = &area.fd {
             let file = mmap_file.file.file().expect("file mmap should be normal file");
@@ -1040,8 +1047,120 @@ pub async fn mprotect(&mut self, start: VirtAddr, size: usize, flags: MapPermiss
     self.manual_alloc_range_for_lazy(start.into(), end.into()) .await?;
     Ok( ())
 }
+/// mremap: change the size of a mapping, potentially moving it at the same time.
+pub async fn mremap(&mut self, old_start: VirtAddr, old_size: usize, new_size: usize,flags: MremapFlags) -> SyscallRet{
+   
+
+    
+    let old_start_vpn= old_start.floor();
+    let start = self.areatree.find_area(old_start_vpn);
+    
 
 
+    let addr: usize = match start {
+        Some(start) => {
+             let area_type;
+            let old_area_vpn_range;
+          
+            let lacklen= (new_size as isize)-(old_size as isize);  
+            let new_end= old_start.0+new_size;
+            {
+            
+            // self.areatree.debug_print();
+            let old_area=self.areatree.get(&start).unwrap();
+             area_type = old_area.area_type;
+             old_area_vpn_range=old_area.vpn_range;
+            //  old_area.debug_print();
+           }
+
+             info!(
+        "[mremap] old_start: {:?},  end: {:x},this area start:{:#?},lacklen:{:#x}",
+        old_start, new_end as usize,VirtAddr::from(start),lacklen,
+    );
+            if lacklen ==0 {
+                return Ok(old_start.0);
+            }    
+            if lacklen<0{
+               self.shrink_to(start.into(), VirtAddr::from(new_end as usize) );
+                
+               old_start.0
+
+            }
+            else{
+               let vpn= self.areatree.find_gap_from( VirtPageNum::from(new_end>>PAGE_SIZE_BITS), new_size>>PAGE_SIZE_BITS);
+               let allocated=if let Some(vpn)=vpn{
+               if vpn == old_start.floor(){
+                  self.append_to(start.into(), VirtAddr::from(new_end as usize) );
+                  true
+               }else{
+                 false
+               }
+               }
+               else{
+                false
+               };
+               if !allocated&&flags.contains(MremapFlags::MAYMOVE){
+                   if let Some(vpn)= self.areatree.find_gap_from( VirtPageNum(MMAP_PGNUM_TOP), new_size>>PAGE_SIZE_BITS){
+                    let end_vpn =VirtPageNum::from( vpn.0+(new_size>>PAGE_SIZE_BITS));
+                    // info!("statt:{:?},end:{:?}",vpn,end_vpn );
+                    let new_area =MapArea::new_by_vpn(
+                        vpn,
+                        end_vpn,
+                        MapType::Framed,
+                           MapPermission::U|MapPermission::W|MapPermission::R,
+                        area_type
+                    );
+                    let new_area_vpn_range=new_area.vpn_range;
+                    self.push(new_area, None)?;
+                    flush_tlb();
+
+                    let pagetable = &self.page_table;
+                    for (old_vpn, new_vpn) in
+                    old_area_vpn_range.iter().zip(new_area_vpn_range.iter())
+                {
+                    // 从旧 vpn 读页号，再从新 vpn 写页号
+                    let src_ppn = pagetable.translate(old_vpn).unwrap().ppn();
+                    let dst_ppn = pagetable.translate(new_vpn).unwrap().ppn();
+                
+                    // 拷贝一页数据
+                    dst_ppn
+                        .get_bytes_array()
+                        .copy_from_slice(src_ppn.get_bytes_array());
+                }
+
+                    self.munmap(old_area_vpn_range.get_start(),old_area_vpn_range.get_end());
+                    vpn.0<<PAGE_SIZE_BITS
+                   }                    
+                   else{
+                    
+                      return Err(SysErrNo::ENOMEM);
+                   }
+
+                  
+               }
+
+               else{
+
+                
+                old_start.0
+
+               }
+
+
+                
+            }
+
+        }
+        None => {
+            
+    debug!("[mremap] Can't find area ");
+           return  Err(SysErrNo::EFAULT);
+        },
+    };
+
+    debug!("[mremap] return addr: 0x{:x}", addr);
+    Ok(addr)
+}
 }
 
 /// remap test in kernel space

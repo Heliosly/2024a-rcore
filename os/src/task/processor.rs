@@ -138,9 +138,9 @@ pub fn run_task2(mut curr: CurrentTask) {
 pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>) {
     info!("Initialize executor...");
     kstack::init();
-    info!("current kernel stack top:{:#x}", current_stack_top());
+    println!("current kernel stack top:{:#x}", current_stack_top());
 
-    info!("current kernel stack bottom:{:#x}", current_stack_bottom());
+    println!("current kernel stack bottom:{:#x}", current_stack_bottom());
     // kstack::alloc_current_stack();
     UTRAP_HANDLER.init_by(utrap_handler);
     let scheduler = CFScheduler::new();

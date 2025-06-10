@@ -28,6 +28,21 @@ bitflags! {
 
 pub const  AT_FDCWD :i32=  -100;
 
+bitflags! {
+    /// Flags for the mremap system call.
+    pub struct MremapFlags: u32 {
+        /// By default, if there is not sufficient space at the current location,
+        /// mremap() fails. With this flag, the kernel may move the mapping.
+        const MAYMOVE     = 1 << 0;
+
+        /// Together with MAYMOVE, force the mapping to be moved to the address
+        /// specified by the optional new_address argument.
+        const FIXED       = 1 << 1;
+
+        /// Since Linux 5.7: remap to a new address but do not unmap the old range.
+        const DONTUNMAP   = 1 << 2;
+    }
+}
 
 bitflags! {
     /// 指定 sys_wait4 的选项
@@ -178,6 +193,9 @@ pub const FUTEX_PRIVATE_FLAG: i32 = 128;
 pub const FUTEX_CLOCK_REALTIME: i32 = 256;
 pub const FUTEX_CMD_MASK: i32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
 
+pub const FUTEX_TID_MASK: u32 = 1073741823;
+
+pub const FUTEX_OWNER_DIED: u32 = 1073741824;
 // Futex operations
 pub const FUTEX_WAIT: i32 = 0;
 pub const FUTEX_WAKE: i32 = 1;
@@ -194,6 +212,7 @@ pub const FUTEX_WAIT_REQUEUE_PI: i32 = 11;
 pub const FUTEX_CMP_REQUEUE_PI: i32 = 12;
 pub const FUTEX_LOCK_PI2: i32 = 13;
 
+pub const FUTEX_WAITERS: u32 = 2147483648;
 // Futex flags
 pub const FLAGS_SHARED: i32 = 0x10;
 pub const FLAGS_CLOCKRT: i32 = 0x20;

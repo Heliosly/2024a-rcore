@@ -28,9 +28,7 @@ impl FrameTracker {
      fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
         let bytes_array = ppn.get_bytes_array();
-        // if  ppn.0< 0x0812d2 ||ppn.0 >0x13FFFF  {
-        //     panic!("FrameTracker:ppn={:#x} is not in the heap!", ppn.0);
-        // }
+        
          
         for i in bytes_array {
             *i = 0;
@@ -79,6 +77,10 @@ impl StackFrameAllocator {
         // for i in self.recycled.iter() {
         //           println!("{}",i);  
         //         }
+    }
+    pub fn remaining_frames(&self) -> usize {
+        // 剩余数量 = 回收队列中的数量 + 未分配的连续区域中的数量
+        self.recycled.len() + (self.end - self.current)
     }
 }
 impl FrameAllocator for StackFrameAllocator {
@@ -156,7 +158,9 @@ pub fn frame_alloc() -> Option<Arc<FrameTracker>> {
         .map(FrameTracker::new)
         .map(Arc::new)
 }
-
+pub fn remaining_frames() -> usize {
+    FRAME_ALLOCATOR.lock().remaining_frames()
+}
 /// Deallocate a physical page frame with a given ppn
 pub fn frame_dealloc(ppn: PhysPageNum) {
 

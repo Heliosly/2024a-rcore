@@ -4,6 +4,7 @@ use alloc::{sync::Arc, vec};
 use alloc::vec:: Vec;
 
 use crate::fs::{Stdin, Stdout};
+use crate::utils::error::{SyscallRet, TemplateRet};
 use crate::{config::MAX_FD_NUM, fs::{FileClass, FileDescriptor, OpenFlags}, utils::error::SysErrNo};
 
 
@@ -111,7 +112,7 @@ impl FdManage {
       
 
         // 从 min_fd 开始向上搜索，直到 PROCESS_MAX_FDS 上
-        for fd_candidate in min_fd..MAX_FD_NUM {
+        for fd_candidate in min_fd..self.get_soft_limit() {
             if fd_candidate < self.table.len() {
                 // 如果 fd_candidate 在当前 fd_table 的范围内
                 if self.table[fd_candidate].is_none() {
@@ -150,17 +151,20 @@ impl FdManage {
     /// 如果 `pos` 大于 `MAX_FD_NUM`，则会发生 panic。
     ///
     /// 注意：此函数内部持有 `fd_table` 的锁。
-    pub   fn add_fd(&mut self, fd: FileDescriptor,pos:usize) ->Option<FileDescriptor>  {
+    pub   fn add_fd(&mut self, fd: FileDescriptor,pos:usize) ->TemplateRet<Option<FileDescriptor>>  {
       
         if pos>MAX_FD_NUM{
             panic!("fd out of range");
         }
         if pos<self.table.len(){
-           self.table[pos].replace(fd)
+          Ok( self.table[pos].replace(fd))
+         }
+         else if pos<self.get_soft_limit(){
+            self.table.resize(pos+1, None);
+            Ok(self.table[pos].replace(fd))
          }
          else{
-            self.table.resize(pos+1, None);
-            self.table[pos].replace(fd)
+            return Err(SysErrNo::EMFILE)
          }
     }
     /// “取出” fd_table[fd] 对应的文件句柄，
@@ -181,14 +185,19 @@ impl FdManage {
 
 
     /// 分配一个文件描述符。
-    pub fn alloc_fd(&mut self) -> usize {
-        let  fd_table = &mut self.table;
-        if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
-            fd
-        } else {
-            fd_table.push(None);
-            fd_table.len() - 1
+    pub fn alloc_fd(&mut self) -> SyscallRet {
+        // 先尝试在已有的表里找空槽
+        if let Some(fd) = (0..self.table.len()).find(|&i| self.table[i].is_none()) {
+            return Ok(fd);
         }
+        // 如果没有空槽，准备扩容
+        if self.table.len() < self.get_soft_limit(){
+            self.table.push(None);
+            // 新分配的索引 = 当前长度 - 1
+            return Ok(self.table.len() - 1);
+        }
+        // 超过上限，分配失败
+        Err(SysErrNo::EMFILE)
     }
  
     

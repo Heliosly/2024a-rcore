@@ -10,6 +10,7 @@ mod fd;
 pub mod pipe;
 mod poll;
 pub mod dev;
+pub mod net;
 pub mod mount;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
@@ -115,7 +116,7 @@ unimplemented!()
     
       /// 设置偏移量,并非所有文件都支持
       fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
-          unimplemented!("not support!");
+        return Err(SysErrNo::ESPIPE)
       }
 
     fn as_any(&self) -> &dyn Any {
@@ -398,7 +399,11 @@ const INITPROC_SH:&str = "
 cd /glibc
 ./busybox_testcode.sh
 ./basic_testcode.sh
-
+./libctest_testcode.sh
+cd /musl
+./busybox_testcode.sh
+./basic_testcode.sh
+./libctest_testcode.sh
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";

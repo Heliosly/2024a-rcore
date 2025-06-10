@@ -160,7 +160,7 @@ impl PipeRingBuffer {
 pub struct Pipe {
     readable: bool,
     writable: bool,
-    buffer: Arc<Mutex<PipeRingBuffer>>, // 共享的环形缓冲区
+    pub buffer: Arc<Mutex<PipeRingBuffer>>, // 共享的环形缓冲区
     flags: Mutex<OpenFlags>,          // Pipe 自身的打开标志 (如 O_NONBLOCK)
 }
 

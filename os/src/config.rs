@@ -18,7 +18,7 @@ pub const UIO_MAXIOV: usize = 1024;
 
 pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16*10*2;
+pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16*10;
 /// kernel heap size
 pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
 ///于allocuserres中于分配页数
@@ -34,7 +34,7 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
 /// the physical memory end
-pub const MEMORY_END: usize = 0x13fffffff +  KERNEL_DIRECT_OFFSET;
+pub const MEMORY_END: usize = 0xffffffc088000000-4096 ;
 /// The base address of control registers in Virtio_Block device
 pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 /// Kerneladress offset
@@ -80,7 +80,7 @@ pub const IS_ASYNC: usize = 0x5f5f5f5f;
 pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 
 ///Max Fd
-pub const MAX_FD_NUM:usize=1024;
+pub const MAX_FD_NUM:usize=100;
 
 // Maximum path length
 pub const PATH_MAX: usize = 4096;

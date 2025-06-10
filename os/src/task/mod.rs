@@ -37,6 +37,7 @@ use alloc::{format, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use alloc::string::{String, ToString};
 use lazy_init::LazyInit;
+use riscv::addr::VirtAddr;
 use core::future::Future;
 pub use core::mem::ManuallyDrop;
 use core::task::{Context, Poll};
@@ -57,7 +58,10 @@ pub use waker::custom_noop_waker;
 pub use task::RobustList;
 // pub use manager::get_task_count;
 use crate::fs::{open_file, OpenFlags};
+use crate::mm::{get_target_ref, put_data};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
+use crate::syscall::flags::{FUTEX_OWNER_DIED, FUTEX_TID_MASK, FUTEX_WAITERS};
+use crate::utils::error::GeneralRet;
 use alloc::sync::Arc;
 
 
@@ -141,6 +145,163 @@ pub async fn exit_proc(exit_code: i32) {
 
     
 }
+#[repr(C)]
+    #[derive(Debug, Clone, Copy)] // 加上 Clone, Copy
+    struct UserRobustListHead {
+        list: UserRobustList,
+        futex_offset: isize, // 【建议】改成 isize 更健壮
+        list_op_pending: usize, 
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    struct UserRobustList {
+        next: usize, 
+    }
+
+async fn exit_robust_list_cleanup(head_ptr: usize) -> GeneralRet {
+
+
+
+    //println!("[ROBUST_DEBUG] >> Entering exit_robust_list_cleanup with head_ptr: {:#x}", head_ptr);
+
+    let mut current_head_ptr = head_ptr as *const UserRobustListHead;
+    let current_task_tid = current_task().get_tid();
+    let token = current_token().await;
+    const MAX_ROBUST_LIST_NODES: usize = 100;
+
+    for i in 0..MAX_ROBUST_LIST_NODES {
+        if current_head_ptr.is_null() {
+            //println!("[ROBUST_DEBUG] Head pointer is NULL. Cleanup finished on iteration {}.", i);
+            break;
+        }
+
+        // 1. 从用户空间读取 robust_list_head 结构体
+        //println!("[ROBUST_DEBUG] Attempting to read UserRobustListHead from user address: {:?}", current_head_ptr);
+        let head_data: UserRobustListHead = match get_target_ref(token, current_head_ptr) { // 使用 get_target_data 获取拷贝
+            Ok(data) => *data,
+            Err(_) => {
+                //println!("[ROBUST_DEBUG] !!! ERROR: Failed to read UserRobustListHead at {:?}", current_head_ptr);
+                break;
+            }
+        };
+        // 【新添加】打印读取到的完整 head_data
+        //println!("[ROBUST_DEBUG] Successfully read head_data: {:?}", head_data);
+
+
+        // 2. 处理 list_op_pending
+        if head_data.list_op_pending != 0 {
+            let pending_lock_addr = head_data.list_op_pending;
+            
+            //println!("[ROBUST_DEBUG] Found pending operation on lock at addr: {:#x}", pending_lock_addr);
+        
+            let futex_val_result = get_target_ref(token, pending_lock_addr as *const u32);
+        
+            if let Ok(futex_val) = futex_val_result {
+                let futex_val = *futex_val;
+                //println!("[ROBUST_DEBUG] Pending lock value is: {:#x}", futex_val);
+                if (futex_val & FUTEX_TID_MASK) == current_task_tid as u32 {
+                    //println!("[ROBUST_DEBUG] Pending lock owner matches current TID ({}). Cleaning up.", current_task_tid);
+        
+                    let new_futex_val = (futex_val & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
+                    //println!("[ROBUST_DEBUG] New futex value will be: {:#x}", new_futex_val);
+        
+                    if put_data(token, pending_lock_addr as *mut u32, new_futex_val).is_ok() {
+                        if (futex_val & FUTEX_WAITERS) != 0 {
+                            //println!("[ROBUST_DEBUG] Waking waiters for pending lock at {:#x}", pending_lock_addr);
+                            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
+                        if let Some(wait_queue) = futex_guard.get_mut(&(token, pending_lock_addr)) {
+                            wait_queue.wake_matching_waiters(1, u32::MAX);
+                            if wait_queue.is_empty() {
+                                futex_guard.remove(&(token, pending_lock_addr));
+                            }
+                        }
+                        }
+                    } else {
+                         //println!("[ROBUST_DEBUG] !!! ERROR: Failed to write new value to pending lock at {:#x}", pending_lock_addr);
+                    }
+                } else {
+                    //println!("[ROBUST_DEBUG] Pending lock owner ({}) does not match current TID ({}). Skipping.", futex_val & FUTEX_TID_MASK, current_task_tid);
+                }
+            } else {
+                //println!("[ROBUST_DEBUG] !!! ERROR: Failed to read pending lock value at {:#x}", pending_lock_addr);
+            }
+        }
+
+        // 3. 遍历由 head_data.list.next 开始的锁链表
+        let mut current_node_ptr = head_data.list.next;
+        //println!("[ROBUST_DEBUG] Starting lock list traversal from node_ptr: {:#x}. Head is: {:#x}", current_node_ptr, head_ptr);
+
+        while current_node_ptr != head_ptr {
+            if current_node_ptr == 0 {
+                //println!("[ROBUST_DEBUG] Encountered NULL node_ptr in list. Breaking loop.");
+                break;
+            }
+
+            //println!("[ROBUST_DEBUG] --- Processing node at: {:#x} ---", current_node_ptr);
+
+            // a. 读取 list 节点
+            let node_data_result = get_target_ref(token, current_node_ptr as *const UserRobustList);
+            let node_data: UserRobustList = match node_data_result {
+                Ok(data) => *data,
+                Err(_) => {
+                    //println!("[ROBUST_DEBUG] !!! ERROR: Failed to read UserRobustList node at {:#x}", current_node_ptr);
+                    break;
+                }
+            };
+            //println!("[ROBUST_DEBUG] Node data: {:?}", node_data);
+            
+
+            // b. 计算锁的地址
+            //    为了安全，我们使用 wrapping_sub 来防止 panic，但如果发生回环，说明有逻辑错误
+            let lock_addr = (current_node_ptr as isize).wrapping_add(head_data.futex_offset) as usize;
+            //println!("[ROBUST_DEBUG] Calculated lock_addr: {:#x}", lock_addr);
+
+
+            // c. 读取并检查锁的状态
+            let futex_val_result = get_target_ref(token, lock_addr as *const u32);
+            if let Ok(futex_val) = futex_val_result {
+                let futex_val = *futex_val;
+                //println!("[ROBUST_DEBUG] Lock value at {:#x} is: {:#x}", lock_addr, futex_val);
+
+                // d. 检查所有者是否是当前线程
+                if (futex_val & FUTEX_TID_MASK) == current_task_tid as u32 {
+                    //println!("[ROBUST_DEBUG] Lock owner matches current TID ({}). Cleaning up.", current_task_tid);
+                    let new_futex_val = (futex_val & !FUTEX_TID_MASK) | FUTEX_OWNER_DIED;
+                    //println!("[ROBUST_DEBUG] New futex value will be: {:#x}", new_futex_val);
+                    
+                    if put_data(token, lock_addr as *mut u32, new_futex_val).is_ok() {
+                        if (futex_val & FUTEX_WAITERS) != 0 {
+                            //println!("[ROBUST_DEBUG] Waking waiters for lock at {:#x}", lock_addr);
+                            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
+                        if let Some(wait_queue) = futex_guard.get_mut(&(token, lock_addr)) {
+                            wait_queue.wake_matching_waiters(1, u32::MAX);
+                            if wait_queue.is_empty() {
+                                futex_guard.remove(&(token, lock_addr));
+                            }
+                        }
+                        }
+                    } else {
+                        //println!("[ROBUST_DEBUG] !!! ERROR: Failed to write new value to lock at {:#x}", lock_addr);
+                    }
+                } else {
+                     //println!("[ROBUST_DEBUG] Lock owner ({}) does not match current TID ({}). Skipping.", futex_val & FUTEX_TID_MASK, current_task_tid);
+                }
+            } else {
+                 //println!("[ROBUST_DEBUG] !!! ERROR: Failed to read lock value at {:#x}", lock_addr);
+            }
+            
+            // g. 前进到下一个节点
+            current_node_ptr = node_data.next;
+        }
+        
+        //println!("[ROBUST_DEBUG] Finished list traversal (or loop broke).");
+        break; 
+    }
+
+    //println!("[ROBUST_DEBUG] << Leaving exit_robust_list_cleanup.");
+    Ok(())
+}
 ///Exit the current 'Running' task and run the next task in task list. 
 /// 并不清理资源等waitpid回收
 pub async  fn exit_current(exit_code: i32) {
@@ -171,6 +332,8 @@ pub async  fn exit_current(exit_code: i32) {
             }
         
     }
+    
+    exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
 }
     process.set_exit_code(exit_code as i32);
     let tid = task.id.as_usize();

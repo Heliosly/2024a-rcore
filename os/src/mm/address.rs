@@ -361,6 +361,9 @@ where
         assert!(self.get_start()<=val);
         self.r=val;
     }
+    pub fn iter(&self) -> SimpleRangeIterator<T> {
+        SimpleRangeIterator::new(self.l, self.r)
+    }
  
 }
 impl<T> IntoIterator for SimpleRange<T>

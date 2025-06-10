@@ -84,8 +84,8 @@ pub const SYSCALL_CHDIR:usize = 49;
 pub const SYSCALL_GETDENTS64:usize=61;
 pub const SYSCALL_GETPGID :usize = 155;
 pub const SYSCALL_SETPGID :usize = 154;
-pub const SYSCALL_CLOCK_GETTIME:usize = 112;
-pub const SYSCALL_CLOCK_SETTIME:usize = 113;
+pub const SYSCALL_CLOCK_GETTIME:usize = 113;
+pub const SYSCALL_CLOCK_SETTIME:usize = 112;
 pub const SYSCALL_CLOCK_GETRES:usize = 114; 
 pub const SYSCALL_GETTID:usize=178;
 pub const SYSCALL_FACCESSAT:usize=48;
@@ -111,3 +111,27 @@ pub const SYSCALL_INFO:usize =179;
 
 pub const SYSCALL_UTIMENSAT:usize =88;
 pub const SYSCALL_FUTEX:usize = 98;
+
+
+pub const SYSCALL_SOCKET:usize =198;
+pub const SYSCALL_BIND:usize=200;
+
+pub const SYSCALL_GETSOCKNAME:usize=204;
+
+pub const SYSCALL_GETPEERNAME:usize=205;
+
+pub const SYSCALL_SETSOCKOPT:usize=208;
+
+pub const SYSCALL_SENDTO:usize=206;
+pub const SYSCALL_RECVFROM :usize =207;
+
+pub const SYSCALL_SENDMSG: usize = 211;
+pub const SYSCALL_LISTEN: usize = 201;
+pub const SYSCALL_ACCEPT: usize = 202;
+
+pub const SYSCALL_ACCEPT4: usize = 242;
+pub const SYSCALL_CONNECT: usize = 203;
+pub const SYSCALL_SOCKETPAIR: usize = 199;
+pub const SYSCALL_MREMAP: usize= 216;
+
+pub const SYSCALL_SETSID :usize =157;

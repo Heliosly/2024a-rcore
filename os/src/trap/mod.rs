@@ -196,7 +196,6 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
         stval,
         sepc
     );
-    panic!();
 }
 
 

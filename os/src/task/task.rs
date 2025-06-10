@@ -91,14 +91,14 @@ impl ProcessControlBlock {
     pub async fn get_file(&self,fd:usize)->Result<FileDescriptor, SysErrNo>{
         self.fd_table.lock().await.get_file(fd)
     }
-    pub async fn alloc_fd(&self)->usize{
+    pub async fn alloc_fd(&self)->SyscallRet{
         self.fd_table.lock().await.alloc_fd()
     }
-    pub async fn alloc_and_add_fd(&self,fd:FileDescriptor)->usize{
+    pub async fn alloc_and_add_fd(&self,fd:FileDescriptor)->SyscallRet{
         let mut table = self.fd_table.lock().await;
-        let res= table.alloc_fd();
-        table.add_fd(fd, res);
-        res
+        let res= table.alloc_fd()?;
+        table.add_fd(fd, res)?;
+        Ok(res)
     }
     /// 激活用户的内存空间。
     pub async fn activate_user_memoryset(&self) {
@@ -843,11 +843,11 @@ impl ProcessControlBlock {
             // 没有给定用户栈的时候，只能是共享了地址空间，且原先调用clone的有用户栈，此时已经在之前的trap clone时复制了
             if user_stack != 0 {
                 trap_cx.set_sp(user_stack);
-
-                // info!(
-                //     "New user stack: sepc:{:X}, stack:{:X}",
-                //     trap_frame.sepc, trap_frame.regs.sp
-                // );
+          
+                info!(
+                    "New user stack: sepc:{:X}, stack:{:X},tp:{:X}",
+                    trap_cx.sepc, trap_cx.regs.sp,trap_cx.regs.tp
+                );
             }
         }
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {

@@ -145,7 +145,7 @@ pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: 
     // 通常这些检查最好在 open_file 里做
 
     // 7. 为打开的文件分配一个新的文件描述符 fd
-    let new_fd = proc.fd_table.lock().await.alloc_fd();
+    let new_fd = proc.fd_table.lock().await.alloc_fd()?;
     proc.fd_table.lock().await.table[new_fd] = Some(file_class_instance);
     // 返回新分配的 fd
     Ok(new_fd )
@@ -207,7 +207,7 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
 
 pub   fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet{
     // 伪实现
-trace!("[sys_ioctl]");
+    warn!("[sys_ioctl]");
    Ok(0)
 }
 
@@ -217,7 +217,6 @@ pub async  fn sys_fstatat(
     kst: *mut Kstat,
     flags: usize,
 ) -> SyscallRet {
-    trace!("[sys_fstatat] dirfd: {}, path: {:?}, kst: {:?}, flags: {}", dirfd, path_ptr, kst, flags);
 
     let proc = current_process();
     let mut ms=proc.memory_set.lock().await;
@@ -225,6 +224,7 @@ pub async  fn sys_fstatat(
     let token  =ms.token();
     let path  =ms.safe_translated_str( path_ptr).await;
 
+    trace!("[sys_fstatat] dirfd: {}, path: {:?}, kst: {:?}, flags: {}", dirfd, path, kst, flags);
 
     // 解析 flags，非法时返回 EINVAL
     let flags = FstatatFlags::from_bits(flags)
@@ -232,12 +232,15 @@ pub async  fn sys_fstatat(
 
     // 1. 处理 AT_EMPTY_PATH：允许空路径时对 dirfd 本身 stat
     if flags.contains(FstatatFlags::EMPTY_PATH) && path.is_empty() {
+
         if dirfd == AT_FDCWD {
             return Err(SysErrNo::EINVAL);
         }
         // 校验并获取 dirfd 对应的文件句柄
+
         let file = proc.fd_table.lock().await.get_file(dirfd as usize)?;
         // 将元数据写回用户缓冲区
+        trace!("fstat");
         put_data(token, kst, file.any().fstat())? ;
         return Ok(0);
     }
@@ -386,17 +389,14 @@ pub async fn sys_lseek(fd: usize, offset: isize, whence: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
-    let file_descriptor = match fd_table_guard.table.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
-        Some(f) => f.clone(), // 注意 FileDescriptor 的共享/生命周期
-        None => return Err(SysErrNo::EBADF),
-    };
+    let file_descriptor =  fd_table_guard.get_file(fd)?;
     // drop(fd_table_guard); // 可以在这里释放，如果 file_descriptor.seek 不依赖它
 
    
 
     // FileDescriptor 的 seek 方法本身可能是同步的
     // 如果是 async fn seek(&self, ...) -> ... 则需要 .await
-    Ok(file_descriptor.file()?.lseek(offset, whence) ?)
+    Ok(file_descriptor.any().lseek(offset, whence) ?)
 }
 
 // --- 2. Syscall::Pread64 (pread64) ---
@@ -408,7 +408,7 @@ pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: u
 
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
-    let fd_table_guard = pcb_arc.fd_table.lock();
+    let fd_table_guard = pcb_arc.fd_table.lock().await;
 
     if fd < 0 || fd as usize >= fd_table_guard.len() {
         return Err(SysErrNo::EBADF);
@@ -1536,48 +1536,41 @@ pub async  fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> SyscallRet 
 /// newfd: 目标文件描述符
 /// 返回：成功时为 newfd，失败时为 -错误码
 pub async fn sys_dup(oldfd: i32) -> SyscallRet {
-    trace!("sys_dup(oldfd: {})",oldfd  );
+    trace!("sys_dup(oldfd: {})", oldfd);
 
     let pcb_arc = current_process();
-    let mut fd_table = pcb_arc.fd_table.lock().await; 
+    
+    // 我们需要同时读和写 fd_table，所以一开始就获取锁
+    let mut fd_table = pcb_arc.fd_table.lock().await;
 
-    // 1. 校验 oldfd 和 newfd 的范围
-    if oldfd < 0 || oldfd as usize >= MAX_FD_NUM 
-      {
-        // log::warn!("sys_dup2: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
+    // 1. 校验 oldfd
+    if oldfd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    let oldfd_usize = oldfd as usize;
+    if oldfd_usize >= fd_table.get_soft_limit(){
+        // POSIX 对 oldfd >= RLIMIT_NOFILE 的行为没有明确规定，
+        // 但返回 EBADF 是一个合理的选择。
         return Err(SysErrNo::EBADF);
     }
 
-    let oldfd_usize = oldfd as usize;
-
-   
-    // 3. 检查 oldfd 是否是一个有效的、打开的文件描述符,此处返回oldfd的clone
+    // 2. 获取源文件描述符的克隆
     let file_to_dup = match fd_table.table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
-        Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
-        None => {
-            log::warn!("sys_dup2: oldfd({}) is not a valid open file descriptor.", oldfd);
-            return Err(SysErrNo::EBADF);
-        }
+        Some(fd_instance) => fd_instance.clone(),
+        None => return Err(SysErrNo::EBADF),
     };
-   let newfd_usize = if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table.table[*fd].is_none()) {
-        fd
-    } else {
-        fd_table.table.push(None);
-        fd_table.len() - 1
-    };
-    // 6. 将克隆的 FileDescriptor 放入 newfd 的位置
-    //    dup2 创建的 fd 默认不设置O_CLOEXEC标志。
-    //    你需要确保 file_to_dup.flags 中不包含 O_CLOEXEC (或者如果它有，在这里清除它)
-    //    或者，FileDescriptor 有一个方法 fd.set_cloexec(false)。
-    //    POSIX: "The close-on-exec flag (FD_CLOEXEC) for the new descriptor is off."
-    let mut new_fd_instance = file_to_dup;
-    new_fd_instance.unset_cloexec();
-    fd_table.table[newfd_usize] = Some(new_fd_instance);
 
-    // log::debug!("sys_dup2: Duplicated fd {} to {} successfully.", oldfd, newfd);
-    Ok(newfd_usize)
+    // 3. 分配新的文件描述符
+    // 把分配逻辑封装在 FdManage 的方法中更清晰
+    let newfd=fd_table.alloc_fd()? ;
+     
+      fd_table.table[newfd]=Some(file_to_dup);
+      fd_table.table[newfd].as_mut().unwrap().unset_cloexec();
+
+      Ok(newfd)
+        
+    
 }
-
 
 // --- sys_dup3 实现 ---
 /// dup3 系统调用：带标志的文件描述符复制
@@ -1586,7 +1579,7 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
 /// flags: 标志 (目前只支持 O_CLOEXEC)
 /// 返回：成功时为 newfd，失败时为 -错误码
 pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
-    log::trace!("sys_dup3(oldfd: {}, newfd: {}, flags: 0x{:x})", oldfd, newfd, flags_u32);
+    log::trace!("[sys_dup3](oldfd: {}, newfd: {}, flags: 0x{:x})", oldfd, newfd, flags_u32);
 
     // 1. 校验 flags (目前只关心 O_CLOEXEC)
     //    如果包含 O_CLOEXEC 之外的其他位，POSIX 要求返回 EINVAL。
@@ -1598,7 +1591,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
 
     let pcb_arc = current_process();
     let mut fd_table_guard = pcb_arc.fd_table.lock().await;
-
+   
     // 2. 校验 oldfd 和 newfd 的范围
     if oldfd < 0 || oldfd as usize >= MAX_FD_NUM ||
        newfd < 0 || newfd as usize >= MAX_FD_NUM {
@@ -1614,7 +1607,9 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
         log::warn!("sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.", oldfd, newfd);
         return Err(SysErrNo::EINVAL);
     }
-
+    if oldfd_usize >= fd_table_guard.get_soft_limit(){
+        return Err(SysErrNo::EBADF);
+    }
     // 4. 检查 oldfd 是否是一个有效的、打开的文件描述符
     let file_to_dup = match fd_table_guard.table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
         Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
@@ -1890,7 +1885,7 @@ pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {
     };
     let open_flags = OpenFlags::O_CREATE | OpenFlags::O_WRONLY | OpenFlags::O_TRUNC;
     let file_class_instance = open_file(&abs_path, open_flags, mode)?;
-    let new_fd = proc.fd_table.lock().await.alloc_fd();
+    let new_fd = proc.fd_table.lock().await.alloc_fd()?;
     proc.fd_table.lock().await.table[new_fd] = Some(file_class_instance);
     Ok(new_fd)
 }
@@ -2169,9 +2164,9 @@ pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet 
 
     // 4. 为读端和写端分配文件描述符
     //    add_fd_to_current_process 需要是 async 或在异步上下文中安全调用
-   let fd_read= pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(read_pipe_arc))).await;
+   let fd_read= pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(read_pipe_arc))).await?;
     
-   let fd_write=  pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(write_pipe_arc))).await;
+   let fd_write=  pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(write_pipe_arc))).await?;
 
 
     // 5. 将两个文件描述符写回用户空间
@@ -2422,5 +2417,13 @@ pub async fn sys_sendfile(
 pub async  fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     trace!("[sys_statfs] path:{:#?} statfs:{:#?}",_path,statfs);
     current_process().memory_set.lock().await.safe_put_data( statfs, crate::fs::fs_stat()?).await?;
+    Ok(0)
+}
+
+
+pub fn sys_setsid() -> SyscallRet {
+    //涉及到会话和进程组，暂时伪实现
+
+    trace!("[sys_setsid] ");
     Ok(0)
 }

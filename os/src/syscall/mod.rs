@@ -15,9 +15,10 @@ mod process;
 mod signal;
 mod other;
 mod arch;
+mod net;
 pub mod flags;
 use flags::{IoVec, Utsname};
-use crate::{signal::SigInfo, timer::{Tms, UserTimeSpec}};
+use crate::{signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
 use fs::*;
 use process::*;
 use other::*;
@@ -140,10 +141,52 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
         SYSCALL_NANOSLEEP=>sys_nanosleep(args[0] as *const UserTimeSpec, args[1] as *mut UserTimeSpec).await,
         SYSCALL_FUTEX =>sys_futex(args[0] as  *const u32,args[1] as  i32,args[2] as u32,args[3],args[4] as *mut u32,args[5] as u32).await,
+        SYSCALL_SOCKET => sys_socket(args[0] as u32, args[1] as u32, args[2] as u32).await,
+        SYSCALL_SOCKETPAIR => sys_socketpair(
+            args[0] as u32,
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as *mut u32,
+        ).await,
+        SYSCALL_BIND => sys_bind(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_LISTEN => sys_listen(args[0], args[1] as u32),
+        SYSCALL_ACCEPT => sys_accept(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_CONNECT => sys_connect(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_GETSOCKNAME => sys_getsockname(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_GETPEERNAME => sys_getpeername(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_SENDTO => sys_sendto(
+            args[0],
+            args[1] as *const u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *const u8,
+            args[5] as u32,
+        ),
+        SYSCALL_RECVFROM => sys_recvfrom(
+            args[0],
+            args[1] as *mut u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *const u8,
+            args[5] as u32,
+        ).await,
+        SYSCALL_SETSOCKOPT => sys_setsockopt(
+            args[0],
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as *const u8,
+            args[4] as u32,
+        ),
+        SYSCALL_SENDMSG => sys_sendmsg(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_ACCEPT4 => sys_accept4(
+            args[0] as usize,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+        ),
+        SYSCALL_MREMAP=>sys_mremap(args[0] as *mut u8, args[1], args[2], args[3] as u32, args[4] as  *mut u8).await,
         
-        
-        
-        
+        SYSCALL_SETSID=>sys_setsid(),
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

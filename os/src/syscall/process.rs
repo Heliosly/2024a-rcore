@@ -2,15 +2,17 @@
 //!
 
 
+use core::ffi::c_void;
+
 use alloc::{
    format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::{AT_FDCWD};
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
-        flush_tlb, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
-    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
+    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
+        flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
+    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
         bpoint, bpoint1, error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
@@ -710,10 +712,11 @@ pub async fn sys_mmap(
     if flags == 0 {
         return Err(SysErrNo::EINVAL);
     }
-    debug!(
+    info!(
         "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
         addr, len, fd , off, flags,mmap_prot, map_perm
     );
+
     let flags = match MmapFlags::from_bits(flags) {
         Some(f) => f,
         None => return {
@@ -733,7 +736,9 @@ pub async fn sys_mmap(
     if off % PAGE_SIZE != 0 {
         return Err(SysErrNo::EINVAL);
     }
-
+    if len>>PAGE_SIZE_BITS > remaining_frames(){
+        return Err(SysErrNo::ENOMEM);
+    }
     let fd = fd as usize ;
     // 3. 匿名映射 | 文件映射：fd 检查
     let anon = flags.contains(MmapFlags::MAP_ANONYMOUS);
@@ -838,7 +843,7 @@ pub async fn sys_mmap(
     // 10. 特殊 flags 的额外处理
     if flags.contains(MmapFlags::MAP_POPULATE) {
         // 立即为每页缺页、填充物理页
-        area.map(&mut ms.page_table);
+        area.map(&mut ms.page_table)?;
     }
    
     // if flags.contains(MmapFlags::MAP_LOCKED) {
@@ -1164,7 +1169,7 @@ pub async fn sys_futex(
 ) -> SyscallRet {
        let pcb_arc = current_process();
     let tid = current_task_id();
-debug!(
+info!(
         "[sys_futex] uaddr_user_ptr: {:#x}, futex_op_full: {:#x} ({}), val_or_count: {}, \
         val2_timeout_ptr_or_num_requeue: {:#x}, uaddr2_user_ptr: {:#x}, bitmask_or_val3: {:#x},tid:{}",
         uaddr_user_ptr as usize,
@@ -1261,4 +1266,29 @@ debug!(
         }
         _ => Err(SysErrNo::ENOSYS),
     }
+}
+
+
+pub async  fn sys_mremap(
+    old_address: *mut u8,   // void* → *mut u8
+    old_size: usize,        // size_t → usize
+    new_size: usize,        // size_t → usize
+    flags: u32,             // int → i32
+    new_address: *mut u8, //仅当 MREMAP_FIXED 时使用
+) ->SyscallRet {
+    trace!(
+        "[sys_mremap] old_addr = {:p}, old_size = {}, new_size = {}, flags = {:#x}, new_addr = {:p}",
+        old_address,
+        old_size,
+        new_size,
+        flags,
+        new_address,
+    ); 
+    let flags= MremapFlags::from_bits(flags).unwrap();
+    let old_start = old_address as usize;
+    let proc= current_process();
+    
+    let x = proc.memory_set.lock().await.mremap(old_start.into(), old_size, new_size,flags).await; 
+    x
+
 }

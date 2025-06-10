@@ -12,7 +12,7 @@ use crate::{
     fs::{File, FileDescriptor, OsInode},
     mm::StepByOne,
     syscall::flags::MmapProt,
-    utils::error::{SyscallRet, TemplateRet},
+    utils::error::{GeneralRet, SyscallRet, TemplateRet},
 };
 
 use super::{
@@ -210,7 +210,7 @@ pub struct MapArea {
     ///从start到end的vpn
     pub vpn_range: VPNRange,
     pub data_frames: BTreeMap<VirtPageNum, Arc<FrameTracker>>,
-    map_type: MapType,
+    pub map_type: MapType,
     pub map_perm: MapPermission,
     pub area_type: MapAreaType,
     ///只有Osinnoder才能映射
@@ -219,6 +219,10 @@ pub struct MapArea {
 }
 
 impl MapArea {
+    pub fn range_size(&self)->usize{
+        (self.vpn_range.get_end().0-self.vpn_range.get_start().0)<<PAGE_SIZE_BITS
+    }
+    ///返回已经映射过的 页大小
     pub fn size(&self) -> usize {
         self.data_frames.len() * PAGE_SIZE
     }
@@ -299,12 +303,15 @@ impl MapArea {
             .update_region(self.vpn_range.get_start().into(), self.size(), flags)
             .unwrap();
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) ->GeneralRet {
         let ppn: PhysPageNum;
 
         match self.map_type {
             MapType::Framed => {
-                let frame = frame_alloc().unwrap();
+                let frame = match frame_alloc(){
+                    Some(f) => f,
+                    None => return Err(crate::utils::error::SysErrNo::ENOMEM),
+                };
                 ppn = frame.ppn();
 
                 self.data_frames.insert(vpn, frame);
@@ -315,6 +322,7 @@ impl MapArea {
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
         page_table.map(vpn, ppn, pte_flags);
+        Ok(())
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
@@ -323,10 +331,11 @@ impl MapArea {
         page_table.unmap(vpn);
     }
 
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable)->GeneralRet {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            self.map_one(page_table, vpn)?
         }
+        Ok(())
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
@@ -341,11 +350,12 @@ impl MapArea {
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
+    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum)->GeneralRet {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn)?
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
+        Ok(())
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before

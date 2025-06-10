@@ -92,8 +92,8 @@ pub fn rust_main() -> ! {
     
     logging::init();
     mm::init();
-    mm::heap_allocator::heap_test();
-    mm::frame_allocator::frame_allocator_test();
+    // mm::heap_allocator::heap_test();
+    // mm::frame_allocator::frame_allocator_test();
     trap::init();
     trap::enable_irqs();
     timer::set_next_trigger();
@@ -102,14 +102,14 @@ pub fn rust_main() -> ! {
     fs::init();
     // fs::list_app();
     
-    // task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
+    task::add_initproc("/", "/glibc/busybox", "/initproc.sh");
 
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
-    // task::add_initproc("/glibc", "/glibc/busybox", "sh libctest_testcode.sh");
+    // task::add_initproc("/glibc", "/glibc/busybox", "sh run-dynamic.sh");
 
-    //  task::add_initproc("/disk", "/glibc/busybox", "sh /disk/run-static.sh");
-     task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
+    //  task::add_initproc("/disk", "/glibc/busybox", "sh /disk/run-dynamic.sh");
+    //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
 
     extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
