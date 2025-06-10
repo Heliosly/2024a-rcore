@@ -55,3 +55,12 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data
 pub const IS_ASYNC: usize = 0x5f5f5f5f;
+
+#[cfg(target_arch = "loongarch64")]
+/// LoongArch specific memory layout
+pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_fc00_0000_0000;
+#[cfg(target_arch = "loongarch64")]
+pub const MEMORY_END: usize = 0x13fffffff + KERNEL_DIRECT_OFFSET;
+#[cfg(target_arch = "loongarch64")]
+/// LoongArch MMIO base addresses
+pub const MMIO: &[(usize, usize)] = &[(0x1fe00000, 0x1000)]; // LoongArch typical MMIO

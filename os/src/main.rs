@@ -54,7 +54,12 @@ use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
 use trap::user_task_top;
 
+#[cfg(target_arch = "riscv64")]
 global_asm!(include_str!("entry.asm"));
+
+#[cfg(target_arch = "loongarch64")]
+global_asm!(include_str!("entry_loongArch.asm"));
+
 /// clear BSS segment
 fn clear_bss() {
     extern "C" {
@@ -72,12 +77,22 @@ fn clear_bss() {
 #[no_mangle]
 ///立即数高于12位用rust处理
 pub fn setbootsp() {
-   unsafe {
-        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
-        asm!("la t0, rust_main");
-        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
-        asm!("jalr zero, 0(t0)");
-       
+    unsafe {
+        #[cfg(target_arch = "riscv64")]
+        {
+            asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("la t0, rust_main");
+            asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("jalr zero, 0(t0)");
+        }
+        
+        #[cfg(target_arch = "loongarch64")]
+        {
+            asm!("add.d $sp, $sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("la.abs $t0, rust_main");
+            asm!("add.d $t0, $t0, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("jirl $zero, $t0, 0");
+        }
     }
 }
 

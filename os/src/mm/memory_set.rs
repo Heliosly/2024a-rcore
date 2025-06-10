@@ -611,3 +611,15 @@ pub fn remap_test() {
     println!("remap_test passed!");
 }
 
+#[cfg(target_arch = "loongarch64")]
+impl MemorySet {
+    pub fn activate(&self) {
+        unsafe {
+            core::arch::asm!(
+                "csrwr {}, 0x19", // PGDL 寄存器
+                in(reg) self.page_table.root_ppn.0
+            );
+        }
+    }
+}
+

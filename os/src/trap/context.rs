@@ -1,7 +1,18 @@
 //! Implementation of [`TrapContext`]
 use core::arch::asm;
 
+#[cfg(target_arch = "riscv64")]
 use riscv::register::{scause::{Exception, Interrupt, Trap}, sstatus::{self, Sstatus, SPP}};
+
+#[cfg(target_arch = "loongarch64")]
+pub mod loongarch_csr {
+    pub const CSR_CRMD: u16 = 0x0;
+    pub const CSR_PRMD: u16 = 0x1;
+    pub const CSR_ESTAT: u16 = 0x5;
+    pub const CSR_ERA: u16 = 0x6;
+    pub const CSR_BADV: u16 = 0x7;
+    pub const CSR_TLBRSAVE: u16 = 0x40;
+}
 
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
 #[repr(usize)]
@@ -197,3 +208,18 @@ impl TrapContext{
             );
         }
     }
+impl TrapContext {
+    #[cfg(target_arch = "riscv64")]
+    pub fn user_return(&mut self) {
+        unsafe {
+            user_return1();
+        }
+    }
+    
+    #[cfg(target_arch = "loongarch64")]
+    pub fn user_return(&mut self) {
+        unsafe {
+            user_return1();
+        }
+    }
+}

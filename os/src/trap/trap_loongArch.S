@@ -20,7 +20,7 @@
         fld.d   $f\n, \m*8($sp)
     .endm
 
-; Push 通用寄存器到 TrapContext
+# Push 所有通用寄存器到 TrapContext
 .macro PUSH_GENERAL_REGS
     st.d $ra,  0*8($sp)
     st.d $t0,  4*8($sp)
@@ -52,7 +52,7 @@
     st.d $t6, 30*8($sp)
 .endm
 
-; 从 TrapContext 恢复通用寄存器
+# 从 TrapContext 恢复所有通用寄存器
 .macro POP_GENERAL_REGS
     ld.d $ra,  0*8($sp)
     ld.d $t0,  4*8($sp)
@@ -84,26 +84,25 @@
     ld.d $t6, 30*8($sp)
 .endm
 
-; SAVE_REGS：保存上下文到 TrapContext
 .macro SAVE_REGS
     PUSH_GENERAL_REGS
-    csrrd   $t0, 0x6
-    csrrd   $t1, 0x5
-    csrrd   $t2, 0x40
-    csrwr   $zero, 0x40
+    csrrd   $t0, 0x6  # LOONGARCH_CSR_ERA
+    csrrd   $t1, 0x5  # LOONGARCH_CSR_PRMD
+    csrrd   $t2, 0x40  # LOONGARCH_CSR_TLBRSAVE
+    csrwr   $zero, 0x40  # 清空 TLBRSAVE
 
     st.d    $t0, 32*8($sp)          # tf.sepc/era
     st.d    $t1, 31*8($sp)          # tf.sstatus/prmd
     st.d    $t2, 1*8($sp)           # tf.regs.sp
 
-    ; 浮点寄存器
-    ; .set    n, 0
-    ; .set    m, FP_START
-    ; .rept   32
-    ;     SAVE_FP  %n, %m
-    ;     .set n, n+1
-    ;     .set m, m+1
-    ; .endr
+    # 保存浮点寄存器
+    # .set    n, 0
+    # .set    m, FP_START
+    # .rept   32
+    #     SAVE_FP  %n, %m
+    #    .set n, n+1
+    #    .set m, m+1
+    # .endr
     
     csrrd   $t0, 0x7
     csrrd   $t1, 0x1
@@ -114,9 +113,26 @@
     st.d    $t0, 85*8($sp)          # tf.trap_status = 1
 .endm
 
-; 从 TrapContext 恢复上下文
 .macro RESTORE_REGS
+    # 恢复 era 和 prmd
+    ld.d    $t0, 32*8($sp)
+    ld.d    $t1, 31*8($sp)
+    csrwr   $t0, 0x6  # LOONGARCH_CSR_ERA
+    csrwr   $t1, 0x5  # LOONGARCH_CSR_PRMD
 
+
+    POP_GENERAL_REGS
+    
+    # 恢复浮点寄存器
+    # .set    n, 0
+    # .set    m, FP_START
+    # .rept   32
+    #     LOAD_FP  %n, %m
+    #     .set n, n+1
+    #     .set m, m+1
+    # .endr
+    
+    ld.d    $sp, 1*8($sp)
 .endm
 
 .section .text
@@ -126,15 +142,67 @@
 .align 2
 
 trap_vector_base:
-
+    # 交换 sp 和 TLBRSAVE
+    csrxchg $sp, $sp, 0x40
+    bnez    $sp, user_trap
+    # TLBRSAVE为0，转到内核态
+    b       kernel_trap
 
 kernel_trap:
-
+    # 内核态陷入
+    csrrd   $sp, 0x40
+    addi.d  $sp, $sp, -TRAPFRAME_SIZE
+    SAVE_REGS
+    move    $a0, $sp                 # TrapFrame指针
+    li.d    $a1, 1                   # 通过trap进入
+    li.d    $a2, 0                   # 内核态
+    bl      trampoline
+    RESTORE_REGS
+    ertn
 
 user_trap:
+    SAVE_REGS
+    
+    li.d    $a0, 1
+    st.d    $a0, 85*8($sp)           # 标记trap_status为1
+    move    $a0, $sp                 # TrapFrame指针
+    li.d    $a1, 1                   # 通过trap进入
+    li.d    $a2, 1                   # 用户态进入
+    ld.d    $sp, 33*8($sp)           # 恢复内核栈指针
+    li.d    $t0, 0                   # 清零TLBRSAVE
+    csrwr   $t0, 0x40
+    bl      trampoline
 
-
+# 内核返回
 trap_return1:
-
+    move    $sp, $a0
+    
+    # 恢复era和prmd
+    ld.d    $t0, 32*8($sp)
+    ld.d    $t1, 31*8($sp)
+    csrwr   $t0, 0x6                 # LOONGARCH_CSR_ERA
+    csrwr   $t1, 0x5                 # LOONGARCH_CSR_PRMD
+    
+    # 恢复通用寄存器
+    POP_GENERAL_REGS
+    
+    # 恢复内核栈
+    ld.d    $sp, 33*8($sp)
+    
+    ertn
 
 user_return1:
+    move    $sp, $a0
+    
+    csrwr   $a0, 0x40
+    
+    ld.d    $t0, 32*8($sp)
+    ld.d    $t1, 31*8($sp)
+    csrwr   $t0, 0x6                 # LOONGARCH_CSR_ERA
+    csrwr   $t1, 0x5                 # LOONGARCH_CSR_PRMD
+    
+    POP_GENERAL_REGS
+    
+    ld.d    $sp, 1*8($sp)
+    
+    ertn

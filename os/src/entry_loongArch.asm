@@ -24,12 +24,11 @@ _start:
 .section .bss.stack
     .globl boot_stack_lower_bound
 boot_stack_lower_bound:
-    .space 4096 * 16 * 2  # 2个CPU
+    .space 4096 * 16 * 2  # 2 CPUs
 
     .globl boot_stack_top
 boot_stack_top:
 
-# 初始页表
 .section .data
     .align 12
 boot_pagetable:

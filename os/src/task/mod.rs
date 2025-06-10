@@ -207,3 +207,19 @@ pub fn add_initproc() {
     add_task(INITPROC.clone());
     trace!("addInITPROC ok");
 }
+
+#[cfg(target_arch = "riscv64")]
+global_asm!(include_str!("trap.S"));
+
+#[cfg(target_arch = "loongarch64")]
+global_asm!(include_str!("trap_loongArch.S"));
+
+extern "C" {
+    fn trap_return1();
+    fn user_return1();
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn handle_loongarch_exception(tf: &mut TrapContext) {
+    // LoongArch 特定的异常处理
+}

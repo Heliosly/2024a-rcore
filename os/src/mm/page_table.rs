@@ -324,3 +324,11 @@ pub fn _get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
         *translated_ref(token, ptr)
     }
 }
+
+#[cfg(target_arch = "loongarch64")]
+impl PageTableEntry {
+    // 龙芯的页表项格式不同，需要重新实现
+    pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
+        // 龙芯特定的页表项创建逻辑
+    }
+}

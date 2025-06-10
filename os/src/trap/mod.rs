@@ -35,7 +35,16 @@ use riscv::register::{
     sie, stval, stvec,
     mstatus::FS,
 };
+#[cfg(target_arch = "riscv64")]
 global_asm!(include_str!("trap.S"));
+
+#[cfg(target_arch = "loongarch64")]
+global_asm!(include_str!("trap_loongArch.S"));
+
+extern "C" {
+    fn trap_return1();
+    fn user_return1();
+}
 
 /// Initialize trap handling
 pub fn init() {
@@ -78,12 +87,27 @@ pub fn enable_irqs() {
         sie::set_stimer();
     }
 }
+
+#[cfg(target_arch = "loongarch64")]
+pub fn enable_irqs() {
+    unsafe {
+        core::arch::asm!("csrwr {}, 0x4", in(reg) 0x8); // ECFG 寄存器
+    }
+}
+
 /// disable timer interrupt in supervisor mode
 pub fn disable_irqs() {
     unsafe {
         sie::clear_stimer();
     }
 }
+#[cfg(target_arch = "loongarch64")]
+pub fn disable_irqs() {
+    unsafe {
+        core::arch::asm!("csrwr {}, 0x4", in(reg) 0x0);
+    }
+}
+
 /// 开启内核中断
 #[inline]
 pub fn enable_kernel_irqs() {
@@ -311,4 +335,193 @@ disable_irqs();
         .await ;
   
     }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn handle_loongarch_exception(tf: &mut TrapContext) {
+    use crate::trap::context::loongarch_csr::*;
+    
+    // 读取 LoongArch 的 CSR
+    let estat: usize;
+    let era: usize;
+    let badv: usize;
+    let crmd: usize;
+    
+    unsafe {
+        core::arch::asm!(
+            "csrrd {}, {}",
+            out(reg) estat,
+            const CSR_ESTAT,
+        );
+        core::arch::asm!(
+            "csrrd {}, {}",
+            out(reg) era,
+            const CSR_ERA,
+        );
+        core::arch::asm!(
+            "csrrd {}, {}",
+            out(reg) badv,
+            const CSR_BADV,
+        );
+        core::arch::asm!(
+            "csrrd {}, {}",
+            out(reg) crmd,
+            const CSR_CRMD,
+        );
+    }
+    
+    // 提取异常代码 (ESTAT[16:21])
+    let ecode = (estat >> 16) & 0x3f;
+    let esubcode = (estat >> 22) & 0x1ff;
+    
+    trace!(
+        "LoongArch Trap: ecode={:#x}, esubcode={:#x}, era={:#x}, badv={:#x}",
+        ecode, esubcode, era, badv
+    );
+    
+    match ecode {
+        0x0b => {
+            // 系统调用异常 (SYSCALL)
+            enable_irqs();
+            let syscall_id = tf.regs.a7;
+            let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3];
+            
+            tf.sepc = era + 4;
+            
+            // 处理系统调用（这里需要适配为异步版本）
+            // let result = syscall(syscall_id, args).await;
+            // tf.regs.a0 = result as usize;
+            
+            // 注意：这里需要重构为适配异步系统调用的版本
+            println!("LoongArch syscall: id={}, args=[{:#x}, {:#x}, {:#x}, {:#x}]", 
+                    syscall_id, args[0], args[1], args[2], args[3]);
+        }
+        
+        0x01 => {
+            // TLB 重填异常
+            println!(
+                "[kernel] LoongArch TLB Refill: badv={:#x}, era={:#x}",
+                badv, era
+            );
+            exit_current_and_run_next(-2);
+        }
+        
+        0x02 => {
+            // TLB 无效异常
+            println!(
+                "[kernel] LoongArch TLB Invalid: badv={:#x}, era={:#x}",
+                badv, era
+            );
+            exit_current_and_run_next(-2);
+        }
+        
+        0x03 => {
+            // TLB 修改异常
+            println!(
+                "[kernel] LoongArch TLB Modified: badv={:#x}, era={:#x}",
+                badv, era
+            );
+            exit_current_and_run_next(-2);
+        }
+        
+        0x04 => {
+            // 地址错误异常（取指）
+            println!(
+                "[kernel] LoongArch Address Error (Fetch): badv={:#x}, era={:#x}",
+                badv, era
+            );
+            exit_current_and_run_next(-2);
+        }
+        
+        0x05 => {
+            // 地址错误异常（访存）
+            println!(
+                "[kernel] LoongArch Address Error (Memory): badv={:#x}, era={:#x}",
+                badv, era
+            );
+            exit_current_and_run_next(-2);
+        }
+        
+        0x06 => {
+            // 指令错误异常
+            println!(
+                "[kernel] LoongArch Instruction Error: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x07 => {
+            // 权限等级错误异常
+            println!(
+                "[kernel] LoongArch Privilege Error: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x08 => {
+            // 浮点指令异常
+            println!(
+                "[kernel] LoongArch Float Point Exception: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x09 => {
+            // 断点异常
+            println!(
+                "[kernel] LoongArch Breakpoint: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x0a => {
+            // 保留指令异常
+            println!(
+                "[kernel] LoongArch Reserved Instruction: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x0c => {
+            // 机器错误异常
+            println!(
+                "[kernel] LoongArch Machine Error: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        0x0d => {
+            // 算术溢出异常
+            println!(
+                "[kernel] LoongArch Arithmetic Overflow: era={:#x}",
+                era
+            );
+            exit_current_and_run_next(-3);
+        }
+        
+        _ => {
+            // 未知异常
+            panic!(
+                "Unsupported LoongArch exception: ecode={:#x}, esubcode={:#x}, era={:#x}, badv={:#x}",
+                ecode, esubcode, era, badv
+            );
+        }
+    }
+    
+    tf.trap_status = TrapStatus::Done;
+    disable_irqs();
+}
+
+#[cfg(target_arch = "loongarch64")]
+async fn handle_loongarch_syscall(tf: &mut TrapContext) -> isize {
+    let syscall_id = tf.regs.a7;
+    let args = [tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3];
+    tf.sepc += 4;
+    syscall(syscall_id, args).await
 }

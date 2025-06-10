@@ -1,0 +1,8 @@
+[build]
+target = "loongarch64-unknown-none-elf"
+
+[target.loongarch64-unknown-none-elf]
+rustflags = [
+    "-Clink-arg=-Ttext=0x90200000",
+    "-Cforce-frame-pointers=yes"
+]
