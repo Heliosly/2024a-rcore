@@ -52,6 +52,9 @@ pub async fn sys_clock_gettime(clock_id: usize, tp: usize) -> SyscallRet {
     Ok(0)
 }
 pub async fn sys_nanosleep(req: *const UserTimeSpec, rem: *mut UserTimeSpec) -> SyscallRet {
+trace!(
+        "[sys_nanosleep]:"
+    );
     let proc = current_process();
     let token = proc.get_user_token().await;
     if proc.manual_alloc_type_for_lazy(req).await.is_err() {

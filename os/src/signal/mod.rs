@@ -39,11 +39,10 @@ pub const SI_SIGIO: i32 = -5; // Queued SIGIO
 pub const SI_TKILL: i32 = -6; // tkill or tgkill
 use crate::config::{SS_DISABLE, USER_SIGNAL_PROTECT};
 use crate::mm::{get_target_ref, put_data, translated_refmut};
-use crate::task::{current_process, current_task, current_token, exit_proc};
+use crate::task::{current_process, current_task, current_task_id, current_token, exit_proc};
 use crate::task::{ProcessRef, Task, TaskRef, PID2PC}; // 确保 Task 有 id()
 use crate::trap::{TrapContext, TrapStatus, UContext};
 use crate::utils::error::SysErrNo;
-use crate::utils::{bpoint, bpoint1};
 use alloc::sync::Arc;
 pub use sigact::*;
 pub use signal::*; // 假设 current_task() 返回 Arc<Task>
@@ -184,11 +183,12 @@ pub async fn send_signal_to_task(task_arc: &Arc<Task>, sig: Signal) -> Result<()
     // 4. 唤醒该任务，让调度器有机会运行它，
     //    以便它在回用户态前调用 handle_pending_signals
     let task_ptr: *const Task = Arc::as_ptr(task_arc);
+    info!("[send_signal_to_task] wake by tid:{}",current_task_id());
     crate::task::waker::wakeup_task(task_ptr);
 
     Ok(())
 }
-pub async fn handle_pending_signals() {
+pub async fn handle_pending_signals(res: Option<usize>) {
     let task_arc = current_task();
     let pcb_arc = &task_arc.get_process();
 
@@ -315,18 +315,29 @@ pub async fn handle_pending_signals() {
                     // let mut trap_frame = read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
                     let mut task_state = task_arc.signal_state.lock().await;
                     let tf = task_arc.get_trap_cx().unwrap();
-                    const USER_ENV_CALL: usize = 8;
                     const SYSCALL_SIGNALRET: usize = 139;
+                    const EINTR_USIZE:usize =(-(SysErrNo::EINTR as isize)) as usize;
                     if tf.regs.a7 == SYSCALL_SIGNALRET {
                         panic!("ub");
                     }
-                    if action.flags.contains(SigActionFlags::SA_RESTART)
-                        && tf.scause == USER_ENV_CALL
+                    if let Some(res) = res {
+                        if action.flags.contains(SigActionFlags::SA_RESTART)
+                        &&res == EINTR_USIZE
+                        
+                        // && tf.regs.a7!=SYSCALL_FUTEX
                     {
-                        bpoint1(tf);
+                        info!("[handle_signals]syscall will be restarted");
                         tf.sepc -= 4;
                         tf.trap_status = TrapStatus::Blocked;
                     }
+                    else{
+                        info!("[do_signal] syscall was interrupted");
+                        tf.set_arg0(res);
+                    }
+                    
+                }
+                    
+                    
                     task_state.last_context = Some(*tf);
                     let trap_frame = task_arc.get_trap_cx().unwrap();
                     task_state.sig_info = false;

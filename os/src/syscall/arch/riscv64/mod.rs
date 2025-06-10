@@ -135,3 +135,8 @@ pub const SYSCALL_SOCKETPAIR: usize = 199;
 pub const SYSCALL_MREMAP: usize= 216;
 
 pub const SYSCALL_SETSID :usize =157;
+pub const SYSCALL_SCHED_YIELD :usize =124;
+pub const SYSCALL_SETUID:usize = 146;
+pub const SYSCALL_GETGID:usize = 176;
+
+pub const SYSCALL_GETEGID:usize =177;

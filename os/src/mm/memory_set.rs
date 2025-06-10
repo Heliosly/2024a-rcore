@@ -5,7 +5,6 @@ use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_T
 use crate::syscall::flags::MremapFlags;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::{current_process, current_token};
-use crate::utils::bpoint;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
@@ -714,7 +713,6 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
                     }
                 } else {
                     warn!("[manual_alloc_range_for_lazy]err:{:#?}",e);
-                    bpoint();
                     return Err(e);
                 }
             },

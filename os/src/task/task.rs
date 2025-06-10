@@ -768,7 +768,7 @@ impl ProcessControlBlock {
         //生成线程或者进程
         let res = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.tasks.lock().await.push(tcb.clone());
-            trace!(
+            info!(
                 "[kernel]:clonethread pid[{}] -> tid[{}]",
                 self.pid.0,
                 tcb.id()
@@ -812,7 +812,7 @@ impl ProcessControlBlock {
                     process_control_block.clone_user_res(self).await;
                 }
             }
-            trace!(
+            info!(
                 "[kernel]:cloneproc pid[{}] -> pid[{}]",
                 self.pid.0,
                 process_control_block.pid.0
@@ -1077,6 +1077,7 @@ pub struct TaskControlBlock {
     pub need_clear_child_tid: AtomicBool,
     pub robust_list: Mutex<RobustList>,
     pub tms:UnsafeCell<TimeData>,
+    pub uid:AtomicUsize,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1113,6 +1114,7 @@ impl TaskControlBlock {
             robust_list: Mutex::new(RobustList::default()),
 
             tms:UnsafeCell::new( TimeData::default()),
+            uid:AtomicUsize::new(0),
         }
     }
 
@@ -1158,7 +1160,13 @@ impl TaskControlBlock {
     pub fn set_exit_code(&self, code: isize) {
         self.exit_code.store(code, Ordering::Relaxed);
     }
+    pub fn set_uid(&self, uid: usize) {
+        self.uid.store(uid, Ordering::Relaxed);
+    }
+    pub fn uid(&self){
 
+        self.uid.load( Ordering::Acquire);
+    }
     pub fn clear_child_tid(&self) -> TemplateRet<bool>{
         let res=self.need_clear_child_tid.load(Ordering::Acquire);
         if res {

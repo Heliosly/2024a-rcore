@@ -34,7 +34,7 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
 /// the physical memory end
-pub const MEMORY_END: usize = 0xffffffc088000000-4096 ;
+pub const MEMORY_END: usize = 0x8800_0000+KERNEL_DIRECT_OFFSET ;
 /// The base address of control registers in Virtio_Block device
 pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 /// Kerneladress offset

@@ -15,7 +15,6 @@ use crate::task::{current_task_id, TaskStatus, TID2TC};
 use crate::timer::{current_time, TimeVal, UserTimeSpec};
 
 use crate::task::sleeplist::{sleep_until, SleepFuture};
-use crate::utils::bpoint;
 use crate::utils::error::SysErrNo;
 
 // --- FutexWaiterNode (专为 Futex 设计) ---
@@ -131,7 +130,7 @@ impl Future for FutexWaitInternalFuture {
     type Output = Result<(), SysErrNo>; // Ok(()) 表示被成功唤醒或条件不再满足, Err 表示超时或错误
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        info!("[[poll futex future");
+        info!("poll futex future");
         let this = self.as_mut().get_mut();
         // 1. 检查用户空间的 futex 值 (只在首次尝试注册 Waker 前检查)
         let current_val_in_user =
@@ -142,6 +141,8 @@ impl Future for FutexWaitInternalFuture {
                     return Poll::Ready(Err(e.into())); // 读取用户内存失败
                 }
             };
+
+        info!("poll futex future1");
         // 检查是否之前已经注册过 Waker 并且现在被 poll
         // 这通常意味着是被 FUTEX_WAKE 唤醒了 (或者是一个超时唤醒后，SleepFuture 的 Ready 导致这里重 poll,或者是被信号打断)
         if current_val_in_user != this.expected_val {
@@ -150,11 +151,13 @@ impl Future for FutexWaitInternalFuture {
                 // 假设唤醒是有效的，FutexWaitInternalFuture 完成。
                 // 用户空间代码在 sys_futex 返回后会自己重新检查和竞争锁。
                 // 清理在全局队列中的注册。
+                info!("tid{}  futex is finish",current_task_id());
                 this.cleanup_registration_from_futex_queue();
                 return Poll::Ready(Ok(())); // <--- 被唤醒，返回成功
             }
         }
 
+        info!("poll futex future2");
         if current_val_in_user != this.expected_val {
             // this.cleanup_registration_from_futex_queue(); // 此时尚未注册
             return Poll::Ready(Err(SysErrNo::EAGAIN)); // 值不匹配，不等待
@@ -168,6 +171,7 @@ impl Future for FutexWaitInternalFuture {
                 // 或者即使注册了，超时优先。
                 // cleanup_registration_from_futex_queue 会处理 registered_node_arc 是 None 的情况。
                 this.cleanup_registration_from_futex_queue();
+                info!("poll futex is timeout");
                 return Poll::Ready(Err(SysErrNo::ETIMEDOUT));
             }
             // 如果 sleep_future 返回 Pending，cx.waker() 已被 SleeperList 注册
@@ -180,6 +184,7 @@ impl Future for FutexWaitInternalFuture {
         //    a. Futex 值与期望值匹配。
         //    b. 未超时 (或者超时 Future 返回了 Pending)。
 
+        info!("poll futex future3");
         if this.registered_node_arc.is_none() {
             //说明第一次poll
             let task_arc_for_waker = match TID2TC.lock().get(&current_task_id()).cloned() {
@@ -210,10 +215,12 @@ impl Future for FutexWaitInternalFuture {
             drop(core::mem::ManuallyDrop::into_inner(state_guard))
             ;
             drop(task_ref_for_status_change);
-            trace!("Futex Pending in init");
+            info!("Futex Pending in init");
             Poll::Pending // 等待被 FUTEX_WAKE 或超时唤醒
         } else {
             //说明被中断
+            
+        info!("poll futex is EINTR");
             // bpoint();
             return Poll::Ready(Err(SysErrNo::EINTR));
         }

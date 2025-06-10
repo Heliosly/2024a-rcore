@@ -25,7 +25,6 @@ use crate::task::{
     current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask
 };
 use crate::timer::set_next_trigger;
-use crate::utils::{bpoint, bpoint1};
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 
@@ -251,7 +250,6 @@ pub async fn user_task_top() -> i32 {
 
                             if err ==SysErrNo::EAGAIN{
                                 tf.sepc-=4;
-                               bpoint();
                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
                                yield_now().await;
@@ -361,7 +359,7 @@ pub async fn user_task_top() -> i32 {
             tf.trap_status = TrapStatus::Done;
            {
                 //处理完系统调用过后，对应的信号处理和时钟更新
-                crate::signal::handle_pending_signals().await;
+                crate::signal::handle_pending_signals(syscall_ret).await;
                 crate::task::sleeplist::process_timed_events();
             }
 
@@ -382,9 +380,7 @@ pub async fn user_task_top() -> i32 {
             disable_irqs();
         }
 
-        // trace!("sys_call end5");
 
-        //偶数次poll时会从重新运行这个函数开始
         poll_fn(|_cx| {
             if tf.trap_status == TrapStatus::Done {
                 Poll::Pending

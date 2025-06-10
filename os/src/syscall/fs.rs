@@ -2421,9 +2421,3 @@ pub async  fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 }
 
 
-pub fn sys_setsid() -> SyscallRet {
-    //涉及到会话和进程组，暂时伪实现
-
-    trace!("[sys_setsid] ");
-    Ok(0)
-}

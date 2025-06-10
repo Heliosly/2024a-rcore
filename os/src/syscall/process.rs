@@ -8,6 +8,7 @@ use alloc::{
    format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::{AT_FDCWD};
+use spin::Lazy;
 
 use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
@@ -15,7 +16,7 @@ use crate::{
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
-        bpoint, bpoint1, error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
+         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     }
 };
 
@@ -36,7 +37,7 @@ pub fn sys_getppid() -> SyscallRet {
     Ok(current_process().parent())
 }
 pub async  fn sys_exit(exit_code: i32) -> SyscallRet {
-    info!("kernel:pid[{}] sys_exit", current_task().get_pid());
+    info!("kernel:tid[{}] sys_exit", current_task().id());
 
     exit_current(exit_code).await;
     Ok(exit_code as usize)
@@ -70,7 +71,7 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
 
     let flags =
         CloneFlags::from_bits(flags & !0x3f).expect(&format!("unsupport cloneflags : {}", flags));
-    debug!(
+    info!(
         "[sys_clone] flags:{:#?},user_stack:{:#x},ptid:{:#x},tls:{:#x},ctid:{:#x}",
         flags, user_stack, ptid, tls, ctid
     );
@@ -124,7 +125,9 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    proc.clone_task(flags, user_stack, ptid, tls, ctid).await
+    let res=proc.clone_task(flags, user_stack, ptid, tls, ctid).await;
+    yield_now().await;
+    res
 }
 
 ///
@@ -177,7 +180,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     // }
 
     // println!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
-    debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
+    info!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
     loop {
         if envp.is_null() {
@@ -935,16 +938,7 @@ pub fn sys_set_priority(prio: isize) -> SyscallRet {
     set_priority(&(*current_task().0), prio);
     Ok(0)
 }
-pub fn sys_geteuid() -> SyscallRet {
-   
-        trace!(
-            "kernel:pid[{}] sys_getuid NOT IMPLEMENTED",
-            current_task().get_pid()
-        );
-        //todo(heliosly)
-        Ok(0)
-    
-}
+
 
 /// getcwd 系统调用实现
 /// buf: 用户空间缓冲区的指针，用于存储当前工作目录路径
@@ -1011,11 +1005,7 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
         }
     }
 }
-pub fn sys_gettid() -> SyscallRet {
-    trace!("kernel:pid[{}] sys_gettid ", current_task().get_pid());
- 
-    Ok(current_task().id.as_usize())
-}
+
 pub async fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize) -> SyscallRet {
 
     trace!("[sys_get_robust_list] NOT IMPLEMENT" );
@@ -1291,4 +1281,55 @@ pub async  fn sys_mremap(
     let x = proc.memory_set.lock().await.mremap(old_start.into(), old_size, new_size,flags).await; 
     x
 
+}
+
+
+
+
+
+pub async fn sys_sched_yield() -> SyscallRet {
+     yield_now().await;
+    Ok(0)
+}
+
+pub fn sys_setuid(uid: u32) -> SyscallRet {
+    let task = current_task();
+    task.set_uid(uid as usize);
+    change_current_uid(uid);
+    Ok(0)
+}
+
+pub fn sys_geteuid() -> SyscallRet {
+    Ok(current_uid() as usize)
+}
+
+pub fn sys_getgid() -> SyscallRet {
+    Ok(0) // root group
+}
+
+pub fn sys_getegid() -> SyscallRet {
+    Ok(0) // root group
+}
+
+pub fn sys_gettid() -> SyscallRet {
+    Ok(current_task().get_tid())
+}
+
+pub fn sys_setsid() -> SyscallRet {
+    //涉及到会话和进程组，暂时伪实现
+
+    trace!("[sys_setsid] ");
+    Ok(0)
+}
+
+
+
+pub static CUR_UID: Lazy<spin::mutex::Mutex<u32>> = Lazy::new(|| spin::mutex::Mutex::new(0));
+
+pub fn current_uid() -> u32 {
+    *CUR_UID.lock()
+}
+
+pub fn change_current_uid(uid: u32) {
+    *CUR_UID.lock() = uid;
 }

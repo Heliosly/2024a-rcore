@@ -14,7 +14,7 @@ mod fs;
 mod process;
 mod signal;
 mod other;
-mod arch;
+pub mod arch;
 mod net;
 pub mod flags;
 use flags::{IoVec, Utsname};
@@ -73,7 +73,6 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         
         ).await,
         SYSCALL_FSTATAT => sys_fstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
-        SYSCALL_YIELD => sys_yield().await,
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4]as isize,args[5] ).await,
         SYSCALL_SIGTIMEDWAIT=>sys_rt_sigtimedwait(
@@ -187,6 +186,13 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_MREMAP=>sys_mremap(args[0] as *mut u8, args[1], args[2], args[3] as u32, args[4] as  *mut u8).await,
         
         SYSCALL_SETSID=>sys_setsid(),
+        SYSCALL_SCHED_YIELD=>sys_sched_yield().await,
+        SYSCALL_SETUID=>sys_setuid(args[0] as u32),
+        SYSCALL_GETGID=>sys_getgid(),
+        SYSCALL_GETEGID=>sys_getegid(),
+
+
+        
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }
