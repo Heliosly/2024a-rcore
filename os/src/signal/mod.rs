@@ -468,6 +468,7 @@ pub async fn load_trap_for_signal() -> bool {
                     Ok(ctx) => &*ctx,
                     Err(e) => {
                         // 严重错误：无法从用户栈读取上下文，说明用户进程已损坏。
+                        let _ = SysErrNo::from(e);
                         error!("sigreturn failed can read UContext from user");
                         // 此处可以杀死进程或返回错误
                         return false;

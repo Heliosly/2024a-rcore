@@ -109,12 +109,12 @@ pub async fn sys_clock_nanosleep(
         rem
     );
     const TIMER_ABSTIME: usize = 1;
-    if clock_id >= MAX_CLOCKS as usize {
-        return Err(SysErrNo::EINVAL);
-    }
-    if flags != 0 {
-        return Err(SysErrNo::EINVAL);
-    }
+    // if clock_id >= MAX_CLOCKS as usize {
+    //     return Err(SysErrNo::EINVAL);
+    // }
+    // if flags != 0 {
+    //     return Err(SysErrNo::EINVAL);
+    // }
     let proc = current_process();
     let token = proc.get_user_token().await;
     if proc.manual_alloc_type_for_lazy(req).await.is_err() {

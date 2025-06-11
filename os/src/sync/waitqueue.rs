@@ -267,7 +267,8 @@ impl<'a, F: Fn() -> bool + Unpin> Future for WaitUntilFuture<'a, F> {
             // 创建一个新的 waker 节点。
             let task = cx.waker().data() as *const Task;
             unsafe { &*task }.set_state(TaskStatus::Blocking);
-            trace!("blocking in wait_until");
+            info!("blocking in wait_until");
+            crate::utils::bpoint();
             let node = GeneralWaitWakerNode::new(cx.waker().clone());
             let node_arc = Arc::new(node);
           

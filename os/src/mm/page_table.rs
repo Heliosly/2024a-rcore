@@ -815,9 +815,9 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
     // Check for cross-page boundary for the physical address
     // (va.as_usize() / PAGE_SIZE) != ((va.as_usize() + size - 1) / PAGE_SIZE)
     // Better: start_pa.floor() != (start_pa + size - 1).floor()
-    if size > 0 && start_pa.floor() != (start_pa + (size - 1)).floor() {
-        return Err(TranslateError::DataCrossesPageBoundary);
-    }
+    // if size > 0 && start_pa.floor() != (start_pa + (size - 1)).floor() {
+    //     return Err(TranslateError::DataCrossesPageBoundary);
+    // }
 
     // TODO: Add permission checks (e.g., readability) from page table entry if possible @Heliosly.
 
@@ -826,8 +826,6 @@ pub fn get_target_ref<'a, T>(token: usize, ptr: *const T) -> Result<&'a T, Trans
     // Using 'static is dangerous unless the mapping is truly static.
     Ok(unsafe { &*start_pa.get_ptr::<T>() }) // Assuming PhysAddr::as_ptr() returns *const T
 }
-
-
 
 
 /// 尝试从给定的虚拟地址 `va_start` 开始，获取在同一个物理页内

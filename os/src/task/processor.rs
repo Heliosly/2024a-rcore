@@ -47,7 +47,6 @@ pub fn run_task2(mut curr: CurrentTask) {
         Poll::Ready(exit_code) => {
             debug!("task exit: todo, exit_code={}", exit_code);
             curr.set_state(TaskStatus::Zombie);
-            curr.set_exit_code(exit_code as isize);
             curr.wake_all_waiters();
             // println!("count {}",Arc::strong_count(curr.as_task_ref()));
             if curr.is_init {

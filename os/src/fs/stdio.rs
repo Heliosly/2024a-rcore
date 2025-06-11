@@ -3,6 +3,7 @@
 use core::task::Waker;
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use async_trait::async_trait;
 
@@ -110,14 +111,12 @@ impl File for Stdout {
         panic!("Cannot read from stdout!") 
     }
     async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
-       
-            for buffer in buf.buffers.iter() {
-                
-        // trace!("write ?t{}",core::str::from_utf8(*buffer).unwrap());
-                print!("{}", core::str::from_utf8(*buffer).unwrap());
-            }
-            Ok(buf.len())
-     
+        for buffer in buf.buffers.iter() {
+            // Use from_utf8_lossy to safely handle any byte sequence.
+            // Invalid bytes will be replaced with '�'.
+            print!("{}", String::from_utf8_lossy(*buffer));
+        }
+        Ok(buf.len())
     }
     fn fstat(&self) -> Kstat {
         Kstat {

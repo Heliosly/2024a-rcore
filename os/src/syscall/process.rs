@@ -2,10 +2,10 @@
 //!
 
 
-use core::{ffi::c_void, hint};
+use core::{ffi::c_void, future::Future, hint, pin::Pin};
 
 use alloc::{
-   format, string::{String, ToString}, sync::Arc, vec::Vec
+   boxed::Box, format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
@@ -14,7 +14,7 @@ use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
         flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
-        current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
+        current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
          error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     }
@@ -225,7 +225,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     let elf_data = app_inode.file()?.read_all();
     //在exec前清理clear_tid
     for tcb in process.tasks.lock().await.iter(){
-        tcb.clear_child_tid().unwrap();
+        tcb.clear_child_tid();
     }
 
     process.set_exe(abs_path).await;
@@ -443,134 +443,130 @@ pub fn sys_getuid() -> SyscallRet {
 // 0      meaning wait for any child process whose process group ID
 //        is equal to that of the calling process at the time of the call to waitpid().
 // > 0    meaning wait for the child whose process ID is equal to the value of pid.
-//  参考 https://man7.org/linux/man-pages/man2/wait4.2.html
-//唤醒方式有待优化
-pub async  fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRet {
-    trace!("[sys_wait4] pid:{},wstatus:{:?},options:{}",pid,wstatus,options);
-    if pid == 0 {
-        warn!("Don't support for process group.");
-    }
-    let proc = current_process();
-    
-    if (pid as i32) == i32::MIN {
-        return Err(SysErrNo::ESRCH);
-    }
-    if    options > 100 {
-        return Err(SysErrNo::EINVAL);
-    }
-    let mut childvec = proc.children.lock().await;
-    if !childvec
-        .iter()
-        .any(|p| pid == -1 || pid as usize == p.get_pid())
-    {
-        debug!(
-            "cant find pid:{} in parent pid:{},and children count = : {} ",
-            pid,
-            proc.get_pid(),
-            childvec.len()
-        );
-        return Err(SysErrNo::ECHILD);
-        // ---- release current PCB
-    }
-    let mut pair = None;
-    for (idx, p) in childvec.iter().enumerate() {
-        if p.is_zombie().await && (pid == -1 || pid as usize == p.get_pid()) {
-            pair = Some((idx, p));
-            break;
-        }
-    }
-    if let Some((idx, child_task)) = pair {
-        debug!("chiled pid is :{} removed",child_task.get_pid());
-        
-        PID2PC.lock().remove(&child_task.get_pid());
-        let child = childvec.remove(idx);
-        // confirm that child will be deallocated after being removed from children list
-        let found_pid = child.get_pid();
-        // ++++ temporarily access child PCB exclusively
-        let exit_code = child.exit_code();
 
-        // ++++ release child PCB
-        if !wstatus .is_null() {
-            debug!(
-                "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
-                pid, found_pid, exit_code, wstatus as usize
-            );
-            proc.memory_set.lock().await. safe_put_data( wstatus,  exit_code << 8).await.unwrap();
+
+pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRet {
+    trace!("[sys_wait4] pid:{}, wstatus:{:?}, options:{}", pid, wstatus, options);
+
+    // --- 0. 参数校验 ---
+    if pid == 0 || (pid as i32) == i32::MIN {
+        warn!("Unsupported pid value: {}", pid);
+        return Err(SysErrNo::ESRCH); // or EINVAL for pid==0 depending on spec
+    }
+    let wait_flags = match WaitFlags::from_bits(options) {
+        Some(flags) => flags,
+        None => return Err(SysErrNo::EINVAL),
+    };
+
+    let proc = current_process();
+
+    loop { // 使用循环来处理查找和等待的逻辑
+        // --- 1. 查找已存在的僵尸子进程 (持有锁的快速路径) ---
+        let mut children_guard = proc.children.lock().await;
+
+        // 检查是否有任何子进程，如果没有，并且指定了pid，就ECHILD
+        if !children_guard.iter().any(|p| pid == -1 || pid as usize == p.get_pid()) {
+             if pid > 0 && children_guard.is_empty() {
+                debug!("No children for parent pid: {}", proc.get_pid());
+                return Err(SysErrNo::ECHILD);
+             }
+             if pid > 0 { // 如果指定了pid，但不在子进程列表中
+                debug!("Cannot find specific pid: {} in children of pid: {}", pid, proc.get_pid());
+                return Err(SysErrNo::ECHILD);
+             }
         }
-        assert_eq!(
-            Arc::strong_count(&child),
-            1,
-            "strong_count is incorrect,{}",
-            Arc::strong_count(&child)
-        );
-        Ok(found_pid)
-    } else {
-        let waitflags=WaitFlags::from_bits(options ).unwrap();
-        if waitflags == WaitFlags::WNOHANG{
-            return Ok(0);
-        }
-        let res=  
-        if pid==-1{
-            let mut task_refs = Vec::new();
-            for p in childvec.iter() {
-                // 用你自己的解锁方式拿到 TaskRef，然后 clone 一份放到 Vec 中
-                let t = p.main_task.lock().await;
-                task_refs.push(t.clone());
-            }
-            
-            // 把转换好的 Vec<TaskRef> 传给 WaitAnyFuture::new
-            WaitAnyFuture::new(task_refs).await
-        }
-        else{
-            let task = PID2PC.lock()[&(pid as usize)].main_task.lock().await.clone();
-         JoinFuture::new(task).await;
-         pid as usize
-        };
-        for (idx, p) in childvec.iter().enumerate() {
-            if p.get_pid() == res {
-                assert!(p.is_zombie().await);
-                pair = Some((idx, p));
+        
+        let mut zombie_child_info: Option<(usize, ProcessRef)> = None;
+        for (idx, child_proc) in children_guard.iter().enumerate() {
+            // 检查条件：1. 进程状态是僵尸 2. PID匹配 (pid=-1匹配所有)
+            if child_proc.is_zombie().await && (pid == -1 || (pid as usize) == child_proc.get_pid()) {
+                zombie_child_info = Some((idx, child_proc.clone()));
                 break;
             }
-            
         }
-        assert!(pair.is_some());
-        if let Some((idx, child_task)) = pair {
-            debug!("[reap_child_by_pid] removing child pid {}", res);
-    
-            PID2PC.lock().remove(&res);
-            let child = childvec.remove(idx);
-    
-            let exit_code = child.exit_code();
-            if !wstatus.is_null() {
-                debug!(
-                    "[sys_wait4] child pid :{}  wait  by pid:{} ,exit_code ={}",
-                    res, proc.get_pid(), exit_code
-                );
-                proc.memory_set
-                    .lock()
-                    .await
-                    .safe_put_data(wstatus, exit_code << 8)
-                    .await
-                    ?;
-            }
-    
-            assert_eq!(
-                Arc::strong_count(&child),
-                1,
-                "strong_count is incorrect after child removal: {}",
-                Arc::strong_count(&child)
-            );
-    
-             Ok(res)
-        } else {
-            unreachable!();
-        }
-        
-    }
-    // ---- release current PCB automatically
-}
 
+        // --- 2. 如果找到僵尸进程，则回收并返回 ---
+        if let Some((idx, child_to_reap)) = zombie_child_info {
+            let found_pid = child_to_reap.get_pid();
+            let exit_code = child_to_reap.exit_code();
+
+            // 从子进程列表中移除
+            children_guard.remove(idx);
+            
+            // 从全局PID映射中移除
+            PID2PC.lock().remove(&found_pid);
+            
+            // 释放锁
+            drop(children_guard);
+
+            debug!("[sys_wait4] Reaped zombie child pid: {}", found_pid);
+
+            // 写入状态
+            if !wstatus.is_null() {
+                proc.memory_set.lock().await.safe_put_data(wstatus, exit_code << 8).await?;
+            }
+
+            // 检查Arc引用计数，确保资源被回收
+            assert_eq!(Arc::strong_count(&child_to_reap), 1, "strong_count should be 1 after reaping, but is {}", Arc::strong_count(&child_to_reap));
+            
+            return Ok(found_pid);
+        }
+
+        // --- 3. 如果没找到僵尸进程，处理 WNOHANG 或准备等待 ---
+        // 如果是 WNOHANG 选项，立即返回 0
+        if wait_flags.contains(WaitFlags::WNOHANG) {
+            return Ok(0);
+        }
+       // --- 准备等待 ---
+        // **关键点: 在 await 之前释放锁!**
+        
+        // 提取需要等待的子进程列表 (克隆Arc，不持有子进程内部的锁)
+        let children_to_watch: Vec<Arc<ProcessControlBlock>> = children_guard.iter().cloned().collect();
+        drop(children_guard); // **立即释放锁**
+
+        let future_to_await: Pin<Box<dyn Future<Output = usize> + Send + Sync>> = if pid == -1 {
+            if children_to_watch.is_empty() {
+                return Err(SysErrNo::ECHILD);
+            }
+            let futures_iter = children_to_watch.iter().map(|p| async move {
+                    p.main_task.lock().await.clone()
+                });
+                let tasks_to_wait = futures::future::join_all(futures_iter).await;
+            // 使用正确的异步处理方式来创建 WaitAnyFuture
+            Box::pin(async move {
+                // 1. 创建一个获取所有主线程 TCB 的 Future
+                
+
+                // 2. 并发地执行这些 Future 来获取 TCB 列表
+
+                // 3. 用获取到的 TCB 列表创建 WaitAnyFuture
+                WaitAnyFuture::new(tasks_to_wait).await
+            })
+
+        } else {
+            // ... (等待特定 pid 的逻辑不变) ...
+            // 注意：这里也需要遵循同样的模式，先释放所有锁再 await
+            let child_proc_opt = PID2PC.lock().get(&(pid as usize)).cloned();
+            // 在这里已经没有 children_guard 锁了，是安全的
+
+            if let Some(child_proc) = child_proc_opt {
+
+            let task = child_proc.main_task.lock().await.clone();
+                Box::pin(async move {
+                    JoinFuture::new(task).await;
+                    pid as usize
+                })
+            } else {
+                return Err(SysErrNo::ECHILD);
+            }
+        };
+        
+        // --- 执行等待 (无锁状态) ---
+        future_to_await.await;
+        
+        // --- 返回循环开始处，重新查找并回收 ---
+    }
+}
 // /// YOUR JOB: get time with second and microsecond
 // /// HINT: You might reimplement it with virtual memory management.
 // /// HINT: What if [`TimeVal`] is splitted by two pages ?
@@ -630,8 +626,8 @@ pub async  fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
 // }
 ///TODO(Heliosly)
 pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
-    trace!(
-        "kernel:pid[{}] sys_exit_exitgroup NOT IMPLEMENTED",
+    info!(
+        "[sys_exit]_exitgroup pid:{} ",
         current_task().get_pid()
     );
     exit_proc(exit_code).await;

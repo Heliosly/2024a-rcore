@@ -61,6 +61,7 @@ use crate::fs::{open_file, OpenFlags};
 use crate::mm::{get_target_ref, put_data};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
 use crate::syscall::flags::{FUTEX_OWNER_DIED, FUTEX_TID_MASK, FUTEX_WAITERS};
+use crate::task::task::TaskControlBlock;
 use crate::utils::error::GeneralRet;
 use alloc::sync::Arc;
 
@@ -87,64 +88,100 @@ pub fn task_count()->usize{
 }
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
-/// 整个进程退出：把进程里所有线程一起结束，回收所有资源
+// 在 TaskControlBlock 中
+
+/// 终止一个进程及其所有线程，并回收资源。
+/// 这是 exit_group(2) 系统调用的内核实现。
 pub async fn exit_proc(exit_code: i32) {
-    // 1. 拿到当前进程的 PCB
     let process = current_process();
     let pid = process.get_pid();
+    debug!("[kernel] exit_group pid {}, exit_code: {}", pid, exit_code);
 
-    debug!("[kernel] exit_proc pid {}, exit_code: {}", pid, exit_code);
-
-    // 2. 先把所有线程都标记为 Zombie、设置退出码、清除 child_tid
-    {
-        let  tasks = process.tasks.lock().await;
-        for thread in tasks.iter() {
-            thread.set_state(TaskStatus::Zombie);
-            thread.set_exit_code(exit_code as isize);
-            let _ = thread.clear_child_tid(); 
-            // TODO(Heliosly)“唤醒”线程
-        }
+    // --- 第 1 步：标记所有线程为 Zombie，并准备清理 ---
+    // 复制一份线程列表，因为我们不能在持有锁的同时执行可能休眠的 clear_child_tid
+    let tasks_to_terminate= {
+        let tasks_guard = process.tasks.lock().await;
+        tasks_guard.clone()
+    };
+    
+    for thread in tasks_to_terminate.iter() {
+        thread.set_state(TaskStatus::Zombie);
+        thread.set_exit_code(exit_code as isize);
+        
+        // 清理 futexes 和 robust list。这可能会唤醒其他进程。
+        let _ = thread.clear_child_tid().await;
+        exit_robust_list_cleanup(thread.robust_list.lock().await.head).await.unwrap();
     }
-
-    // 3. 如果有子进程，要把它们 reparent 给 init
-    if pid != 1 {
+    
+    // --- 第 2 步：为子进程重新指定父进程 (reparenting) ---
+    // 只有非 init 进程需要 reparent
+    if pid != INITPROC.get_pid() {
         let mut children = process.children.lock().await;
-        for child in children.iter() {
+        let mut init_children = INITPROC.children.lock().await;
+        for child in children.drain(..) { // 使用 drain 高效移动元素
             child.set_parent(INITPROC.pid.0);
-            INITPROC.children.lock().await.push(child.clone());
+            init_children.push(child);
         }
-        children.clear();
     }
 
-    // 4. 回收“进程级”资源：地址空间、FD 表、信号等
-    {
-        // 回收地址空间的所有用户页
-        process.memory_set.lock().await.recycle_data_pages();
-        // 关闭并清空文件
-        process.fd_table.lock().await.table.clear();
-        // （如果有其他全局结构，比如信号队列、管道、TLS 等，也要在这里清理）
-    }
+    // --- 第 3 步：回收进程级资源 ---
+    process.memory_set.lock().await.recycle_data_pages();
+    process.fd_table.lock().await.table.clear();
+    process.set_exit_code(exit_code);
 
-    // 5. 从全局 TID2TC、tasks 列表里把所有线程移除
+    // --- 第 4 步：从全局数据结构中移除所有线程 ---
     {
-        let mut tasks = process.tasks.lock().await;
-        for thread in tasks.iter() {
+        // 再次获取 tasks 锁，清空它
+        let mut tasks_guard = process.tasks.lock().await;
+        for thread in tasks_guard.iter() {
             let tid = thread.id.as_usize();
             TID2TC.lock().remove(&tid);
-            // drop(thread) 由 Rust 智能指针自动处理
         }
-        tasks.clear();
+        tasks_guard.clear();
     }
-
-
-    //   
-    // let ppid = process.get_parent();
-    // if let Some(parent_proc) = PID2PC.lock().get(&ppid) {
-    //     parent_proc.notify_child_exited(pid, exit_code);
-    // }
-
     
 }
+/// 终止当前线程。如果这是进程中的最后一个线程，则等同于 exit_group。
+/// 这是 exit(2) 系统调用的内核实现。
+pub async fn exit_current(exit_code: i32) {
+    let task = current_task();
+    let process = current_process();
+    debug!("[kernel] exit_current tid {}, exit_code: {}", task.id(), exit_code);
+
+    // 检查是否是进程中的最后一个线程
+    let is_last_thread = {
+        let tasks_guard = process.tasks.lock().await;
+        tasks_guard.len() == 1
+    };
+
+    if is_last_thread {
+        // 如果是最后一个线程，行为等同于 exit_group
+        // 直接调用新的 exit_group 函数即可
+        exit_proc(exit_code).await;
+    } else {
+        // --- 只退出当前线程 ---
+        let tid = task.id.as_usize();
+        
+        // 1. 标记为 Zombie 并清理
+        task.set_state(TaskStatus::Zombie);
+        task.set_exit_code(exit_code as isize);
+        let _ = task.clear_child_tid().await;
+        exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
+
+        // 2. 从进程的线程列表中移除自己
+        {
+            let mut tasks_guard = process.tasks.lock().await;
+            tasks_guard.retain(|t| t.id.as_usize() != tid);
+        }
+        
+        // 3. 从全局 TID 映射中移除自己
+        TID2TC.lock().remove(&tid);
+
+        // drop(task) 将由 Arc 自动处理
+        // 进程的其他资源 (内存, FD) 保持不变，因为其他线程还在运行。
+    }
+}
+
 #[repr(C)]
     #[derive(Debug, Clone, Copy)] // 加上 Clone, Copy
     struct UserRobustListHead {
@@ -302,79 +339,6 @@ async fn exit_robust_list_cleanup(head_ptr: usize) -> GeneralRet {
     //println!("[ROBUST_DEBUG] << Leaving exit_robust_list_cleanup.");
     Ok(())
 }
-///Exit the current 'Running' task and run the next task in task list. 
-/// 并不清理资源等waitpid回收
-pub async  fn exit_current(exit_code: i32) {
-    // take from Processor
-    let task = current_task();
-    
-    let process = current_process();
-
-    debug!("[kernel]exit tid {},exit code:{}", task.id(), exit_code);
-    // **** access current TCB exclusively
-    // Change status to Zombie
-    task.set_state(TaskStatus::Zombie);
-    // Record exit code
-    task.set_exit_code(exit_code as isize);
-    if task.clear_child_tid().unwrap()
-     {
-        if let Some(ctid) = &task.child_tid_ptr {
-        let ctid = ctid.load(core::sync::atomic::Ordering::Acquire);
-        let token = process.memory_set.lock().await.token();
-       
-            // println!("ctid :{:#x}",ctid);
-            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
-            if let Some(wait_queue) = futex_guard.get_mut(&(token, ctid)) {
-                wait_queue.wake_matching_waiters(1, u32::MAX); // 唤醒一个等待者
-                if wait_queue.is_empty() {
-                    futex_guard.remove(&(token, ctid));
-                }
-            }
-        
-    }
-    
-    exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
-}
-    process.set_exit_code(exit_code as i32);
-    let tid = task.id.as_usize();
-    if task.is_leader() {
-        if task.get_pid() != 1 {
-            for child in process.children.lock().await.iter() {
-                child
-                    .set_parent(INITPROC.pid.0) ;
-                INITPROC.children.lock().await.push(child.clone());
-            }
-
-        } else {
-            
-            let w = &INITPROC;
-            let _ = w;
-        }
-
-
-    // ++++++ release parent PCB
-
-    process.children.lock().await.clear();
-    // deallocate user space
-    process.memory_set.lock().await.recycle_data_pages();
-    // drop file descriptors
-    process.fd_table.lock().await.table.clear();
-
-    } 
-    TID2TC.lock().remove(&tid);
-    
-    // 从进程中删除当前线程
-    let mut tasks = process.tasks.lock().await;
-    let len = tasks.len();
-    for index in 0..len {
-        if tasks[index].id.as_usize() == tid {
-            tasks.remove(index);
-            break;
-        }
-    }
-    drop(task); 
-}
-
 // static INITPROC_STR: &str =          "ch5b_user_shell";
 // static INITPROC_STR: &str =          "ch2b_power_3";
 // static INITPROC_STR: &str =          "/glibc/basic/brk";

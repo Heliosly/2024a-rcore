@@ -23,7 +23,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = ["gene
 num_enum = { version = "0.7.2", default-features = false }
 lwext4_rust = { path = "lwext4_rust" }
 async-trait = "0.1.88"
-
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 [profile.release]
 debug = false 
 opt-level = 0 

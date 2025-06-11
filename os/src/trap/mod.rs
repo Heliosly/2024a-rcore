@@ -271,9 +271,7 @@ pub async fn user_task_top() -> i32 {
                             -(err as isize) as usize
                             
                             }
-                              
                             // debug!("[Syscall]Err:{}", err.str());
-
                         }
                     };
             
@@ -322,6 +320,11 @@ pub async fn user_task_top() -> i32 {
                     println!("[kernel] IllegalInstruction in application, kernel killed it.");
                     // illegal instruction exit code
                     exit_current(-3).await;
+                }
+                Trap::Exception(Exception::Breakpoint)=>{
+                    println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
+                   
+                    exit_current(-4).await;
                 }
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();

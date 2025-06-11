@@ -254,7 +254,13 @@ pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOp
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
 
     log::debug!("[open] abs_path={},flags={:#?},mode:{}", abs_path,flags,mode);
-
+    if abs_path=="/"{
+        return Ok(FileDescriptor::new(flags,
+            
+            FileClass::File(Arc::new(OsInode::new(true,false,root_inode())))
+        
+        ));
+    }
     //判断是否是设备文件
     if find_device(abs_path) {
         let device = open_device_file(abs_path)?;

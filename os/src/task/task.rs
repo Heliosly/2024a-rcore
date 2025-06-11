@@ -12,12 +12,13 @@ use crate::mm::{
     flush_tlb, get_target_ref, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
+use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
 use crate::syscall::flags::AT_FDCWD;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
-use crate::task::{add_task, current_task, Task, PID2PC, TID2TC};
+use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC, TID2TC};
 use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
@@ -351,6 +352,7 @@ impl ProcessControlBlock {
     pub async fn contains_tid(&self, tid: usize) -> bool {
         self.tasks.lock().await .iter().any(|tcb| tcb.id() == tid)
     }
+   
 }
 //  Non
 
@@ -1167,20 +1169,7 @@ impl TaskControlBlock {
 
         self.uid.load( Ordering::Acquire);
     }
-    pub fn clear_child_tid(&self) -> TemplateRet<bool>{
-        let res=self.need_clear_child_tid.load(Ordering::Acquire);
-        if res {
-            let ctid=translated_refmut(
-                unsafe { *self.page_table_token.get() },
-                self.child_tid_ptr().unwrap() as *mut u32,
-            )? ;
-            debug!("[clear_child_tid]clear ctid:{:#?}",ctid);
-            *ctid=0;
-        }
-        
-        self.need_clear_child_tid.store(false, Ordering::Relaxed);
-        Ok(res)
-    }
+   
     pub fn is_exited(&self) -> bool {
         *(self.state.lock()) == TaskStatus::Zombie
     }
@@ -1272,6 +1261,38 @@ pub fn join(&self, waker: Waker) {
     unsafe { &*task }.set_state(TaskStatus::Blocking);
     let wait_wakers = unsafe { &mut *self.wait_wakers.get() };
     wait_wakers.push_back(waker);
+}
+pub async fn clear_child_tid(&self) -> Result<(), SysErrNo> {
+    
+    if let Some(ctid_ptr) = &self.child_tid_ptr {
+        let ctid_addr = ctid_ptr.load(core::sync::atomic::Ordering::Relaxed);
+        if ctid_addr == 0 {
+            return Ok(());
+        }
+        
+          if let Some(ctid) = &self.child_tid_ptr {
+        let ctid = ctid.load(core::sync::atomic::Ordering::Acquire);
+        let token = unsafe { *self.page_table_token.get() };
+       // 写入 0 到用户空间的 ctid 地址
+       {
+       *translated_refmut(token, ctid as *mut  u32)?=0u32;
+       }
+            // println!("ctid :{:#x}",ctid);
+            let mut futex_guard = GLOBAL_FUTEX_SYSTEM.lock();
+            if let Some(wait_queue) = futex_guard.get_mut(&(token, ctid)) {
+                wait_queue.wake_matching_waiters(1, u32::MAX); // 唤醒一个等待者
+                if wait_queue.is_empty() {
+                    futex_guard.remove(&(token, ctid));
+                }
+            }
+        
+    }
+    
+        
+        
+        
+    }
+    Ok(())
 }
 }
 
