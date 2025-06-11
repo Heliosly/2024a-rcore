@@ -1,5 +1,5 @@
 use core::{
-    cmp::min,
+    cmp::{max, min},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -8,7 +8,7 @@ use linux_raw_sys::general::SEEK_CUR;
 use lwext4_rust::bindings::SEEK_SET;
 
 use crate::{
-    config::{KERNEL_PGNUM_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE, PAGE_SIZE_BITS},
+    config::{KERNEL_PGNUM_OFFSET, MMAP_BASE, MMAP_PGNUM_TOP, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP},
     fs::{File, FileDescriptor, OsInode},
     mm::StepByOne,
     syscall::flags::MmapProt,
@@ -69,7 +69,82 @@ impl VmAreaTree {
         self.areas.insert(start_vpn, area);
         Ok(())
     }
+    pub fn alloc_pages_from_hint(
+        &self, 
+        npages: usize,
+        hint_vpn: VirtPageNum,
+    ) -> Option<VirtPageNum> {
+        // --- 1. 优先从 hint_vpn 开始向后查找 ---
 
+        // 规范化 hint_vpn，确保它在合法范围内
+        let start_hint_vpn = max(hint_vpn, VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS));
+
+        // BTreeMap::range(start..) 可以高效地找到第一个键 >= start 的项。
+        // 我们用它来定位 hint 之后的所有已分配区域。
+        let mut last_area_end_vpn = start_hint_vpn;
+
+        for (area_start_vpn, area) in self.areas.range(start_hint_vpn..) {
+            // 我们要找的空闲区域是 [last_area_end_vpn, area_start_vpn)
+            // 检查这个“空洞”是否足够大
+            let gap_start_vpn = last_area_end_vpn;
+            let gap_end_vpn = *area_start_vpn;
+            
+            if gap_end_vpn.0 > gap_start_vpn.0 && // 确保空洞存在
+               gap_end_vpn.0 - gap_start_vpn.0 >= npages
+            {
+                // 找到了！这个空洞足够大。
+                // 我们可以在这个空洞的起始处分配。
+                // 同时要确保分配后不会超过 MMAP_TOP
+                if gap_start_vpn.0 + npages <= MMAP_TOP / PAGE_SIZE {
+                    return Some(gap_start_vpn);
+                }
+            }
+
+            // 更新 last_area_end_vpn，为下一次循环做准备
+            last_area_end_vpn = max(last_area_end_vpn, area.vpn_range.get_end());
+        }
+
+        // 如果循环结束后，最后的区域到 MMAP_TOP 之间还有空间，也检查一下
+        if MMAP_TOP / PAGE_SIZE > last_area_end_vpn.0 &&
+           MMAP_TOP / PAGE_SIZE - last_area_end_vpn.0 >= npages
+        {
+            return Some(last_area_end_vpn);
+        }
+
+        // --- 2. 如果从 hint 开始找不到，则回退到全局搜索 ---
+        //    这里的逻辑就是你之前的 alloc_pages，但我们在这里重新实现
+        //    它，避免在 sys_mmap 中写复杂的 if-else。
+
+        // 从 MMAP_TOP 向下搜索
+        let mut prev_area_start_vpn = VirtPageNum(MMAP_TOP / PAGE_SIZE);
+
+        for area in self.areas.values().rev() {
+            let current_area_end_vpn = area.vpn_range.get_end();
+            
+            // 空洞是 [current_area_end_vpn, prev_area_start_vpn)
+            if prev_area_start_vpn.0 > current_area_end_vpn.0 &&
+               prev_area_start_vpn.0 - current_area_end_vpn.0 >= npages
+            {
+                // 找到了一个足够大的空洞，从空洞的末尾开始分配
+                let alloc_start_vpn = VirtPageNum(prev_area_start_vpn.0 - npages);
+                return Some(alloc_start_vpn);
+            }
+            prev_area_start_vpn = area.vpn_range.get_start();
+        }
+
+        // 检查最开始的一段区域 [USER_STACK_TOP, 第一个area的start)
+        let final_gap_end = prev_area_start_vpn;
+        let final_gap_start = VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS);
+        if final_gap_end.0 > final_gap_start.0 &&
+           final_gap_end.0 - final_gap_start.0 >= npages
+        {
+             // 从空洞的末尾开始分配
+             let alloc_start_vpn = VirtPageNum(final_gap_end.0 - npages);
+             return Some(alloc_start_vpn);
+        }
+
+        None
+    }
     /// 从 MMAP_PGNUM_TOP 向下找 npages 个连续页号，插入并返回起始页号
     pub fn alloc_pages(&mut self, npages: usize) -> Option<VirtPageNum> {
         let mut end_pn = MMAP_PGNUM_TOP;

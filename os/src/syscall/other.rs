@@ -1,13 +1,13 @@
 
 use linux_raw_sys::general::MAX_CLOCKS;
 use alloc::vec;
-use crate::{config::MAX_KERNEL_RW_BUFFER_SIZE, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_refmut, translated_str, translated_byte_buffer}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count}, timer::{self, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec, current_time}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
 
    current_process().memory_set.lock().await.safe_put_data(
         info as *mut Sysinfo,
-        Sysinfo::new(get_time_ms() / 1000, 1 << 56, task_count()),
+        Sysinfo::new(get_time_ms() / 1000, TOTALMEM, task_count()),
     ).await?;
     Ok(0)
 }

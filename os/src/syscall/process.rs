@@ -2,7 +2,7 @@
 //!
 
 
-use core::ffi::c_void;
+use core::{ffi::c_void, hint};
 
 use alloc::{
    format, string::{String, ToString}, sync::Arc, vec::Vec
@@ -11,7 +11,7 @@ use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
+    config::{MAX_SYSCALL_NUM, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
         flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
@@ -715,10 +715,7 @@ pub async fn sys_mmap(
     if flags == 0 {
         return Err(SysErrNo::EINVAL);
     }
-    info!(
-        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
-        addr, len, fd , off, flags,mmap_prot, map_perm
-    );
+   
 
     let flags = match MmapFlags::from_bits(flags) {
         Some(f) => f,
@@ -726,7 +723,10 @@ pub async fn sys_mmap(
             warn!("[sys_mmap],flags is incorrect" );
             Err(SysErrNo::EINVAL)},
     };
-
+ info!(
+        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
+        addr, len, fd , off, flags,mmap_prot, map_perm
+    );
     if !flags.contains(MmapFlags::MAP_ANONYMOUS)&&fd<0{
         return Err(SysErrNo::EINVAL);
     }
@@ -740,6 +740,11 @@ pub async fn sys_mmap(
         return Err(SysErrNo::EINVAL);
     }
     if len>>PAGE_SIZE_BITS > remaining_frames(){
+        warn!(
+            "Not enough physical frames: requested {:#x} pages , remaining frames: {:#x}",
+            len>>PAGE_SIZE_BITS,
+            remaining_frames()
+        );
         return Err(SysErrNo::ENOMEM);
     }
     let fd = fd as usize ;
@@ -749,6 +754,11 @@ pub async fn sys_mmap(
         // 非匿名必须提供合法 fd
         if fd == usize::MAX {
             return Err(SysErrNo::EBADE);
+        }
+    }
+    else{
+        if fd!=usize::MAX{
+            return Err(SysErrNo::EINVAL);
         }
     }
     
@@ -813,7 +823,14 @@ pub async fn sys_mmap(
         va
     } else {
         // 8.3 默认，从 addr 附近或全局搜索
-        match ms.areatree.alloc_pages(pages) {
+        let hint_vpn = if addr == 0 {
+            // 如果 addr 是 0，给一个默认的 hint，比如从 MMAP_BASE 开始
+            VirtPageNum::from(MMAP_BASE>>PAGE_SIZE_BITS ) 
+        } else {
+            // 否则，使用用户提供的 addr 作为 hint，并向上页对齐
+            VirtAddr::from(addr).ceil() 
+        };
+        match ms.areatree.alloc_pages_from_hint(pages, hint_vpn) {
             Some(vpn) => VirtAddr::from(vpn),
             None => {
                 warn!(
@@ -825,6 +842,7 @@ pub async fn sys_mmap(
         }
     };
     if base.0 >= MMAP_TOP {
+        warn!("[sys_mmap] alloc fault,unreachable,base:{:#x}",base.0);
         return Err(SysErrNo::ENOMEM);
     }
     // ——————————————————————————————————————————

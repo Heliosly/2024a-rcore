@@ -34,7 +34,7 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
 /// the physical memory end
-pub const MEMORY_END: usize = 0x8800_0000+KERNEL_DIRECT_OFFSET ;
+pub const MEMORY_END: usize = 0xBFFF_F000+KERNEL_DIRECT_OFFSET ;
 /// The base address of control registers in Virtio_Block device
 pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 /// Kerneladress offset
@@ -64,11 +64,11 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
     - PAGE_SIZE * THREAD_MAX_NUM
     - USER_STACK_SIZE * THREAD_MAX_NUM
     - PAGE_SIZE;
-
 pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
 /// user app's heap size 4mb
 pub const USER_HEAP_SIZE: usize = 0x40000;
 
+pub const MMAP_BASE:usize = 0xffff_e000;
 /// user app's stack size
 pub const USER_STACK_SIZE: usize = 4096 * 16*16*10;
 /// Kernel Stack Start
@@ -87,3 +87,4 @@ pub const PATH_MAX: usize = 4096;
 
 // 定义一个内核中转缓冲区的合理大小
 pub const SENDFILE_KERNEL_BUFFER_SIZE: usize = 4*PAGE_SIZE;
+pub const TOTALMEM: usize = 1 * 1024 * 1024 * 1024; // 1 GiB
