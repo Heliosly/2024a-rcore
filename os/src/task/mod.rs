@@ -110,7 +110,7 @@ pub async fn exit_proc(exit_code: i32) {
         
         // 清理 futexes 和 robust list。这可能会唤醒其他进程。
         let _ = thread.clear_child_tid().await;
-        exit_robust_list_cleanup(thread.robust_list.lock().await.head).await.unwrap();
+        // exit_robust_list_cleanup(thread.robust_list.lock().await.head).await.unwrap();
     }
     
     // --- 第 2 步：为子进程重新指定父进程 (reparenting) ---
@@ -166,7 +166,7 @@ pub async fn exit_current(exit_code: i32) {
         task.set_state(TaskStatus::Zombie);
         task.set_exit_code(exit_code as isize);
         let _ = task.clear_child_tid().await;
-        exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
+        // exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
 
         // 2. 从进程的线程列表中移除自己
         {
@@ -222,7 +222,7 @@ async fn exit_robust_list_cleanup(head_ptr: usize) -> GeneralRet {
                 break;
             }
         };
-        // 【新添加】打印读取到的完整 head_data
+        // 打印读取到的完整 head_data
         //println!("[ROBUST_DEBUG] Successfully read head_data: {:?}", head_data);
 
 
