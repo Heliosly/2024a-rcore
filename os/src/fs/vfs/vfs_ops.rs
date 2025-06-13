@@ -7,12 +7,12 @@ use crate::{fs::{stat::Kstat, OpenFlags, Statfs}, utils::error::{SysErrNo, Sysca
 /// Filesystem operations.
 pub trait VfsOps: Send + Sync {
     /// Do something when the filesystem is mounted.
-    fn mount(&self, _path: &str, _mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
+    fn mount(&mut self, _path: &str, _mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
         Ok(0)
     }
 
     /// Do something when the filesystem is unmounted.
-    fn umount(&self) -> Result<usize, i32> {
+    fn umount(&mut self) -> Result<usize, i32> {
         Ok(0)
     }
 
@@ -27,15 +27,19 @@ pub trait VfsOps: Send + Sync {
     }
 
     /// Get the root directory of the filesystem.
-    fn root_dir(&self) -> Arc<dyn VfsNodeOps>;
+    fn root_inode(&self) -> Arc<dyn VfsNodeOps>;
     
     fn ls(&self)  {
+        unimplemented!()
+    }
+ fn name(&self)->String{
         unimplemented!()
     }
 }
 
 /// Node (file/directory) operations.
 pub trait VfsNodeOps: Send + Sync {
+   
     fn path(&self) ->String{
         unimplemented!()
     }

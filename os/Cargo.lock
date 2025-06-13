@@ -370,6 +370,7 @@ dependencies = [
  "kernel_guard",
  "lazy_init",
  "lazy_static",
+ "libc",
  "linux-raw-sys",
  "log",
  "lwext4_rust",

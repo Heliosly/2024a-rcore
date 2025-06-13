@@ -5,6 +5,7 @@ use bit_field::BitField;
 use core::mem::size_of;
 
 /// Supervisor Status Register
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Sstatus {
     bits: usize,

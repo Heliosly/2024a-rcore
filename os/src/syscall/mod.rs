@@ -139,7 +139,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,
         SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
         SYSCALL_NANOSLEEP=>sys_nanosleep(args[0] as *const UserTimeSpec, args[1] as *mut UserTimeSpec).await,
-        SYSCALL_FUTEX =>sys_futex(args[0] as  *const u32,args[1] as  i32,args[2] as u32,args[3],args[4] as *mut u32,args[5] as u32).await,
+        SYSCALL_FUTEX =>sys_futex(args[0] as  *mut u32,args[1] as  i32,args[2] as u32,args[3],args[4] as *mut u32,args[5] as u32).await,
         SYSCALL_SOCKET => sys_socket(args[0] as u32, args[1] as u32, args[2] as u32).await,
         SYSCALL_SOCKETPAIR => sys_socketpair(
             args[0] as u32,

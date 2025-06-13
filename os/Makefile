@@ -72,21 +72,22 @@ run-inner: build
 	@qemu-system-riscv64 \
 		-machine virt \
 		-nographic \
-		-m 128M \
+		-m 1024M \
 		-bios $(BOOTLOADER) \
 		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
 		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0\
+		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 
 gdb: build
 	@tmux new-session -d \
-		"qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S" && \
+		"qemu-system-riscv64 -machine virt -nographic -m 1024M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S" && \
 		tmux split-window -h \"$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'\" && \
 		tmux swap-pane -U && \
 		tmux -2 attach-session -d
 
 gdbserver: build
-	@qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
+	@qemu-system-riscv64 -machine virt -nographic -m 1024M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -s -S
 
 gdbclient:

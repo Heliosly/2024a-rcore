@@ -33,35 +33,46 @@ pub const BLOCK_SIZE: usize = 512;
 
 #[allow(dead_code)]
 pub struct Ext4FileSystem<H: Hal, T: Transport> {
-    inner: Ext4BlockWrapper<Disk<H, T>>,
+   pub inner: Ext4BlockWrapper<Disk<H, T>>,
     root: Arc<dyn VfsNodeOps>,
+    name:String,
 }
 
 unsafe impl<H: Hal, T: Transport> Sync for Ext4FileSystem<H, T> {}
 unsafe impl<H: Hal, T: Transport> Send for Ext4FileSystem<H, T> {}
 
 impl<H: Hal, T: Transport> Ext4FileSystem<H, T> {
-    pub fn new(disk: Disk<H, T>) -> Self {
+    pub fn new(disk: Disk<H, T>,name:String,root:&str  ) -> Self {
         info!(
             "Got Disk size:{}, position:{}",
             disk.size(),
             disk.position()
         );
-        let inner = Ext4BlockWrapper::<Disk<H, T>>::new(disk)
+        let mut root_path = root.to_string();
+        if !root_path.ends_with('/') {
+            root_path.push('/');
+        }
+        let inner = Ext4BlockWrapper::<Disk<H, T>>::new(disk,name.clone(),&root_path)
             .expect("failed to initialize EXT4 filesystem");
-        let root = Arc::new(FileWrapper::new("/", InodeTypes::EXT4_DE_DIR));
-        Self { inner, root }
+        let root = Arc::new(FileWrapper::new(&root, InodeTypes::EXT4_DE_DIR));
+        
+        Self { inner, root ,name}
     }
+
 }
+
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
-    fn mount(&self, _path: &str, _mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
+    fn mount(&mut self, path: &str, mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
         Ok(0)
     }
+    fn name(&self)->String {
+        self.name.clone()
+    }
 
-    fn root_dir(&self) -> Arc<dyn VfsNodeOps> {
-        debug!("Get root_dir");
+    fn root_inode(&self) -> Arc<dyn VfsNodeOps> {
+        debug!("Get root_dir ops:{:?}",self.name);
         //let root_dir = unsafe { (*self.root.get()).as_ref().unwrap() };
         Arc::clone(&self.root)
     }
@@ -495,41 +506,43 @@ impl VfsNodeOps for FileWrapper {
         path: &str,
         flags: OpenFlags,
         loop_times: usize,
-    ) ->Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
-         //log::info!("[Inode.find] origin path={}", path);
-         let file = &mut self.file.borrow_mut();
-         if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
-             Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)))
-         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
-             if flags.contains(OpenFlags::O_DIRECTORY) {
-                 return Err(SysErrNo::ENOTDIR);
-             }
-             Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_REG_FILE)))
-         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
-             if flags.contains(OpenFlags::O_ASK_SYMLINK) {
-                 return Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK)));
-             }
-             if loop_times >= MAX_SYMLINK_DEPTH{
-                 debug!("error ELOOP!");
-                 return Err(SysErrNo::ELOOP);
-             }
-             // 符号链接文件应该返回对应的真实的文件
-             let mut file_name = [0u8; 256];
-             let file = FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK);
-             file.read_link(&mut file_name, 256)?;
-             let end = file_name.iter().position(|v| *v == 0).unwrap();
-             let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-             //log::info!("[Inode.find] file_path={}", file_path);
-             let (prefix, _) = path.rsplit_once("/").unwrap();
-             //log::info!("[Inode.find] prefix={}", prefix);
-             let abs_path = format!("{}/{}", prefix, file_path);
-             //debug!("[Inode.find] symlink abs_path={}", &abs_path);
-             return self.find(&abs_path, flags, loop_times + 1);
- 
-            //  Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK)))
-         } else {
-             Err(SysErrNo::ENOENT)
-         }
+    ) -> Result<Arc<dyn VfsNodeOps>, crate::utils::error::SysErrNo> {
+        // 先把所有对 file.borrow_mut() 的调用都做在一个独立的作用域里
+        {
+            let mut file = self.file.borrow_mut();
+    
+            if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
+                return Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_DIR)));
+            } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
+                if flags.contains(OpenFlags::O_DIRECTORY) {
+                    return Err(SysErrNo::ENOTDIR);
+                }
+                return Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_REG_FILE)));
+            } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
+                if flags.contains(OpenFlags::O_ASK_SYMLINK) {
+                    return Ok(Arc::new(FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK)));
+                }
+                if loop_times >= MAX_SYMLINK_DEPTH {
+                    return Err(SysErrNo::ELOOP);
+                }
+    
+                // 读取链接目标到 buffer（注意这也要在这个作用域里完成）
+                let mut file_name = [0u8; 256];
+                let file_wrapper = FileWrapper::new(path, InodeTypes::EXT4_DE_SYMLINK);
+                file_wrapper.read_link(&mut file_name, 256)?;
+                let end = file_name.iter().position(|&v| v == 0).unwrap();
+                let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
+                let prefix = path.rsplit_once("/").unwrap().0;
+                let abs_path = format!("{}/{}", prefix, file_path);
+    
+                // `file` 这个 RefMut 在这里就会随着作用域结束而 drop，释放借用
+                // 然后我们再递归调用 `find`
+                return self.find(&abs_path, flags, loop_times + 1);
+            }
+        }
+    
+        // 到这里说明既不是目录也不是文件也不是 symlink
+        Err(SysErrNo::ENOENT)
     }
   
     fn is_dir(&self) -> bool {

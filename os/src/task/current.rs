@@ -241,7 +241,7 @@ pub fn current_task() -> CurrentTask {
 
 pub fn current_process()->ProcessRef{
 
- current_task().get_process()
+ current_task().get_process().unwrap()
    
 }
 

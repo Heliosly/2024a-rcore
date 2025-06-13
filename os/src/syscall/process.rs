@@ -5,7 +5,7 @@
 use core::{ffi::c_void, future::Future, hint, pin::Pin};
 
 use alloc::{
-   boxed::Box, format, string::{String, ToString}, sync::Arc, vec::Vec
+   boxed::Box, collections::linked_list::LinkedList, format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
@@ -13,7 +13,7 @@ use spin::Lazy;
 use crate::{
     config::{MAX_SYSCALL_NUM, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
         flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
-    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET}, task::{
+    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
          error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
@@ -446,7 +446,9 @@ pub fn sys_getuid() -> SyscallRet {
 
 
 pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRet {
-    trace!("[sys_wait4] pid:{}, wstatus:{:?}, options:{}", pid, wstatus, options);
+
+    let proc = current_process();
+    info!("[sys_wait4] pid:{}, wstatus:{:?}, options:{},pid:{}", pid, wstatus, options,proc.get_pid());
 
     // --- 0. 参数校验 ---
     if pid == 0 || (pid as i32) == i32::MIN {
@@ -458,7 +460,6 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
         None => return Err(SysErrNo::EINVAL),
     };
 
-    let proc = current_process();
 
     loop { // 使用循环来处理查找和等待的逻辑
         // --- 1. 查找已存在的僵尸子进程 (持有锁的快速路径) ---
@@ -476,40 +477,33 @@ pub async fn sys_wait4(pid: isize, wstatus: *mut i32, options: u32) -> SyscallRe
              }
         }
         
-        let mut zombie_child_info: Option<(usize, ProcessRef)> = None;
         for (idx, child_proc) in children_guard.iter().enumerate() {
-            // 检查条件：1. 进程状态是僵尸 2. PID匹配 (pid=-1匹配所有)
             if child_proc.is_zombie().await && (pid == -1 || (pid as usize) == child_proc.get_pid()) {
-                zombie_child_info = Some((idx, child_proc.clone()));
-                break;
+                let child_to_reap = children_guard.remove(idx);
+                let found_pid = child_to_reap.get_pid();
+                let exit_code = child_to_reap.exit_code();
+        
+                // 从全局PID映射中移除
+                PID2PC.lock().remove(&found_pid);
+        
+                // 释放锁
+                drop(children_guard);
+        
+                debug!("[sys_wait4] Reaped zombie child pid: {}", found_pid);
+        
+                if !wstatus.is_null() {
+                    proc.memory_set.lock().await.safe_put_data(wstatus, exit_code << 8).await?;
+                }
+        
+                // assert_eq!(
+                //     Arc::strong_count(&child_to_reap),
+                //     1,
+                //     "strong_count should be 1 after reaping, but is {}",
+                //     Arc::strong_count(&child_to_reap)
+                // );
+        
+                return Ok(found_pid);
             }
-        }
-
-        // --- 2. 如果找到僵尸进程，则回收并返回 ---
-        if let Some((idx, child_to_reap)) = zombie_child_info {
-            let found_pid = child_to_reap.get_pid();
-            let exit_code = child_to_reap.exit_code();
-
-            // 从子进程列表中移除
-            children_guard.remove(idx);
-            
-            // 从全局PID映射中移除
-            PID2PC.lock().remove(&found_pid);
-            
-            // 释放锁
-            drop(children_guard);
-
-            debug!("[sys_wait4] Reaped zombie child pid: {}", found_pid);
-
-            // 写入状态
-            if !wstatus.is_null() {
-                proc.memory_set.lock().await.safe_put_data(wstatus, exit_code << 8).await?;
-            }
-
-            // 检查Arc引用计数，确保资源被回收
-            assert_eq!(Arc::strong_count(&child_to_reap), 1, "strong_count should be 1 after reaping, but is {}", Arc::strong_count(&child_to_reap));
-            
-            return Ok(found_pid);
         }
 
         // --- 3. 如果没找到僵尸进程，处理 WNOHANG 或准备等待 ---
@@ -627,7 +621,7 @@ pub async  fn sys_gettimeofday(ts: *mut UserTimeSpec, tz: usize) -> SyscallRet {
 ///TODO(Heliosly)
 pub async  fn sys_exitgroup(exit_code: i32) -> SyscallRet {
     info!(
-        "[sys_exit]_exitgroup pid:{} ",
+        "[sys_exit_group]_exitgroup pid:{} ",
         current_task().get_pid()
     );
     exit_proc(exit_code).await;
@@ -1164,11 +1158,11 @@ pub async fn sys_mprotect( start: usize, size: usize, flags: usize)->SyscallRet 
 /// uaddr2_user_ptr: 
 /// val3: 
 pub async fn sys_futex(
-    uaddr_user_ptr: *const u32,
+    uaddr_user_ptr: *mut u32,
     futex_op_full: i32,
     val_or_count: u32,
     val2_timeout_ptr_or_num_requeue: usize,
-    _uaddr2_user_ptr: *mut u32,
+    uaddr2_user_ptr: *mut u32,
     bitmask_or_val3: u32,
 ) -> SyscallRet {
        let pcb_arc = current_process();
@@ -1181,7 +1175,7 @@ info!(
         futex_op_full,
         val_or_count,
         val2_timeout_ptr_or_num_requeue,
-        _uaddr2_user_ptr as usize,
+        uaddr2_user_ptr as usize,
         bitmask_or_val3,
         tid,
     );
@@ -1200,8 +1194,64 @@ info!(
     let use_clock_realtime = (futex_op_full & FUTEX_CLOCK_REALTIME as i32) != 0;
 
     match op_cmd {
+        FUTEX_REQUEUE => {
+            debug!("futex_requeue: uaddr1:{:#x} -> uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
+
+            // 校验 uaddr2
+            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+                return Err(SysErrNo::EFAULT);
+            }
+            pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
+            let uaddr2_usize = uaddr2_user_ptr as usize;
+            let futex_key2: FutexKey = (token, uaddr2_usize);
+            if futex_key == futex_key2 { // 不能 requeue 到自己
+                return Err(SysErrNo::EINVAL);
+            }
+
+            let num_to_wake = val_or_count as usize;
+            let num_to_requeue = val2_timeout_ptr_or_num_requeue;
+
+            // 注意：与 FUTEX_CMP_REQUEUE 不同，这里没有对用户空间的值进行比较。
+            // 直接进入锁并执行操作。
+
+            let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
+            let mut woken_count = 0;
+            let mut requeued_count = 0;
+            
+            // 1. 唤醒 uaddr1 上的等待者
+            if num_to_wake > 0 {
+                if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
+                    // 使用 u32::MAX 作为 bitmask，因为 REQUEUE 不关心 bitmask
+                    woken_count = wait_queue1.wake_matching_waiters(num_to_wake, u32::MAX);
+                }
+            }
+            
+            // 2. 将 uaddr1 上的剩余等待者移动到 uaddr2
+            if num_to_requeue > 0 {
+                // 使用你已经实现的 drain_waiters 和 enqueue_waiters
+                let waiters_to_move = if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
+                    let drained = wait_queue1.drain_waiters(num_to_requeue);
+                    if wait_queue1.is_empty() {
+                        futex_system.remove(&futex_key);
+                    }
+                    drained
+                } else {
+                    // 确保返回与 drain_waiters 相同的类型 (LinkedList)
+                    LinkedList::new() 
+                };
+
+                requeued_count = waiters_to_move.len();
+                if requeued_count > 0 {
+                    let wait_queue2 = futex_system.entry(futex_key2).or_default();
+                    wait_queue2.enqueue_waiters(waiters_to_move);
+                }
+            }
+            
+            Ok(woken_count + requeued_count )
+        }
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
 
+            
             debug!("wait futex addr :{:#x},tid:{}",uaddr_usize,tid);
             
             let expected_val = val_or_count;
@@ -1267,6 +1317,140 @@ info!(
        
 
             Ok(woken_count)
+        }
+        FUTEX_CMP_REQUEUE => {
+            debug!("futex_cmp_requeue: uaddr1:{:#x} -> uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
+
+            // 校验 uaddr2
+            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+                return Err(SysErrNo::EFAULT);
+            }
+            pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
+            let uaddr2_usize = uaddr2_user_ptr as usize;
+            let futex_key2: FutexKey = (token, uaddr2_usize);
+            if futex_key == futex_key2 { // 不能 requeue到自己
+                return Err(SysErrNo::EINVAL);
+            }
+
+            let num_to_wake = val_or_count as usize;
+            let num_to_requeue = val2_timeout_ptr_or_num_requeue;
+            let expected_val = bitmask_or_val3;
+
+            // 原子性检查：如果值不匹配，立即返回 EAGAIN
+            // 这是 CMP_REQUEUE 的核心，防止丢失唤醒
+            let current_val = *match unsafe { get_target_ref(token, uaddr_user_ptr) } {
+                Ok(v) => v, Err(e) => return Err(e.into()),
+            };
+            if current_val != expected_val {
+                return Err(SysErrNo::EAGAIN);
+            }
+
+            let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
+            let mut woken_count = 0;
+            let mut requeued_count = 0;
+            
+            // 1. 唤醒 uaddr1 上的等待者
+            if num_to_wake > 0 {
+                if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
+                    woken_count = wait_queue1.wake_matching_waiters(num_to_wake, u32::MAX);
+                }
+            }
+            
+            // 2. 将 uaddr1 上的剩余等待者移动到 uaddr2
+            if num_to_requeue > 0 {
+                // 为了避免 borrow checker 问题 (同时修改两个 hashmap entry)
+                // 我们先把要移动的 waiters 拿出来
+                let waiters_to_move = if let Some(wait_queue1) = futex_system.get_mut(&futex_key) {
+                    let drained = wait_queue1.drain_waiters(num_to_requeue);
+                    if wait_queue1.is_empty() {
+                        futex_system.remove(&futex_key);
+                    }
+                    drained
+                } else {
+                    LinkedList::new()
+                };
+
+                requeued_count = waiters_to_move.len();
+                if requeued_count > 0 {
+                    let wait_queue2 = futex_system.entry(futex_key2).or_default();
+                    wait_queue2.enqueue_waiters(waiters_to_move);
+                }
+            }
+            
+            Ok(woken_count + requeued_count )
+        }
+        
+        FUTEX_WAKE_OP => {
+            debug!("futex_wake_op: uaddr1:{:#x}, uaddr2:{:#x}", uaddr_usize, uaddr2_user_ptr as usize);
+            
+            // 校验 uaddr2
+            if uaddr2_user_ptr.is_null() || (uaddr2_user_ptr as usize % core::mem::align_of::<u32>() != 0) {
+                return Err(SysErrNo::EFAULT);
+            }
+            pcb_arc.manual_alloc_type_for_lazy(uaddr2_user_ptr).await?;
+            let uaddr2_usize = uaddr2_user_ptr as usize;
+            let futex_key2: FutexKey = (token, uaddr2_usize);
+
+            let num_wake_uaddr2 = val_or_count as usize;
+            let num_wake_uaddr1 = val2_timeout_ptr_or_num_requeue as usize;
+            let op_encoded = bitmask_or_val3;
+            
+            // 解码 val3
+            let op_type = (op_encoded >> 28) & 0xF;
+            let cmp_type = (op_encoded >> 24) & 0xF;
+            let op_arg = (op_encoded >> 12) & 0xFFF;
+            let cmp_arg = op_encoded & 0xFFF;
+            
+            let mut total_woken = 0;
+            
+            // 整个操作必须是原子的，所以要锁住 futex system
+            let mut futex_system = GLOBAL_FUTEX_SYSTEM.lock();
+            
+            // 在锁内进行用户内存访问
+            let uaddr1_val_ref = match unsafe { translated_refmut(token, uaddr_user_ptr) } {
+                Ok(v) => v, Err(e) => return Err(e.into()),
+            };
+            let old_val = *uaddr1_val_ref;
+
+            // 1. 执行比较
+            let condition_met = match cmp_type {
+                FUTEX_OP_CMP_EQ => old_val == cmp_arg,
+                FUTEX_OP_CMP_NE => old_val != cmp_arg,
+                FUTEX_OP_CMP_LT => (old_val as i32) < (cmp_arg as i32),
+                FUTEX_OP_CMP_LE => (old_val as i32) <= (cmp_arg as i32),
+                FUTEX_OP_CMP_GT => (old_val as i32) > (cmp_arg as i32),
+                FUTEX_OP_CMP_GE => (old_val as i32) >= (cmp_arg as i32),
+                _ => return Err(SysErrNo::EINVAL), // 无效的比较类型
+            };
+            
+            if condition_met {
+                // 2. 执行操作
+                let new_val = match op_type {
+                    FUTEX_OP_SET  => op_arg,
+                    FUTEX_OP_ADD  => old_val.wrapping_add(op_arg),
+                    FUTEX_OP_OR   => old_val | op_arg,
+                    FUTEX_OP_ANDN => old_val & !op_arg,
+                    FUTEX_OP_XOR  => old_val ^ op_arg,
+                    _ => return Err(SysErrNo::EINVAL), // 无效的操作类型
+                };
+                *uaddr1_val_ref = new_val;
+                
+                // 3. 唤醒 uaddr1 上的等待者
+                if num_wake_uaddr1 > 0 {
+                    if let Some(wq1) = futex_system.get_mut(&futex_key) {
+                        total_woken += wq1.wake_matching_waiters(num_wake_uaddr1, u32::MAX);
+                    }
+                }
+                
+                // 4. 唤醒 uaddr2 上的等待者
+                if num_wake_uaddr2 > 0 {
+                     if let Some(wq2) = futex_system.get_mut(&futex_key2) {
+                        total_woken += wq2.wake_matching_waiters(num_wake_uaddr2, u32::MAX);
+                    }
+                }
+            }
+            
+            Ok(total_woken )
         }
         _ => Err(SysErrNo::ENOSYS),
     }

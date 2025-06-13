@@ -3,8 +3,7 @@
 pub(crate) mod inode;
 mod stdio;
 mod dirent;
-mod ext4;
-mod vfs;
+pub mod vfs;
 mod stat;
 mod fd;
 pub mod pipe;
@@ -12,14 +11,14 @@ mod poll;
 pub mod dev;
 pub mod net;
 pub mod mount;
+pub mod ext4;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 
-use crate::{ mm::UserBuffer,  task::{ custom_noop_waker }, timer::get_time_ms, utils::{error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
+use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
-use ext4::EXT4FS;
 use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
 use lwext4_rust::{bindings::SEEK_END, InodeTypes};
@@ -34,8 +33,9 @@ pub use fd::{FileClass,FileDescriptor};
 pub use poll::{PollFuture};
 use alloc::boxed::Box;
 pub use dirent::Dirent;
-
+pub use ext4::EXT4FS;
 pub use ext4::fs_stat;
+
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_EXE_MODE: u32 = 0o755;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
@@ -174,9 +174,9 @@ pub use stdio::{Stdin, Stdout};
 pub fn list_app(){
      EXT4FS.ls();
 }
-fn root_inode() -> Arc<dyn VfsNodeOps > {
+pub fn root_inode() -> Arc<dyn VfsNodeOps > {
    
-    let root = EXT4FS.root_dir();
+    let root = EXT4FS.root_inode();
     root
 }
 pub fn fix_path(path: &str) -> String {
@@ -218,9 +218,9 @@ fn as_inode_type(types: InodeTypes) -> InodeType {
         }
     }
 }
-fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
+pub fn create_file(abs_path: &str, flags: OpenFlags, mode: u32,vfs:Arc<dyn VfsNodeOps>) -> Result<FileDescriptor, SysErrNo> {
     // 一定能找到,因为除了RootInode外都有父结点
-    let parent_dir = root_inode();
+    let parent_dir = vfs;
     let (readable, writable) = flags.read_write();
      parent_dir.create(abs_path, as_ext4_de_type(flags.node_type()))?;
     let inode= parent_dir.find(abs_path,flags,0)?;
@@ -247,8 +247,9 @@ pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOp
      
         abs_path = map_dynamic_link_file(abs_path);
     }
-
-      root_inode().find(abs_path, flags, 0)
+    // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
+    //  ops. 
+    root_inode().find(&abs_path, flags, 0)
 }
 ///open file
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
@@ -274,20 +275,23 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
 
     
     let abs_path = &fix_path(abs_path);
+    // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
+    let path =abs_path;
 
+    // info!("open_path:{:?},open_ops:{}",path,ops.name());
     // println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
     let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
     // 同一个路径对应一个Inode
     if has_inode(abs_path) {
         inode = find_inode_idx(abs_path);
     } else {
-        let found_res = root_inode().find(abs_path, flags, 0);
+        let found_res =root_inode().find(&path, flags, 0);
         if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
-            warn!("[open_file] Error: A component in the path is not a directory: {:?}", abs_path);
+            warn!("[open_file] Error: A component in the path is not a directory: {:?}", &path);
             return Err(SysErrNo::ENOTDIR);
         }
         if found_res.clone().err() == Some(SysErrNo::ELOOP) {
-            warn!("[open_file] Error: Too many symbolic links (possible symlink loop) in path: {:?}", abs_path);
+            warn!("[open_file] Error: Too many symbolic links (possible symlink loop) in path: {:?}", &path);
             return Err(SysErrNo::ELOOP);
         }
         if let Ok(t) = found_res {
@@ -300,7 +304,7 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     }
     if let Some(inode) = inode {
         if flags.contains(OpenFlags::O_DIRECTORY) && !inode.is_dir() {
-            warn!("[open_file] Error: A component in the path is not a directory: {:?}", abs_path);
+            warn!("[open_file] Error: A component in the path is not a directory: {:?}", path);
             return Err(SysErrNo::ENOTDIR);
         }
         let (readable, writable) = flags.read_write();
@@ -316,9 +320,9 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
 
     // 节点不存在
     if flags.contains(OpenFlags::O_CREATE) {
-        return create_file(abs_path, flags, mode);
+        return create_file(&path, flags, mode,root_inode());
     }
-    warn!("[open_file] Error: File or directory not found: {:?}", abs_path);
+    warn!("[open_file] Error: File or directory not found: {:?}", path);
     Err(SysErrNo::ENOENT)
 }
 
@@ -628,7 +632,11 @@ pub async  fn create_init_files() -> GeneralRet {
 
 
 pub fn init(){
-
+    drivers::system_init_with_multi_disk();
+    
+    VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
+    // create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
+    // VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();

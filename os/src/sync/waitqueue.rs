@@ -278,25 +278,7 @@ impl<'a, F: Fn() -> bool + Unpin> Future for WaitUntilFuture<'a, F> {
             // 保存对节点的 Arc 引用，以便在 Future 完成或被丢弃时可以移除它。
             mut_self.registered_node_arc = Some(node_arc);
         }
-        // else: 已经注册过了，并且 waker 也应该是最新的（因为如果 waker 改变，
-        // poll 会被再次调用，然后会根据新 waker 重新注册，或者在这里我们假设
-        // 如果 waker 改变，旧的注册仍然有效，或者 executor 会处理）。
-        // 对于这个简单的实现，我们假设如果已经注册，之前的 waker 仍然有效，
-        // 或者当任务被再次 poll 时，如果需要，它会用新的 waker 更新。
-        // 然而，一个更健壮的实现可能会检查 waker 是否已更改并更新它。
-        // 但在这个结构中，如果 waker 改变，`cx.waker()` 会是新的，
-        // 而 `registered_node_arc` 仍持有旧 waker 的节点。
-        // 标准库的 Future 通常会在 waker 改变时更新注册。
-        // 这里，如果waker改变，下次poll时，如果条件仍不满足，`registered_node_arc`非空，
-        // 就不会重新注册。这可能导致使用旧waker。
-        // 改进：如果 registered_node_arc 存在，检查其内部waker是否与 cx.waker() 相同。
-        // 如果不同，移除旧的，注册新的。
-        // 但通常的做法是：如果`poll`返回`Pending`，executor负责在waker改变时再次调用`poll`。
-        // 此时如果`registered_node_arc`为空，则会用新waker注册。
-        // 如果`registered_node_arc`非空，表示我们已注册，等待被唤醒。
-        // 现在的逻辑是：一旦注册，除非条件满足或 Future 被 drop，否则不改变注册。
-
-        // 条件不满足，且我们（可能）已经注册了 waker。等待被唤醒。
+       
 
         trace!("WaitUntilFutex Pending in ?");
         Poll::Pending

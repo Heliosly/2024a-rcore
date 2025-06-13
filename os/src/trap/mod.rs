@@ -18,11 +18,12 @@ mod context;
 mod ucontext;
 use crate::config::PAGE_SIZE;
 use crate::fs::File;
-use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet,  VirtAddr};
+use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask
+    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task,
+    run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus,
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
@@ -57,7 +58,7 @@ extern "C" {
     fn trap_vector_base();
 }
 
-pub fn set_sum(){
+pub fn set_sum() {
     unsafe { sstatus::set_sum() };
 }
 fn set_trap_entry() {
@@ -155,8 +156,8 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
             trap_from_kernel();
             return;
         } else {
-              crate::task::sleeplist::process_timed_events();
-              
+            crate::task::sleeplist::process_timed_events();
+
             // debug!("into trampoline from taskcount:{},task",task_count());
             // 用户态发生了 Trap 或者需要调度
             if let Some(curr) = CurrentTask::try_get().or_else(|| {
@@ -164,7 +165,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                     unsafe {
                         CurrentTask::init_current(task);
                     }
-                    let res= CurrentTask::get();
+                    let res = CurrentTask::get();
                     // trace!("take a task tid = {}",res.id());
 
                     Some(res)
@@ -177,7 +178,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                 //                    Arc::strong_count(&curr)
                 //                        );
 
-                    trace!("run task tid = {}",curr.id());
+                trace!("run task tid = {}", curr.id());
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
@@ -196,9 +197,6 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
         sepc
     );
 }
-
-
-
 
 ///a future to handle user trap
 /// IMPO
@@ -233,8 +231,8 @@ pub async fn user_task_top() -> i32 {
                     let syscall_id = tf.regs.a7;
 
                     debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={},sepc:{:#x},a0:{}",
-                     syscall_id,curr.id(),curr.get_process().get_pid(),sepc,tf.regs.a0);
-                    
+                     syscall_id,curr.id(),curr.get_process().unwrap().get_pid(),sepc,tf.regs.a0);
+
                     let args = [
                         tf.regs.a0, tf.regs.a1, tf.regs.a2, tf.regs.a3, tf.regs.a4, tf.regs.a5,
                     ];
@@ -247,37 +245,33 @@ pub async fn user_task_top() -> i32 {
                     let result = match result {
                         Ok(res) => res,
                         Err(err) => {
+                            if err == SysErrNo::EAGAIN {
+                                tf.sepc -= 4;
+                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
-                            if err ==SysErrNo::EAGAIN{
-                                tf.sepc-=4;
-                               debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
-
-                               yield_now().await;
+                                yield_now().await;
 
                                 tf.regs.a0
-                 
-                            }
-                          else if  err==SysErrNo::ECHILD{
-                               debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                            } else if err == SysErrNo::ECHILD {
+                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
 
                                 -(err as isize) as usize
-                            }
-                            else if err == SysErrNo::EINVAL{
+                            } else if err == SysErrNo::EINVAL {
                                 println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                                 -(err as isize) as usize
-                            }
-                            else{
-                            warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
-                            -(err as isize) as usize
-                            
+                            } else {
+                                warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                                -(err as isize) as usize
                             }
                             // debug!("[Syscall]Err:{}", err.str());
                         }
                     };
-            
-                    syscall_ret =  Some(result);
+                   
+                        tf.set_origin_a0(tf.regs.a0);
+                        tf.set_arg0(result);
+                        syscall_ret = Some(result);
 
-                    // trace!("sys_call end1");
+                    // trace!("sys_call end1"); 
                     // 判断任务是否退出
                     if curr.is_exited() {
                         // 任务结束，需要切换至其他任务，关中断
@@ -297,10 +291,19 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
-                   if curr.get_process().memory_set.lock().await.  handle_page_fault(  stval).await.is_err(){
-                       exit_current(-2).await; log_page_fault_error(scause, stval, sepc)
-                        }
-                
+                    if curr
+                        .get_process()
+                        .unwrap()
+                        .memory_set
+                        .lock()
+                        .await
+                        .handle_page_fault(stval)
+                        .await
+                        .is_err()
+                    {
+                        exit_current(-2).await;
+                        log_page_fault_error(scause, stval, sepc)
+                    }
                 }
                 Trap::Exception(Exception::StoreFault)
                 | Trap::Exception(Exception::InstructionFault)
@@ -321,9 +324,9 @@ pub async fn user_task_top() -> i32 {
                     // illegal instruction exit code
                     exit_current(-3).await;
                 }
-                Trap::Exception(Exception::Breakpoint)=>{
+                Trap::Exception(Exception::Breakpoint) => {
                     println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
-                   
+
                     exit_current(-4).await;
                 }
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
@@ -358,31 +361,36 @@ pub async fn user_task_top() -> i32 {
                     );
                 }
             }
-            
-            tf.trap_status = TrapStatus::Done;
-           {
+
+            {
                 //处理完系统调用过后，对应的信号处理和时钟更新
                 crate::signal::handle_pending_signals(syscall_ret).await;
                 crate::task::sleeplist::process_timed_events();
             }
 
-            if let Some(res) = syscall_ret{
-
-                 tf.set_arg0(res);
-            }
             // trace!("sys_call end3");
             // 判断任务是否退出
 
+            
+            tf.trap_status = TrapStatus::Done;
             // trace!("sys_call end4");
-            if curr.is_zombie() {
+            if curr.is_zombie() || curr.get_process().is_none() {
                 // 任务结束，需要切换至其他任务，关中断
                 disable_irqs();
                 // info!("return ready");
                 return curr.get_exit_code() as i32;
+            } else {
+                if let Some(pcb) = curr.get_process() {
+                    if *pcb.state.lock().await == TaskStatus::Zombie {
+                        // 任务结束，需要切换至其他任务，关中断
+                        disable_irqs();
+                        // info!("return ready");
+                        return pcb.exit_code();
+                    }
+                }
             }
             disable_irqs();
         }
-
 
         poll_fn(|_cx| {
             if tf.trap_status == TrapStatus::Done {
@@ -399,6 +407,5 @@ pub fn on_timer_tick() {
         if task_tick(curr.as_task_ref()) {
             curr.set_need_resched(true);
         }
-
     }
 }

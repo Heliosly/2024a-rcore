@@ -103,14 +103,20 @@ pub async fn exit_proc(exit_code: i32) {
         let tasks_guard = process.tasks.lock().await;
         tasks_guard.clone()
     };
-    
+    process.set_exit_code(exit_code);
+    *process.state.lock().await=TaskStatus::Zombie;
+    process.wake_all_waiters().await;
     for thread in tasks_to_terminate.iter() {
-        thread.set_state(TaskStatus::Zombie);
-        thread.set_exit_code(exit_code as isize);
         
-        // 清理 futexes 和 robust list。这可能会唤醒其他进程。
-        let _ = thread.clear_child_tid().await;
-        // exit_robust_list_cleanup(thread.robust_list.lock().await.head).await.unwrap();
+        // 清理 futexes 。这可能会唤醒其他进程。
+        if let Some(ptr)=thread.child_tid_ptr(){
+
+        if process.manual_alloc_type_for_lazy(ptr as *const u32).await.is_ok(){
+
+           let _ = thread.clear_child_tid().await;
+        }
+
+        }
     }
     
     // --- 第 2 步：为子进程重新指定父进程 (reparenting) ---
@@ -127,7 +133,6 @@ pub async fn exit_proc(exit_code: i32) {
     // --- 第 3 步：回收进程级资源 ---
     process.memory_set.lock().await.recycle_data_pages();
     process.fd_table.lock().await.table.clear();
-    process.set_exit_code(exit_code);
 
     // --- 第 4 步：从全局数据结构中移除所有线程 ---
     {
@@ -147,14 +152,11 @@ pub async fn exit_current(exit_code: i32) {
     let task = current_task();
     let process = current_process();
     debug!("[kernel] exit_current tid {}, exit_code: {}", task.id(), exit_code);
-
+    crate::utils::bpoint();
     // 检查是否是进程中的最后一个线程
-    let is_last_thread = {
-        let tasks_guard = process.tasks.lock().await;
-        tasks_guard.len() == 1
-    };
+    let is_lead = task.is_leader();
 
-    if is_last_thread {
+    if is_lead {
         // 如果是最后一个线程，行为等同于 exit_group
         // 直接调用新的 exit_group 函数即可
         exit_proc(exit_code).await;
@@ -166,12 +168,13 @@ pub async fn exit_current(exit_code: i32) {
         task.set_state(TaskStatus::Zombie);
         task.set_exit_code(exit_code as isize);
         let _ = task.clear_child_tid().await;
-        // exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
+        exit_robust_list_cleanup(task.robust_list.lock().await.head).await.unwrap();
 
         // 2. 从进程的线程列表中移除自己
         {
             let mut tasks_guard = process.tasks.lock().await;
             tasks_guard.retain(|t| t.id.as_usize() != tid);
+            process.wakers.lock().await.remove(&tid);
         }
         
         // 3. 从全局 TID 映射中移除自己

@@ -22,15 +22,15 @@ pub enum TrapStatus {
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GeneralRegisters {
-    pub ra: usize,
-    pub sp: usize,
-    pub gp: usize, // only valid for user traps
-    pub tp: usize, // only valid for user traps
-    pub t0: usize,
-    pub t1: usize,
-    pub t2: usize,
-    pub s0: usize,
-    pub s1: usize,
+    pub ra: usize, //1
+    pub sp: usize, //2
+    pub gp: usize, // only valid for user traps3
+    pub tp: usize, // only valid for user traps4
+    pub t0: usize,//5
+    pub t1: usize,//6
+    pub t2: usize,//7
+    pub s0: usize,//8
+    pub s1: usize,//9
     pub a0: usize, //9
     pub a1: usize,
     pub a2: usize,
@@ -126,6 +126,9 @@ impl TrapContext {
     pub fn get_pc(&self)->usize{
         self.sepc
     }
+    pub fn set_origin_a0(&mut self,arg:usize){
+        self.origin_a0=arg;
+    }
     ///set sepc
     pub fn set_pc(&mut self, pc: usize) {
         self.sepc = pc;
@@ -196,22 +199,16 @@ impl TrapContext {
 
 }
 extern "C" {
-    fn trap_return1();
-    fn user_return1();
+    fn trap_return1(ctx: *mut TrapContext) -> !;
+    fn user_return1(ctx: *mut TrapContext) -> !;
 }
 
 impl TrapContext{
     /// 内核态抢占恢复
     pub fn preempt_return(&self) -> ! {
         unsafe {
-            let ctx_ptr = self as *const _ as usize;
-            asm!(
-                "mv a0, {0}",
-                "jalr zero, {1}, 0", // 无返回跳转
-                in(reg) ctx_ptr,
-                in(reg) trap_return1 as usize,
-                options(noreturn)
-            );
+            let ctx_ptr = &self as *const _ as *mut TrapContext;
+            trap_return1(ctx_ptr);
         }
     }
  /// 获取 ret
@@ -224,13 +221,6 @@ impl TrapContext{
 /// 用户态返回恢复
     pub fn user_return(ctx:*mut TrapContext) -> ! {
         unsafe {
-            let ctx_ptr = ctx as *const _ as usize;
-            asm!(
-                "mv a0, {0}",
-                "jalr zero, {1}, 0",
-                in(reg) ctx_ptr,
-                in(reg) user_return1 as usize,
-                options(noreturn)
-            );
+            user_return1(ctx);
         }
     }

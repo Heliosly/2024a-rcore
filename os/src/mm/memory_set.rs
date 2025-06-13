@@ -20,6 +20,7 @@ use riscv::addr::page;
 use riscv::register::scause::{Exception,  Trap};
 use xmas_elf::ElfFile;
 use core::arch::asm;
+use core::ptr::write_volatile;
 use core::{ptr, slice};
 use riscv::register::satp;
 
@@ -251,7 +252,9 @@ let _ = memory_set.push(
     None,
 );
 
-        info!("mapping .rodata section");
+        info!("mapping .rodata section:{:#x},{:#x}",
+        (srodata as usize),
+        (erodata as usize),);
         let _ = memory_set.push(
             MapArea::new(
                 (srodata as usize).into(),
@@ -275,7 +278,7 @@ let _ = memory_set.push(
             ),
             None,
         );
-        info!("mapping .bss section");
+        info!("mapping .bss section {:#x},{:#x}" , (sbss_with_stack as usize),(ebss as usize) );
         let _ = memory_set.push(
             MapArea::new(
                 (sbss_with_stack as usize).into(),
@@ -286,7 +289,7 @@ let _ = memory_set.push(
             ),
             None,
         );
-        info!("mapping physical memory");
+        info!("mapping physical memory {:#x} -{:#x}  ",(ekernel as usize),MEMORY_END);
         let _ = memory_set.push(
             MapArea::new(
                 (ekernel as usize).into(),
@@ -297,10 +300,11 @@ let _ = memory_set.push(
             ),
             None,
         );
-        info!("mapping memory-mapped registers");
       
+        info!("mapping memory-mapped registers");
+        
         for pair in MMIO {
-  debug!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
+  info!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
             let _ = memory_set.push(
                 MapArea::new(
                     ((*pair).0+KERNEL_DIRECT_OFFSET).into(),
@@ -524,7 +528,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         // }
        
        
-    
+        
 
                 trace!("user_heap_sp,start_va::{:#x}, sp,end_va::{:#x}",user_heap_bottom,user_heap_top);
                 trace!("app_entry:{:#x}",entry_point);
@@ -1041,7 +1045,10 @@ pub async fn mprotect(&mut self, start: VirtAddr, size: usize, flags: MapPermiss
  /// 手动分配 
  pub async fn manual_alloc_type_for_lazy<T: Sized>(&mut self, obj: *const T) -> GeneralRet {
     let start = obj as usize;
-    let end = start + core::mem::size_of::<T>() - 1;
+    let end =match start.checked_add(core::mem::size_of::<T>() - 1)  {
+        Some(s) => s,
+        None => return Err(SysErrNo::EINVAL),
+    };
     self.manual_alloc_range_for_lazy(start.into(), end.into()) .await?;
     Ok( ())
 }

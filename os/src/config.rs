@@ -34,9 +34,9 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
 /// the physical memory end
-pub const MEMORY_END: usize = 0xBFFF_F000+KERNEL_DIRECT_OFFSET ;
+pub const MEMORY_END: usize = 0xffffffc0a0000000 ;
 /// The base address of control registers in Virtio_Block device
-pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
+pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x2000)];
 /// Kerneladress offset
 pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_ffc0_0000_0000;
 /// When directly map: vpn = ppn + kernel direct offset

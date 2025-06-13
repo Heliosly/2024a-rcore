@@ -1,12 +1,9 @@
 use alloc::sync::Arc;
-use ops::Ext4FileSystem;
-use spin::Lazy;
-use virtio_drivers::device::blk::VirtIOBlk;
+use lazy_init::LazyInit;
 
-use crate::drivers::block::{disk::Disk, SafeMmioTransport};
 
-use crate::drivers::block::virtio_blk::VirtioHal;
 use crate::fs::Statfs;
+use spin::Mutex;
 use crate::utils::error::{SysErrNo, TemplateRet};
 use super::VfsOps;
 
@@ -15,9 +12,8 @@ pub mod ops;
 
 
 
-pub static EXT4FS: Lazy<Arc<dyn VfsOps>> = Lazy::new(|| {
-   Arc::new(Ext4FileSystem::new(Disk::<VirtioHal,SafeMmioTransport>::new(VirtIOBlk::new(SafeMmioTransport::new()).expect("failed to create VirtIO blk device"))))
-});
+
+pub static EXT4FS: LazyInit<Arc<dyn VfsOps>> =LazyInit::new();
 
 pub fn fs_stat() -> TemplateRet< Statfs> {
     EXT4FS.statfs().map_err(|e|SysErrNo::from(e) )

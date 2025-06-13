@@ -227,6 +227,7 @@ impl<'a, T: ?Sized + 'a> Future for MutexGuard<'a, T> {
 
                     // 锁被占用，使用 WaitQueue 等待
                     // 闭包只捕获 &AtomicUsize，确保 Send + Sync
+                    info!("Race condition in Mutex");
                     let mut wait_condition_future = guard_mut_ref.lock.wq.wait_until({
                         let owner_atomic_ref = &guard_mut_ref.lock.owner_task_id;
                         move || owner_atomic_ref.load(AtomicOrdering::Relaxed) == 0

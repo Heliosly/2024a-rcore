@@ -45,6 +45,8 @@ pub fn init() {
     KERNEL_SPACE.init_by(Arc::new(Mutex::new(ms) ));
     activate_by_token(*KERNEL_PAGE_TABLE_TOKEN);
 
+      
+
 }
  /// Change page table by writing satp CSR Register use token. 
  pub fn activate_by_token(satp:usize) {

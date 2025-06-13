@@ -47,7 +47,42 @@ impl FutexWaitQueue {
     pub fn new() -> Self {
         Default::default()
     }
+/// 从队列头部移除最多 n 个等待者，并返回它们。
+/// 返回一个包含被移除节点的新的 LinkedList。
+///
+/// `LinkedList::split_off` 是实现此功能的完美工具，它可以在 O(1) 的时间内
+/// （如果 n 接近列表的开始或结束）或 O(n) 的时间内（如果 n 在中间）
+/// 将列表在指定索引处分割成两部分。
+pub fn drain_waiters(&mut self, n: usize) -> LinkedList<Arc<FutexWaiterNode>> {
+    if n == 0 {
+        return LinkedList::new();
+    }
 
+    let num_to_drain = self.waiters.len().min(n);
+
+    if num_to_drain == 0 {
+        return LinkedList::new();
+    }
+
+    // `split_off(at)` 将列表在索引 `at` 处分割。
+    // `self` 会保留 `[0, at-1]` 范围内的元素。
+    // 返回值是一个包含 `[at, len-1]` 范围内元素的新列表。
+    // 我们想要的是前 `num_to_drain` 个元素，所以我们需要交换一下。
+    let  remaining_waiters = self.waiters.split_off(num_to_drain);
+    
+    // 现在 `self.waiters` 包含我们想要移除的元素，
+    // 而 `remaining_waiters` 包含我们想要保留的元素。
+    // 我们用 `remaining_waiters` 替换 `self.waiters`，并返回旧的 `self.waiters`。
+    core::mem::replace(&mut self.waiters, remaining_waiters)
+}
+
+/// 将一个包含等待者节点的 LinkedList 附加到当前队列的尾部。
+///
+/// `LinkedList::append` 专为此设计，它可以在 O(1) 的时间内
+/// 将另一个列表的所有元素移动到当前列表的末尾。
+pub fn enqueue_waiters(&mut self, mut new_waiters: LinkedList<Arc<FutexWaiterNode>>) {
+    self.waiters.append(&mut new_waiters);
+}
     pub fn add_waiter(&mut self, node_arc: Arc<FutexWaiterNode>) {
         // 可选：基于 task_id 或 Waker::will_wake 进行去重/更新
         // 为简单和高效的 FIFO，先直接 push_back

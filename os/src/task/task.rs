@@ -18,12 +18,14 @@ use crate::task::aux::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
+use crate::task::waker::waker_from_task;
 use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC, TID2TC};
 use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use crate::utils::string::normalize_absolute_path;
 use alloc::boxed::Box;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::vec_deque::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -83,11 +85,14 @@ pub struct ProcessControlBlock {
     //     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     pub fd_table: Arc<Mutex<FdManage>>,
     pub signal_shared_state: Arc<Mutex<ProcessSignalSharedState>>,
+    pub state: Mutex<TaskStatus>,
+    pub wakers:Mutex<BTreeMap<usize,Waker>>
     //todo(heliosly)
 }
 /// `ProcessControlBlock` 的实现。
 
 impl ProcessControlBlock {
+    
 
     pub async fn get_file(&self,fd:usize)->Result<FileDescriptor, SysErrNo>{
         self.fd_table.lock().await.get_file(fd)
@@ -243,7 +248,7 @@ impl ProcessControlBlock {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-        self.memory_set
+        let _ = self.memory_set
             .lock()
             .await
             .insert_framed_area(start_va, end_va, permission, area_type);
@@ -445,6 +450,7 @@ impl ProcessControlBlock {
         let fut = UTRAP_HANDLER();
         let new_task = Arc::new(CFSTask::new(TaskControlBlock::new(
             true,
+            true,
             process_id,
             token,
             fut,
@@ -471,6 +477,12 @@ impl ProcessControlBlock {
             fd_table: Arc::new(Mutex::new(FdManage::new_with_stdio())),
             exe: Mutex::new(exe),
             signal_shared_state: Arc::new(Mutex::new(ProcessSignalSharedState::default())),
+            state: Mutex::new(TaskStatus::Runnable),
+            wakers: Mutex::new({
+                let mut map = BTreeMap::new();
+                map.insert(new_task.id(), waker_from_task(Arc::into_raw(new_task.clone())));
+                map
+            })
         };
 
         process_control_block.alloc_user_res().await;
@@ -752,6 +764,7 @@ impl ProcessControlBlock {
         let fut = UTRAP_HANDLER();
         let tcb = Arc::new(CFSTask::new(TaskControlBlock::new(
             false,
+            false,
             task_pid_usize,
             clone_token,
             fut,
@@ -775,6 +788,7 @@ impl ProcessControlBlock {
                 self.pid.0,
                 tcb.id()
             );
+            current_process().wakers.lock().await.insert(tcb.id(),waker_from_task(Arc::into_raw(tcb.clone())));
             tcb.id.0
         } else {
             let new_proc_sig_state = if flags.contains(CloneFlags::CLONE_SIGHAND) {
@@ -806,6 +820,14 @@ impl ProcessControlBlock {
                 signal_shared_state: new_proc_sig_state,
                 tasks: Mutex::new(Vec::new()),
                 exe: Mutex::new(self.exe.lock().await.clone()),
+                state: Mutex::new(TaskStatus::Runnable),
+                
+                wakers: Mutex::new({
+                    let mut map = BTreeMap::new();
+                    map.insert(tcb.id(), waker_from_task(Arc::into_raw(tcb.clone())));
+                    map
+                })
+
             });
 
             tcb.set_lead();
@@ -1012,6 +1034,13 @@ impl ProcessControlBlock {
     pub async fn join_proc(&self,waker:Waker){
          self.main_task.lock().await.join(waker);
     }
+    pub async fn wake_all_waiters(&self) {
+        let mut wait_wakers = self.wakers.lock().await;
+        for (_, waker) in wait_wakers.iter() {
+            waker.wake_by_ref(); 
+        }
+        wait_wakers.clear(); 
+    }
 }
 
 /// A unique identifier for a thread.
@@ -1084,7 +1113,8 @@ pub struct TaskControlBlock {
 }
 impl TaskControlBlock {
     pub fn new(
-        is_init: bool,
+        is_init:bool,
+        is_leader: bool,
         process_id: usize,
         page_table_token: usize,
         fut: Pin<Box<dyn Future<Output = i32> + 'static>>,
@@ -1105,7 +1135,7 @@ impl TaskControlBlock {
             wait_wakers: UnsafeCell::new(VecDeque::new()),
             need_resched: AtomicBool::new(false),
             preempt_disable_count: AtomicUsize::new(0),
-            is_leader: AtomicBool::new(false),
+            is_leader: AtomicBool::new(is_leader),
             process_id: AtomicUsize::new(process_id),
             page_table_token: UnsafeCell::new(page_table_token),
             trap_cx: UnsafeCell::new(Some(trap_cx)),
@@ -1235,9 +1265,8 @@ impl TaskControlBlock {
             *self.page_table_token.get() = token;
         }
     }
-
-    pub fn get_process(&self) -> ProcessRef {
-        Arc::clone(PID2PC.lock().get(&self.get_pid()).unwrap())
+    pub fn get_process(&self) -> Option<ProcessRef> {
+        PID2PC.lock().get(&self.get_pid()).map(Arc::clone)
     }
     pub fn need_resched(&self) -> bool {
         self.need_resched.load(Ordering::Acquire)

@@ -212,6 +212,7 @@ pub const FUTEX_WAIT_REQUEUE_PI: i32 = 11;
 pub const FUTEX_CMP_REQUEUE_PI: i32 = 12;
 pub const FUTEX_LOCK_PI2: i32 = 13;
 
+
 pub const FUTEX_WAITERS: u32 = 2147483648;
 // Futex flags
 pub const FLAGS_SHARED: i32 = 0x10;
@@ -219,3 +220,18 @@ pub const FLAGS_CLOCKRT: i32 = 0x20;
 
 // Futex bitset
 pub const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
+// FUTEX_WAKE_OP 的子操作
+// 比较类型 (存放在 val3 的 24-27 位)
+pub const FUTEX_OP_CMP_EQ: u32 = 0; // if (oldval == cmparg)
+pub const FUTEX_OP_CMP_NE: u32 = 1; // if (oldval != cmparg)
+pub const FUTEX_OP_CMP_LT: u32 = 2; // if (oldval < cmparg)
+pub const FUTEX_OP_CMP_LE: u32 = 3; // if (oldval <= cmparg)
+pub const FUTEX_OP_CMP_GT: u32 = 4; // if (oldval > cmparg)
+pub const FUTEX_OP_CMP_GE: u32 = 5; // if (oldval >= cmparg)
+
+// 操作类型 (存放在 val3 的 28-31 位)
+pub const FUTEX_OP_SET: u32 = 0;   // oparg
+pub const FUTEX_OP_ADD: u32 = 1;   // oldval + oparg
+pub const FUTEX_OP_OR: u32 = 2;    // oldval | oparg
+pub const FUTEX_OP_ANDN: u32 = 3;  // oldval & ~oparg
+pub const FUTEX_OP_XOR: u32 = 4;   // oldval ^ oparg

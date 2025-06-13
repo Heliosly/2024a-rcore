@@ -57,6 +57,8 @@ use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
 use trap::user_task_top;
 
+use crate::fs::{open_file, OpenFlags};
+
 global_asm!(include_str!("entry.asm"));
 global_asm!(include_str!("signal.S"));
 /// clear BSS segment
@@ -106,13 +108,16 @@ pub fn rust_main() -> ! {
 
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
-    // task::add_initproc("/glibc", "/glibc/busybox", "sh run-dynamic.sh");
+    // task::add_initproc("/musl   ", "/musl/busybox", "sh");
 
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
 
-    //  task::add_initproc("/disk", "/glibc/busybox", "sh /disk/run-dynamic.sh");
-    //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
+    //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
+    //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-static.sh");
+    //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-dynamic.sh");
+    //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
+    // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();
     extern  "C" {
         fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
     }

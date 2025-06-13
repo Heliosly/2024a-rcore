@@ -3,6 +3,7 @@
 use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
 use crate::fs::pipe::make_pipe;
+use crate::fs::vfs::VfsManager;
 use crate::signal::SigSet;
 use crate::syscall::flags::FaccessatMode;
 use crate::timer::{TimeVal,UserTimeSpec};
@@ -1214,7 +1215,7 @@ pub async fn sys_ppoll(
 
     // 5. 构建 parsed_requests (与 sys_poll 相同)
     let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
-    let fd_table_guard = pcb_arc.fd_table.lock().await; // 假设 fd_table 锁是 async
+    let fd_table_guard = pcb_arc.fd_table.lock().await;
 
     for (idx, user_pfd) in user_pollfds_kernel_copy.iter().enumerate() {
         let mut fd_arc_opt: Option< FileDescriptor> = None;
@@ -1675,37 +1676,38 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
     /// * `EROFS`: 尝试以只读方式挂载只读文件系统。
     /// * `EXDEV`: 尝试在不支持跨设备挂载的文件系统上挂载。
     ///
-pub async fn sys_mount(
-    special_user_ptr: *const u8,
-    dir_user_ptr: *const u8,
-    fstype_user_ptr: *const u8,
-    flags: u32,
-    data_user_ptr: *const u8,
-) -> SyscallRet{
-    trace!(
-        "[sys_mount] special: {:p}, dir: {:p}, fstype: {:p}, flags: {}, data: {:p}",
-        special_user_ptr, dir_user_ptr, fstype_user_ptr, flags, data_user_ptr
-    );
-    let pcb_arc = current_process(); // 或者同步的 current_task()
-    let token = pcb_arc.memory_set.lock().await.token(); // 或者同步的 .get_user_token()
-
-    // 从用户空间复制字符串
-    let special = translated_str(token, special_user_ptr) ;
-    let dir =  translated_str(token, dir_user_ptr) ;
-    let fstype = translated_str(token, fstype_user_ptr ) ; // MAX_FS_TYPE_LEN
-
-   
-   
-    let data_opt: Option<String> = if data_user_ptr.is_null() {
-        None
-    } else {
-        Some( translated_str(token, data_user_ptr ) ) // MAX_MOUNT_DATA_LEN
-    };
-
-    MNT_TABLE.lock().mount(special, dir, fstype, flags, data_opt)
-        .map(|_| 0) // 成功时返回0
-}
-
+    pub async fn sys_mount(
+        special_user_ptr: *const u8,
+        dir_user_ptr: *const u8,
+        fstype_user_ptr: *const u8,
+        flags: u32,
+        data_user_ptr: *const u8,
+    ) -> SyscallRet {
+        trace!(
+            "[sys_mount] special: {:p}, dir: {:p}, fstype: {:p}, flags: {}, data: {:p}",
+            special_user_ptr, dir_user_ptr, fstype_user_ptr, flags, data_user_ptr
+        );
+    
+        // --- 用户空间交互部分 (保持不变) ---
+        let pcb_arc = current_process();
+        let token = pcb_arc.memory_set.lock().await.token();
+        let special = translated_str(token, special_user_ptr);
+        let dir = translated_str(token, dir_user_ptr);
+        let fstype = translated_str(token, fstype_user_ptr);
+        let data_opt: Option<String> = if data_user_ptr.is_null() {
+            None
+        } else {
+            Some(translated_str(token, data_user_ptr))
+        };
+    
+        // --- 核心逻辑部分 (修改) ---
+        // 将所有参数委托给 VfsManager::mount 处理。
+        // VfsManager 会负责创建驱动实例、检查父目录、更新挂载表等所有工作。
+        let result = VfsManager::mount(&special, &dir, &fstype, flags, data_opt);
+    
+        // 将 VfsManager 的返回结果 (GeneralRet, 即 Result<(), SysErrNo>) 转换为系统调用返回值
+        result.map(|_| 0) // 成功时，将 Ok(()) 映射为 0
+    }
 
 /// umount 系统调用实现
 ///
@@ -1726,17 +1728,17 @@ pub async fn sys_mount(
 /// `sys_umount` 函数用于卸载指定路径上的文件系统。`flags` 参数可以用于指定卸载操作的附加选项。
 pub async fn sys_umount2(target_user_ptr: *const u8, flags: u32) -> SyscallRet {
     trace!("[sys_umount2] target: {:p}, flags: {}", target_user_ptr, flags);
+    
+    // --- 用户空间交互部分 (保持不变) ---
     let pcb_arc = current_process();
-   
-   
     let token = pcb_arc.memory_set.lock().await.token();
+    let target = translated_str(token, target_user_ptr);
 
-    let target =translated_str(token, target_user_ptr );
+    
+    let result = VfsManager::umount(&target);
 
-    MNT_TABLE.lock().umount(&target, flags)
-        .map(|_| 0)
+    result.map(|_| 0)
 }
-
 
 
 pub async  fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallRet {

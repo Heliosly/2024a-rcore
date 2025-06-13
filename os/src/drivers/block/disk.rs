@@ -153,7 +153,7 @@ impl<H: Hal, T: Transport> KernelDevOp for Disk<H, T> {
         Ok(write_len)
     }
     fn flush(dev: &mut Self::DevType) -> Result<usize, i32> {
-        dev.flush();
+        let _ = dev.flush();
         Ok(0)
     }
     fn seek(dev: &mut Self, off: i64, whence: i32) -> Result<i64, i32> {

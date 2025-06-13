@@ -388,6 +388,7 @@ impl MapArea {
                     None => return Err(crate::utils::error::SysErrNo::ENOMEM),
                 };
                 ppn = frame.ppn();
+                ppn.get_bytes_array().fill(0);
 
                 self.data_frames.insert(vpn, frame);
             }

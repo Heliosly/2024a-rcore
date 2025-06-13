@@ -4,7 +4,7 @@ use super::context::{GeneralRegisters, TrapContext};
 
 
 #[repr(C, align(16))]
-#[derive(Clone,Copy)]
+#[derive(Clone,Copy,Debug)]
 pub struct MContext {
     pub pc: usize,
     pub regs: GeneralRegisters,
@@ -30,7 +30,7 @@ impl MContext {
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct UContext {
-    pub flags: usize,
+    pub flags: u64,
     pub link: usize,
     pub stack: SignalStack,
     pub sigmask: SigSet,
