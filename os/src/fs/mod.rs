@@ -407,11 +407,11 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 //
 const INITPROC_SH:&str = "
 cd /glibc
-./libctest_testcode.sh
+./run-static.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 cd /musl
-./libctest_testcode.sh
+./run-static.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 ";

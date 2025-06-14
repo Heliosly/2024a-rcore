@@ -90,7 +90,7 @@ pub fn run_task2(mut curr: CurrentTask) {
                             //                             );
                             enable_irqs();
 
-                    trace!("[user_return]  result:{} sepc:{:#x}", tf.regs.a0,tf.sepc);
+                    trace!("[user_return]  result:{:#x} sepc:{:#x}", tf.regs.a0,tf.sepc);
                             user_return(tf);
                         }
                     }

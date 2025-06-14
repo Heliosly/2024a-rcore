@@ -343,9 +343,10 @@ pub async fn user_task_top() -> i32 {
                             && !curr.is_blocking()
                         {
                             trace!(
-                                "[user_task_top]current {} is to be preempted in user mode, allow {}",
+                                "[user_task_top]current {} is to be preempted in user mode, allow {},a0:{:#x}",
                                 curr.id(),
-                                curr.can_preempt()
+                                curr.can_preempt(),
+                                tf.regs.a0
                             );
                             curr.set_need_resched(false);
                             tf.trap_status = TrapStatus::Blocked;

@@ -200,8 +200,16 @@ impl FdManage {
         Err(SysErrNo::EMFILE)
     }
  
-    
-
+    pub fn close_on_exec(&mut self) {
+        let fd_table = &mut self.table;
+        for idx in 0..fd_table.len() {
+            if let Some(fd) = &fd_table[idx] {
+                if fd.cloexec() {
+                    fd_table[idx] = None;
+                }
+            }
+        }
+    }
 /// 在文件描述符表中查找与指定路径匹配的文件描述符。
 ///
 /// # 参数

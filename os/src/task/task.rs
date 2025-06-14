@@ -687,6 +687,7 @@ impl ProcessControlBlock {
         //将设置了O_CLOEXEC位的文件描述符关闭 todo(heliosly)
         // update trap_cx ppn
         info!("exec entry_point:{:#x} sp:{:#x}", entry_point, user_sp);
+        self.fd_table.lock().await.close_on_exec();
         let binding = self.main_task.lock().await;
         let trap_cx: &mut TrapContext = binding.get_trap_cx().unwrap();
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
