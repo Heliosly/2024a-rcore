@@ -1,5 +1,6 @@
 GDBSERVER = localhost:1234
 GDB = gdb-multiarch
+GDBt = /home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 all:
 
 
@@ -11,7 +12,7 @@ run:
 	qemu-system-riscv64 \
    	  -machine virt \
 	  -kernel kernel-rv \
-	  -m 128M \
+	  -m 1024M \
 	  -nographic \
 	  -smp 1 \
 	  -bios default \
@@ -25,7 +26,7 @@ gdbserver:
 	qemu-system-riscv64 \
    	  -machine virt \
 	  -kernel kernel-rv \
-	  -m 128M \
+	  -m 1024M \
 	  -nographic \
 	  -smp 1 \
 	  -bios default \
@@ -46,5 +47,6 @@ all-debug:
 
 gdb:
 	$(GDB) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64"
-
+gdb2:
+	$(GDBt) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64" 
 .PHONY: all run gdbserver gdb

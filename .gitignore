@@ -4,12 +4,14 @@
 .idea
 
 target
+os/disk.img
 os/src/link_app.S
 os/last-*
-
+os/push_remotes.sh
 os/.gdb_history
 os/target
 kernel-rv
+kernel-la
 os/sdcard*
 easy-fs/Cargo.lock
 easy-fs/target/*
@@ -19,10 +21,8 @@ tools/
 pushall.sh
 *.bak
 os/sdcard-rv.img
-os/disk.img
 os/fs.img
 os/mnt
 os/build
 user/
 ci-user/
-.DS_Store

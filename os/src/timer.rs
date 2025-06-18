@@ -171,7 +171,9 @@ pub fn get_time_us() -> usize {
 
 /// Get current time in nanoseconds
 pub fn get_time_ns() -> usize {
-    time::read() * NANO_PER_SEC / CLOCK_FREQ
+    let ticks = time::read() as u128;
+    let nanos = ticks * (NANO_PER_SEC as u128) / (CLOCK_FREQ as u128);
+    nanos as usize
 }
 
 pub fn get_time_ticks() -> usize {

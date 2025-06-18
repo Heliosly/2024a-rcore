@@ -114,7 +114,7 @@ pub fn rust_main() -> ! {
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
-    //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-static.sh");
+    //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
     //  task::add_initproc("/disk", "/musl/busybox", "sh /disk/run-dynamic.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
     // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();

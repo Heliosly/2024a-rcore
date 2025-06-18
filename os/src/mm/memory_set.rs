@@ -12,6 +12,7 @@ use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateErro
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
 use alloc::collections::btree_map::BTreeMap;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -465,7 +466,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             // log::info!("interp {}", interp);
 
             let interp_inode = open_file(&interp, OpenFlags::O_RDONLY, NONE_MODE)
-                .unwrap()
+                .expect(&format!("can't find dl path :{}",interp))
                 .file()
                 .ok();
             let interp_file = interp_inode.unwrap();

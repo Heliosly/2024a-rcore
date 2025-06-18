@@ -1,6 +1,7 @@
 
 use linux_raw_sys::general::MAX_CLOCKS;
-use alloc::vec;
+use alloc::{string::String, vec};
+use riscv::register::time;
 use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
@@ -46,9 +47,26 @@ pub async fn sys_clock_gettime(clock_id: usize, tp: usize) -> SyscallRet {
     if clock_id >= MAX_CLOCKS as usize {
         return Err(SysErrNo::EINVAL);
     }
-    current_process().memory_set.lock().await.
-   safe_put_data( tp as *mut UserTimeSpec,timer::get_usertime() ).await  ?;
 
+    let timer=timer::get_usertime();
+    trace!("[sys_clock_gettime],timer:{:?}",timer);
+  
+   match clock_id {
+    0 /* CLOCK_REALTIME */ => {
+        let base = 1750233641; 
+        let mut ts = get_usertime();
+        ts.tv_sec += base;
+        current_process().memory_set.lock().await.
+   safe_put_data(tp as *mut UserTimeSpec, ts).await?;
+    }
+    1 /* CLOCK_MONOTONIC */ => {
+        let ts = get_usertime();
+        current_process().memory_set.lock().await.
+   safe_put_data(tp as *mut UserTimeSpec, ts).await?;
+    }
+    _ => return Err(SysErrNo::EINVAL),
+}
+    
     Ok(0)
 }
 pub async fn sys_nanosleep(req: *const UserTimeSpec, rem: *mut UserTimeSpec) -> SyscallRet {
@@ -89,7 +107,7 @@ info!(
         // 将剩余时间写回用户空间
         put_data(token, rem, remaining_spec)?;
         // 被信号打断，返回 EINTR
-        return Err(SysErrNo::EINTR);
+        return Err(SysErrNo::ERESTART);
     }
 
     // 6. 如果 current_time >= deadline，就正常返回 0
@@ -141,7 +159,7 @@ pub async fn sys_clock_nanosleep(
                 tv_nsec: delta % 1_000_000_000,
             })?;
            
-            return Err(SysErrNo::EINTR);
+            return Err(SysErrNo::ERESTART);
         }
     }
 
@@ -214,55 +232,87 @@ pub async fn sys_utimensat(
     dirfd: i32,
     path: *const u8,
     times: *const UserTimeSpec,
-    _flags: usize,
+    flags: usize,
 ) -> SyscallRet {
 
-    pub const UTIME_NOW: usize = 0x3fffffff;
-    pub const UTIME_OMIT: usize = 0x3ffffffe;
-    if dirfd == -1 {
-        return Err(SysErrNo::EBADF);
-    }
-    if dirfd == -1 {
-        return Err(SysErrNo::EBADF);
-    }
-    let pcb =current_process();
-    let token = pcb.memory_set.lock().await.token();
-    let path = if !path.is_null() {
-        translated_str(token, path)
-    } else {
-        alloc::string::String::new()
+const AT_FDCWD: i32 = -100; // 代表当前工作目录
+const AT_SYMLINK_NOFOLLOW: usize = 0x100; // 不跟随符号链接
+const AT_EMPTY_PATH: usize = 0x1000; // 允许路径为空字符串
+
+ const UTIME_NOW: usize = 0x3fffffff; // 设置为当前时间
+ const UTIME_OMIT: usize = 0x3ffffffe; // 保持时间不变
+
+ trace!(
+    "[sys_utimensat] dirfd:{}, path:{:?}, times:{:?}, flags:{:#x}",
+    dirfd, path, times, flags
+);
+if dirfd!=AT_FDCWD&&dirfd<0{
+    return Err(SysErrNo::EBADF);
+}
+
+let pcb = current_process();
+let token = pcb.memory_set.lock().await.token();
+
+// 1. 从用户空间转换路径。NULL 指针被视为空字符串。
+let path_str = if path.is_null() {
+    String::new()
+} else {
+    translated_str(token, path)
+};
+
+// 2. 解析用户传入的时间参数。
+let now_sec = (get_time_ms() / 1000) as u32;
+let (mut atime_sec, mut mtime_sec) = (None, None);
+
+if times.is_null() {
+    // 如果 times 指针为 NULL，则访问和修改时间都设为当前时间。
+    atime_sec = Some(now_sec);
+    mtime_sec = Some(now_sec);
+} else {
+    // 从用户空间拷贝 timespec 结构体数据。
+    let atime = get_data(token, times);
+    let mtime = get_data(token, unsafe { times.add(1) });
+
+    match atime.tv_nsec {
+        UTIME_NOW => atime_sec = Some(now_sec), // 设置为当前时间
+        UTIME_OMIT => (),                       // 保持不变
+        _ => atime_sec = Some(atime.tv_sec as u32),
     };
+    match mtime.tv_nsec {
+        UTIME_NOW => mtime_sec = Some(now_sec),
+        UTIME_OMIT => (),
+        _ => mtime_sec = Some(mtime.tv_sec as u32),
+    };
+}
 
-    trace!("[sys_utimensat] dirfd:{:#?},path:{},times:{:#?},_flags:{}",dirfd,path,times,_flags);
-    // TODO(ZMY) 为了过测试,暂时特殊处理一下
-    if path == "/dev/null/invalid" {
-        return Err(SysErrNo::ENOTDIR);
-    }
-    let nowtime = (get_time_ms() / 1000) as u32;
+// 3. 根据路径和标志确定要操作的目标 INode。
+let target_inode = if path_str.is_empty() {
+    // --- 情况1：path 是 NULL 或空字符串 ---
+    // 操作应该作用于 dirfd 本身。
 
-    let (mut atime_sec, mut mtime_sec) = (None, None);
-
-    if times as usize == 0 {
-        atime_sec = Some(nowtime);
-        mtime_sec = Some(nowtime);
-    } else {
-        let atime = get_data(token, times);
-        let mtime = get_data(token, unsafe { times.add(1) });
-        match atime.tv_nsec {
-            UTIME_NOW => atime_sec = Some(nowtime),
-            UTIME_OMIT => (),
-            _ => atime_sec = Some(atime.tv_sec as u32),
-        };
-        match mtime.tv_nsec {
-            UTIME_NOW => mtime_sec = Some(nowtime),
-            UTIME_OMIT => (),
-            _ => mtime_sec = Some(mtime.tv_sec as u32),
-        };
+    // 根据 man page，如果 path 是空字符串 ""，则必须设置 AT_EMPTY_PATH 标志。
+    // 如果 path 是 NULL 指针，则不需要此标志。
+    if !path.is_null() && (flags & AT_EMPTY_PATH) == 0 {
+        return Err(SysErrNo::ENOENT); // 路径是 "" 但未设置 AT_EMPTY_PATH
     }
 
-    let abs_path = pcb.resolve_path_from_fd(dirfd , &path, true).await?;
-    let osfile = open_file(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
-    osfile.inner.lock().inode
-    .set_timestamps(atime_sec, mtime_sec, None)?;
-    return Ok(0);
+    // 在这种情况下，dirfd 必须是一个有效的文件描述符，不能是 AT_FDCWD。
+    if dirfd == AT_FDCWD {
+        return Err(SysErrNo::EBADF);
+    }
+    pcb.get_file(dirfd as usize ).await?.file()?
+} else {
+    // --- 情况2：path 是一个非空字符串 ---
+
+    let follow_symlinks = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+
+    let abs_path = pcb.resolve_path_from_fd(dirfd, &path_str, follow_symlinks).await?;
+    
+    open_file(&abs_path, OpenFlags::O_RDONLY, 0o666)?.file()?
+};
+
+// 4. 在最终确定的 inode 上设置时间戳。
+target_inode
+    .set_timestamps(atime_sec, mtime_sec, None)
+    .map(|_| 0) // 成功则返回 0
 }

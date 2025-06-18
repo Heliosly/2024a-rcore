@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 
-use crate::{ drivers, fs::{mount::MNT_TABLE, vfs::VfsManager}, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
+use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
@@ -277,7 +277,10 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     let abs_path = &fix_path(abs_path);
     // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
     let path =abs_path;
-
+    let (parent,_)= get_parent_path_and_filename(&path);
+    if find_device(&parent){
+        return Err(SysErrNo::ENOTDIR)
+    }
     // info!("open_path:{:?},open_ops:{}",path,ops.name());
     // println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
     let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
@@ -285,6 +288,8 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     if has_inode(abs_path) {
         inode = find_inode_idx(abs_path);
     } else {
+       
+        
         let found_res =root_inode().find(&path, flags, 0);
         if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
             warn!("[open_file] Error: A component in the path is not a directory: {:?}", &path);
@@ -531,6 +536,11 @@ pub async  fn create_init_files() -> GeneralRet {
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
         DEFAULT_DIR_MODE,
     )?;
+    open_file(
+        "/tmp",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
     //注册设备/dev/misc/rtc
     register_device("/dev/misc/rtc");
     //创建/etc文件夹
@@ -635,14 +645,8 @@ pub fn init(){
     drivers::system_init_with_multi_disk();
     
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
-    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
-    create_file("/usr/rsu", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
+    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
     VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
-    println!("Mount table after mounting /dev/vdb:");
-    MNT_TABLE.lock().entries.iter().for_each(|entry| {
-        println!("Device: {}, Mount Point: {}", entry.special_device, entry.mount_point);
-    });
-
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();

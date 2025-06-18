@@ -45,7 +45,7 @@ use crate::trap::{disable_irqs, TrapContext, TrapStatus, UContext};
 use crate::utils::error::SysErrNo;
 use alloc::sync::Arc;
 pub use sigact::*;
-pub use signal::*; // 假设 current_task() 返回 Arc<Task>
+pub use signal::*; 
 
 // 通常信号编号从 1 开始。0 不是有效信号。
 pub const NSIG: usize = 64; // 支持的信号数量 (Linux x86_64 通常是64)
@@ -183,7 +183,7 @@ pub async fn send_signal_to_task(task_arc: &Arc<Task>, sig: Signal) -> Result<()
     // 4. 唤醒该任务，让调度器有机会运行它，
     //    以便它在回用户态前调用 handle_pending_signals
     let task_ptr: *const Task = Arc::as_ptr(task_arc);
-    info!("[send_signal_to_task] wake by tid:{}",current_task_id());
+    info!("[send_signal_to_task] wake by tid:{}", current_task_id());
     crate::task::waker::wakeup_task(task_ptr);
 
     Ok(())
@@ -192,20 +192,19 @@ pub async fn handle_pending_signals(res: Option<usize>) {
     let task_arc = current_task();
 
     let pid = task_arc.get_pid();
-    let pcb_arc =  match task_arc.get_process(){
+    let pcb_arc = match task_arc.get_process() {
         Some(o) => o,
-        None => return ,
+        None => return,
     };
-    
-    if pcb_arc.is_zombie().await||task_arc.is_exited(){
-       return ;
+
+    if pcb_arc.is_zombie().await || task_arc.is_exited() {
+        return;
     }
     // 1. 获取线程和进程的信号状态锁
     let mut task_state = task_arc.signal_state.lock().await;
     let mut process_state = pcb_arc.signal_shared_state.lock().await;
     let token = unsafe { *task_arc.page_table_token.get() };
     loop {
-  
         // 可能有多个信号需要处理
         let mut signal_to_deliver: Option<Signal> = None;
         let mut delivered_from_thread_pending = false;
@@ -268,9 +267,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
             if sig == Signal::SIGSTOP {
                 log::info!(
                     "Process {} (task {}) received SIGSTOP, stopping all tasks.",
-                   
                     pid,
-
                     task_arc.id()
                 );
                 unimplemented!();
@@ -302,7 +299,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
             // -- 执行动作 --
             match action.handler {
                 SIG_DFL => {
-                    perform_default_action_for_process(&pcb_arc, &task_arc.0, sig).await ;
+                    perform_default_action_for_process(&pcb_arc, &task_arc.0, sig).await;
                     // 默认动作可能影响整个进程
                 }
                 SIG_IGN => { /* 忽略 */ }
@@ -314,7 +311,6 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                         sig,
                         user_handler_addr
                     );
-                    let sig_num: usize = sig.into();
                     // 此时需要调用信号处理函数，注意调用的方式是：
                     // 通过修改trap上下文的pc指针，使得trap返回之后，直接到达信号处理函数
                     // 因此需要处理一系列的trap上下文，使得正确传参与返回。
@@ -327,29 +323,32 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                     let mut task_state = task_arc.signal_state.lock().await;
                     let tf = task_arc.get_trap_cx().unwrap();
                     const SYSCALL_SIGNALRET: usize = 139;
-                    const EINTR_USIZE:usize =(-(SysErrNo::EINTR as isize)) as usize;
+
+                    const EINTR_USIZE: usize = (-(SysErrNo::EINTR as isize)) as usize;
+                    const ERESTART_USIZE: usize = (-(SysErrNo::ERESTART as isize)) as usize;
                     if tf.regs.a7 == SYSCALL_SIGNALRET {
-                        panic!("ub");
+                        unreachable!()
                     }
                     if let Some(res) = res {
                         if action.flags.contains(SigActionFlags::SA_RESTART)
-                        &&tf.regs.a0 == EINTR_USIZE
-                        
-                        // && tf.regs.a7!=SYSCALL_FUTEX
-                    {
-                        tf.trap_status = TrapStatus::Blocked;
-                        
-                        tf.set_arg0(tf.origin_a0);
-                        tf.set_origin_a0(EINTR_USIZE);
+                            && tf.regs.a0 == ERESTART_USIZE&&sig!=Signal::SIGRT2
+                        {
+                            tf.trap_status = TrapStatus::Blocked;
 
-                        info!("[handle_signals]syscall will be restarted a0:{:#x}",tf.regs.a0);
-                    }
-                    else{
-                        info!("[do_signal] syscall was interrupted res:{:#x}",res);
-                        tf.set_arg0(res);
+                            tf.set_arg0(tf.origin_a0);
+                            tf.set_origin_a0(EINTR_USIZE);
+
+                            task_state.is_restart = true;
+                            info!(
+                                "[handle_signals]syscall will be restarted a0:{:#x}",
+                                tf.regs.a0
+                            );
+                        } else {
+                            info!("[do_signal] syscall was interrupted res:{:#x}", res);
+                            tf.set_arg0(EINTR_USIZE);
+                        }
                     }
                     
-                }
                     task_state.last_context = Some(*tf);
                     let trap_frame = task_arc.get_trap_cx().unwrap();
                     task_state.sig_info = false;
@@ -365,10 +364,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                     };
 
                     info!("signal use stack: {:#x}", sp);
-                    let restorer = {
-                      
-                        start_signal_trampoline as usize
-                    };
+                    let restorer = { start_signal_trampoline as usize };
 
                     info!(
                         "restorer :{:#x}, handler: {:#x},a0:{} signal flags:{:#?}",
@@ -391,10 +387,9 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                         // 注意16字节对齐
                         sp = (sp - core::mem::size_of::<SigInfo>()) & !0xf;
                         let mut info_to_write = SigInfo::default();
-
                         // 3. 填充基本字段
                         info_to_write.si_signo = sig as u32;
-                        info_to_write.si_errno = 0; 
+                        info_to_write.si_errno = 0;
                         info_to_write.si_code = SI_TKILL as u32;
 
                         unsafe {
@@ -414,10 +409,7 @@ pub async fn handle_pending_signals(res: Option<usize>) {
                         let ucontext =
                             UContext::new(task_arc.get_trap_cx().unwrap(), original_thread_mask);
 
-                        debug!(
-                            "[Signal Delivery] Putting UContext at sp: {:#x} ",
-                            sp
-                        );
+                        debug!("[Signal Delivery] Putting UContext at sp: {:#x} ", sp);
                         debug!(
                             "[Signal Delivery] UContext contains pc: {:#x}",
                             ucontext.mcontext.pc
@@ -449,12 +441,10 @@ pub async fn handle_pending_signals(res: Option<usize>) {
             task_state = task_arc.signal_state.lock().await;
             process_state = pcb_arc.signal_shared_state.lock().await;
             task_state.sigmask = original_thread_mask; // 恢复掩码（如果没进用户处理函数）
-
         } else {
             // 没有需要处理的信号了
             break;
         }
-
     }
     drop(task_state);
     drop(task_arc);
@@ -470,10 +460,7 @@ pub async fn load_trap_for_signal() -> bool {
     let task = current_task();
     let mut sig_state = task.signal_state.lock().await;
 
-            info!(
-                "[sys_sigreturn] ",
-          
-            );
+    info!("[sys_sigreturn] ",);
     // `sigreturn` 应该只在从一个 SA_SIGINFO 信号处理器返回时发生。
     if let Some(old_trap_frame) = sig_state.last_context.take() {
         // 既然要返回，就清除 sig_info 标志
@@ -481,10 +468,9 @@ pub async fn load_trap_for_signal() -> bool {
         unsafe {
             // 1. 获取当前的中断上下文。对于一个系统调用，它的 `sp` 指向用户栈。
             let now_trap_frame: &mut TrapContext = task.get_trap_cx().unwrap();
-const EINTR_USIZE:usize =(-(SysErrNo::EINTR as isize)) as usize;
             let ucontext_ptr = now_trap_frame.get_sp() as *const UContext;
             *now_trap_frame = old_trap_frame;
-           
+
             if sig_state.sig_info {
                 let user_ctx = match get_target_ref(current_token().await, ucontext_ptr) {
                     Ok(ctx) => &*ctx,
@@ -498,38 +484,34 @@ const EINTR_USIZE:usize =(-(SysErrNo::EINTR as isize)) as usize;
                 };
 
                 user_ctx.mcontext.restore(now_trap_frame);
-             if now_trap_frame.origin_a0 ==EINTR_USIZE {
-                
-                now_trap_frame.sepc-=4;
-            }
-                sig_state.sigmask = user_ctx.sigmask;
- info!(
-                "[sys_sigreturn]info "
-               
-            );
-            }
-            // 3. 从用户空间读取 UContext 结构。
 
-            // 4. 使用你已经写好的 MContext::restore 辅助函数来恢复所有寄存器和PC。
-            //    这是最关键的一步，它能正确地恢复完整的机器状态。
+                sig_state.sigmask = user_ctx.sigmask;
+                info!("[sys_sigreturn]info ");
+            }
+             
+                // info!("[sys_sigreturn]pre sepc:{}, mContext: sepc:{} ",sig_state.now_trap_frame.sepc);
+
+            if sig_state.is_restart {
+                now_trap_frame.sepc -= 4;
+            }
 
             info!(
                 "[sys_sigreturn]after restore now trap frame sepc:{:#x} mcontext sp:{:#?},a0:{} ",
                 now_trap_frame.sepc, ucontext_ptr, now_trap_frame.regs.a0
             );
-            // 5. 从 UContext 中恢复信号掩码。
         }
 
         // 成功准备好了返回到用户态的上下文。
         true
     } else {
         // 如果在不该调用的时候被调用了（例如，不是从 SA_SIGINFO 处理器返回），
+        warn!("This system call should not be called");
         // 说明可能有其他逻辑错误。目前我们只报告说没有加载任何上下文。
         false
     }
 }
 
-pub async  fn perform_default_action_for_process(
+pub async fn perform_default_action_for_process(
     pcb_arc: &ProcessRef,
     _current_task_arc: &TaskRef,
     sig: Signal,
@@ -542,7 +524,7 @@ pub async  fn perform_default_action_for_process(
                 pcb_arc.pid.0,
                 sig
             );
-                exit_proc((128 + sig as usize) as i32).await;
+            exit_proc((128 + sig as usize) as i32).await;
             // pcb_arc.terminate_all_tasks_and_self();
         }
         SignalDefaultAction::Ignore => {}
@@ -564,7 +546,6 @@ pub async  fn perform_default_action_for_process(
         }
         SignalDefaultAction::ForceTerminateOrStop => {
             unreachable!("SIGKILL/SIGSTOP default actions should be handled earlier in handle_pending_signals");
-
         }
     }
 }

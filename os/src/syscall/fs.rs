@@ -84,7 +84,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .map_err(|_| SysErrNo::EIO)?;
             Ok(bytes)
         }
-        None => {print!("none");Err(SysErrNo::EBADF)},
+        None => Err(SysErrNo::EBADF),
     }
 }
 pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
@@ -199,7 +199,7 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
     let file = table.get_file(fd)?.any();
     put_data(token, st, file.fstat())? ;
     Ok(0)
-         
+
     
  
     
@@ -267,7 +267,7 @@ pub async  fn sys_fstatat(
     }
 
     // 4. 在 VFS 中查找 inode，并写回 Kstat
-    let inode = find_inode(&full_path, open_flags)?;
+    let inode = open_file(&full_path, open_flags,0)?;
     put_data(token, kst, inode.fstat())?;
 
     Ok(0)
@@ -722,15 +722,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
 
         // 调用文件对象的 read 方法，传入 UserBuffer
         // 文件系统的 read 实现将通过 UserBuffer 直接写入用户内存。
-        let read_result = match file_descriptor.abs() { // 获取底层的 File Trait 对象
-            Ok(file_trait_obj) => file_trait_obj.read(user_buffer).await, // user_buffer 在此被消耗
-            Err(e) => { // .file() 本身返回错误 (例如 StaleFd，表示文件描述符已失效)
-                if total_bytes_read > 0 { return Ok(total_bytes_read); } // 如果已经读了一部分，返回已读字节数
-                else { return Err(e); /* 或者需要将此错误映射到 SysErrNo */ }
-            }
-        };
-
-
+        let read_result =  file_descriptor.any().read(user_buffer).await;
         match read_result {
             Ok(0) => {
                 // 文件到达末尾 (EOF)。返回到目前为止总共读取的字节数。
@@ -960,17 +952,8 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
         // 而 File::write 方法期望 UserBuffer 作为参数，它会从这个 UserBuffer "读取" 数据并写入文件。
         
         // 调用文件对象的 write 方法，传入 UserBuffer
-        let write_result = match file_descriptor.abs() { // 获取底层的 File Trait 对象
-            Ok(file_trait_obj) => file_trait_obj.write(user_buffer).await, // user_buffer 在此被消耗
-            Err(e) => { // .file() 本身返回错误 (例如 StaleFd)
-                if total_bytes_written > 0 { return Ok(total_bytes_written); }
-                else {
-                    // println!("err0:{:#?}",e);
-
-                     return Err(e); }
-                
-            }
-        };
+        let write_result =  file_descriptor.any().write(user_buffer).await ;// 获取底层的 File Trait 对象
+            
 
         match write_result {
             Ok(0) => {
@@ -1142,7 +1125,7 @@ pub async fn sys_ppoll(
         let result: SyscallRet;
         if tmo_user_ptr.is_null() { // 无限等待
             sleep_until(None).await;
-            result = Err(SysErrNo::EINTR); // 假设被信号中断
+            result = Err(SysErrNo::ERESTART); // 假设被信号中断
         } else {
             let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
             let token_temp = pcb_arc_temp.memory_set.lock().await.token();

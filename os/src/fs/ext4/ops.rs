@@ -571,6 +571,13 @@ fn set_timestamps(
     mtime: Option<u32>,
     ctime: Option<u32>,
 ) -> SyscallRet {
+    trace!(
+        "[set_timestamps] path = {}, atime = {:?}, mtime = {:?}, ctime = {:?}",
+        self.path(),
+        atime,
+        mtime,
+        ctime
+    );
     let file = self.file.borrow_mut();
     let c_path = file.get_path();
     let c_path = c_path.into_raw();
