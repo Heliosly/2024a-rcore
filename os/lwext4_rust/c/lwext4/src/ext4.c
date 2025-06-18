@@ -471,20 +471,6 @@ Finish:
 	return r;
 }
 
-// static struct ext4_mountpoint *ext4_get_mount(const char *path)
-// {
-// 	for (size_t i = 0; i < CONFIG_EXT4_MOUNTPOINTS_COUNT; ++i) {
-
-// 		if (!s_mp[i].mounted)
-// 			continue;
-
-// 		if (!strncmp(s_mp[i].name, path, strlen(s_mp[i].name)))
-// 			return &s_mp[i];
-// 	}
-
-// 	return NULL;
-// }
-
 static struct ext4_mountpoint *ext4_get_mount(const char *path)
 {
 	struct ext4_mountpoint *best_mp = NULL;
