@@ -53,7 +53,6 @@
 #include <ext4_xattr.h>
 #include <ext4_journal.h>
 
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -505,7 +504,6 @@ static struct ext4_mountpoint *ext4_get_mount(const char *path)
 			}
 		}
 	}
-	puts("ext4_mount");
 	return best_mp;
 }
 
