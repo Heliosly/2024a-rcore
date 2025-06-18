@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 
-use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
+use crate::{ drivers, fs::{mount::MNT_TABLE, vfs::VfsManager}, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
@@ -635,8 +635,14 @@ pub fn init(){
     drivers::system_init_with_multi_disk();
     
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
-    // create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
-    // VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
+    create_file("/usr/rsu", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
+    VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    println!("Mount table after mounting /dev/vdb:");
+    MNT_TABLE.lock().entries.iter().for_each(|entry| {
+        println!("Device: {}, Mount Point: {}", entry.special_device, entry.mount_point);
+    });
+
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();

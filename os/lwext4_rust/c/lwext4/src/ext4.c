@@ -53,7 +53,6 @@
 #include <ext4_xattr.h>
 #include <ext4_journal.h>
 
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -474,17 +473,26 @@ Finish:
 
 static struct ext4_mountpoint *ext4_get_mount(const char *path)
 {
+	struct ext4_mountpoint *best_mp = NULL;
+	size_t longest_match_len = 0;
 	for (size_t i = 0; i < CONFIG_EXT4_MOUNTPOINTS_COUNT; ++i) {
-
 		if (!s_mp[i].mounted)
 			continue;
 
-		if (!strncmp(s_mp[i].name, path, strlen(s_mp[i].name)))
-			return &s_mp[i];
+		const char* mp_name = s_mp[i].name;
+		size_t current_mp_name_len = strlen(mp_name);
+		if(current_mp_name_len <= longest_match_len)
+			continue;
+		else{
+			if (!strncmp(mp_name, path, current_mp_name_len)){
+				best_mp = &s_mp[i];
+				longest_match_len = current_mp_name_len;
+			}
+		}
 	}
-
-	return NULL;
+	return best_mp;
 }
+
 
 __unused
 static int __ext4_journal_start(const char *mount_point)
