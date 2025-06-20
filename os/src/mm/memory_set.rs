@@ -5,6 +5,7 @@ use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_T
 use crate::syscall::flags::MremapFlags;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::{current_process, current_token};
+use crate::timer::get_time_ticks;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
@@ -376,56 +377,15 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             else  if ph.get_type().unwrap()== xmas_elf::program::Type::Tls  {
 
                 
-                // let mem_size = ph.mem_size() as usize;
-                // let file_size = ph.file_size() as usize;
-                // let file_offset = ph.offset() as usize;
-                // let tls_align = ph.align() as usize;
-                // if tls_align > PAGE_SIZE {
-                //     // 这需要更复杂的对齐分配逻辑，这里我们先 panic 或报错
-                //     // 实际上，大多数情况下 ph.align() 不会大于 PAGE_SIZE
-                //     log::error!("[map_elf_tls] PT_TLS p_align ({}) > PAGE_SIZE ({}) - UNSUPPORTED ALIGNMENT", tls_align, PAGE_SIZE);
-                //     // return Err("Unsupported TLS alignment"); // 或者 panic
-                //     tls = 0; // 表示失败或不支持
-                //     continue;
-                // }
-                // // TLS 段权限一般是可读写，且不执行
-                // let map_perm = MapPermission::U | MapPermission::R | MapPermission::W;
-                // let npages=(mem_size + PAGE_SIZE - 1) / PAGE_SIZE;
-                // let start_vpn=self.areatree.alloc_pages(npages).unwrap();
-                // let end_vpn =VirtPageNum::from(start_vpn.0+npages);
-                // // 创建映射区域
-                // let map_area = MapArea::new(
-                //     start_vpn.into(),
-                //     end_vpn.into(),
-                //     MapType::Framed,
-                //     map_perm,
-                //     MapAreaType::Tls,
-                // );
-                // // 从文件中复制初始化数据（tdata）
-                // let data = &elf.input[file_offset..file_offset + file_size];
             
-                // // 把映射区域加入内存管理，同时初始化内存内容
-                // self.push_with_offset(map_area, 0, Some(data));
-            
-                // tls=VirtAddr::from(start_vpn).0+mem_size;
-
-                // warn!("[map_elf]tls:{:#x}",tls);
-                // if tls % tls_align != 0 {
-                //     // 这种情况理论上不应该发生，如果 tls_align <= PAGE_SIZE 且是2的幂
-                //     log::warn!("[map_elf_tls] Page-aligned TLS base 0x{:x} does not meet align 0x{:x}", tls, tls_align);
-                //     // 这里可能需要失败，或者尝试在分配的页面内向上调整基址（如果空间允许）
-                //     // 但这会使 tp 的计算复杂化，因为你可能不再使用整个分配的页面作为 TLS 块。
-                //     // 最好的办法是确保分配器返回的地址本身就满足对齐。
-                //     // 为了演示，我们先假设它满足，或者这个问题需要单独解决。
-                // } 
-                // // 记录 TLS 基址，方便 TLS 访问
                        }
         }
         Ok((max_end_vpn, header_va.into(),tls))
     }
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp_base and entry point.
-    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize,Vec<Aux>) {
+    /// 
+    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize,Vec<Aux>,bool) {
         let mut auxv = Vec::new();
         let mut memory_set = Self::new_from_kernel();
         // map trampoline
@@ -498,6 +458,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         auxv.push(Aux::new(AuxType::CLKTCK, 100 as usize));
         auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
+  
         let (max_end_vpn, head_va,_tls) = memory_set.map_elf(&elf, VirtAddr(0)).unwrap();
          // Get ph_head addr for auxv
          let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
@@ -541,6 +502,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             user_heap_bottom,
             entry_point,
             auxv,
+            is_dl,
         )
     }
    

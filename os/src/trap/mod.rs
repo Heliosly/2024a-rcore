@@ -22,8 +22,7 @@ use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task,
-    run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus,
+    current_process, current_task, current_task_may_uninit, exit_current, exit_proc, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
@@ -301,7 +300,7 @@ pub async fn user_task_top() -> i32 {
                         .await
                         .is_err()
                     {
-                        exit_current(-2).await;
+                        exit_proc(-2).await;
                         log_page_fault_error(scause, stval, sepc)
                     }
                 }

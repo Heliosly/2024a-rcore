@@ -53,7 +53,7 @@ pub async fn sys_clock_gettime(clock_id: usize, tp: usize) -> SyscallRet {
   
    match clock_id {
     0 /* CLOCK_REALTIME */ => {
-        let base = 1750233641; 
+        let base = 0; 
         let mut ts = get_usertime();
         ts.tv_sec += base;
         current_process().memory_set.lock().await.
@@ -315,4 +315,56 @@ let target_inode = if path_str.is_empty() {
 target_inode
     .set_timestamps(atime_sec, mtime_sec, None)
     .map(|_| 0) // 成功则返回 0
+}
+
+pub async  fn sys_sched_getaffinity(
+    pid: i32,
+    cpusetsize: usize,
+    user_mask: *mut u8,
+) -> SyscallRet {
+    trace!(
+        "[sys_sched_getaffinity] pid:{}, cpusetsize:{}, user_mask:{:?}",
+        pid,
+        cpusetsize,
+        user_mask
+    );
+
+    if cpusetsize < 1 || cpusetsize > 1024 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if user_mask.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 获取当前任务的 CPU 掩码
+    
+    // 将掩码写入用户空间
+    let token = current_token().await;
+    current_process().manual_alloc_type_for_lazy(user_mask).await?;
+    put_data(token, user_mask, 0)?;
+
+    Ok(0)
+}
+pub  fn sys_sched_setaffinity(
+    pid: i32,
+    cpusetsize: usize,
+    user_mask: *const u8,
+) -> SyscallRet {
+    trace!(
+        "[sys_sched_setaffinity] pid:{}, cpusetsize:{}, user_mask:{:?}",
+        pid,
+        cpusetsize,
+        user_mask
+    );
+
+    if cpusetsize < 1 || cpusetsize > 1024 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if user_mask.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    return Ok(0);
 }

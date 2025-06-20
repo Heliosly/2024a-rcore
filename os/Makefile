@@ -23,12 +23,13 @@ KERNEL_ENTRY_PA := 0x80200000
 OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
-# GDB Dashboard 支持
+GDB Dashboard 支持
 ifeq ($(shell which riscv64-unknown-elf-gdb),)
 GDB_PATH := gdb
 else
-GDB_PATH := riscv64-unknown-elf-gdb
+GDB_PATH := /home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 endif
+
 gdb := $(GDB_PATH) 
 
 # Building mode argument
@@ -75,13 +76,19 @@ run: run-inner
 run-inner: build
 	@qemu-system-riscv64 \
 		-machine virt \
-		-nographic \
+		-kernel $(KERNEL_ELF) \
 		-m 1024M \
-		-bios $(BOOTLOADER) \
-		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
-		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0\
-		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
+		-nographic \
+		-smp 1 \
+		-bios default \
+		-drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+		-no-reboot \
+		-device virtio-net-device,netdev=net \
+		-netdev user,id=net \
+		-rtc base=utc\
+		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+	
 
 gdb: build
 	@tmux new-session -d \
@@ -91,11 +98,21 @@ gdb: build
 		tmux -2 attach-session -d
 
 gdbserver: build
-	@qemu-system-riscv64 -machine virt -nographic -m 1024M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S \
-		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
+		@qemu-system-riscv64 \
+		-machine virt \
+		-kernel $(KERNEL_ELF) \
+		-m 1024M \
+		-nographic \
+		-smp 1 \
+		-bios default \
+		-drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-		-drive file=disk.img,if=none,format=raw,id=x1\
-		-device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+		-no-reboot \
+		-device virtio-net-device,netdev=net \
+		-netdev user,id=net \
+		-rtc base=utc\
+		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+		-s -S
 		
 
 gdbclient:

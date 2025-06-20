@@ -190,7 +190,9 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_SETUID=>sys_setuid(args[0] as u32),
         SYSCALL_GETGID=>sys_getgid(),
         SYSCALL_GETEGID=>sys_getegid(),
-
+        SYSCALL_MEMBARRIER=>sys_membarrier(),
+        SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32 , args[1] as usize, args[2] as *mut u8).await,
+        SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0]  as i32, args[1] as usize, args[2] as *const u8),
 
         
         _ =>{

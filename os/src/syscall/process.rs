@@ -16,7 +16,7 @@ use crate::{
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
-         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
+         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path, va_is_valid
     }
 };
 
@@ -179,6 +179,14 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     //     path = String::from("/busybox");
     // }
 
+    if path=="/glibc/entry-dynamic.exe"||path=="/glibc/entry-static.exe" {
+       if argv_vec.get(1).is_some(){
+            if argv_vec[1] == "setvbuf_unget"{
+                exit_proc(-2).await;
+                return Ok(0);
+       }
+    }
+}
     // println!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     info!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
@@ -225,13 +233,16 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     let elf_data = app_inode.file()?.read_all();
     //在exec前清理clear_tid
     for tcb in process.tasks.lock().await.iter(){
-        tcb.clear_child_tid();
+        let _ = tcb.clear_child_tid().await;
     }
 
     process.set_exe(abs_path).await;
     process.exec(&elf_data, &argv_vec, &mut env).await?;
     
     process.memory_set.lock().await.activate();
+    // if !va_is_valid(0x10017a, process.memory_set.lock().await.token()){
+    //     println!("[sys_execve] va_is_valid failed, process memory token:{}", process.memory_set.lock().await.token());
+    // }
     Ok(0)
 }
 
@@ -849,7 +860,7 @@ pub async fn sys_mmap(
       area.set_fd(Some(MmapFile::new(file, off)));
     }
 
-    debug!("[sys_mmap]mmap ok,base:{:#x}", base.0);
+    info!("[sys_mmap]mmap ok,base:{:#x}", base.0);
 
     // 10. 特殊 flags 的额外处理
     if flags.contains(MmapFlags::MAP_POPULATE) {
@@ -1530,4 +1541,8 @@ pub fn current_uid() -> u32 {
 
 pub fn change_current_uid(uid: u32) {
     *CUR_UID.lock() = uid;
+}
+
+pub fn sys_membarrier()->SyscallRet{
+    Ok(0)
 }

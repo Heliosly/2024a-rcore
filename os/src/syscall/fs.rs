@@ -88,12 +88,19 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     }
 }
 pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_openat", current_task().get_pid());
+    trace!(
+        "[sys_openat] dirfd = {}, path_ptr = {:p}, flags = {:#x}, mode = {:#o}",
+        dirfd,
+        path_ptr,
+        flags_u32,
+        mode,
+    );
   
     // 1. 获取当前进程
+    
     let proc = current_process();
     let token = proc.memory_set.lock().await.token();
-
+    proc.manual_alloc_type_for_lazy(path_ptr).await?;
     // 2. 从用户空间读取路径字符串（*const u8 指针）
     let path = translated_str(token, path_ptr);
 

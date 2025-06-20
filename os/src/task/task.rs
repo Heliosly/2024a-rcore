@@ -441,7 +441,7 @@ impl ProcessControlBlock {
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
-        let (memory_set, user_sp, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_sp, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
         // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
         let token = memory_set.token();
@@ -577,7 +577,10 @@ impl ProcessControlBlock {
         trap_cx.regs.a1 = argv.len();
         trap_cx.regs.a2 = argv_base;
         trap_cx.regs.a3 = envp_base;
-
+        if is_dl{
+            trap_cx.regs.a0 = entry_point;
+          }
+  
         add_task(new_task.clone());
         TID2TC.lock().insert(new_task.id.0, new_task);
         process_control_block
@@ -592,7 +595,7 @@ impl ProcessControlBlock {
     ) -> GeneralRet {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, user_heap_base, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_heap_base, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
 
         // **** access current TCB exclusively
 
@@ -643,6 +646,8 @@ impl ProcessControlBlock {
         //将auxv放入栈中
         auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
         auxv.push(Aux::new(AuxType::NULL, 0));
+
+        let auxv_base = user_sp;
         for aux in auxv.iter().rev() {
             // println!("{:?}", aux);
             user_sp -= size_of::<Aux>();
@@ -693,9 +698,14 @@ impl ProcessControlBlock {
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
-        // trap_cx.regs.a1 = argv.len();
-        // trap_cx.regs.a2 = argv_base;
-        // trap_cx.regs.a3 = envp_base;
+        trap_cx.regs.a1 = argv.len();
+        trap_cx.regs.a2 = argv_base;
+        trap_cx.regs.a3 = envp_base;
+        
+        
+        // if is_dl{
+        //   trap_cx.regs.a0 = entry_point;
+        // }
 
         // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);

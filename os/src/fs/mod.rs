@@ -375,7 +375,7 @@ pub fn map_dynamic_link_file( path: &str) -> &str {
     path
 }
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> =
-    Lazy::new(|| vec![ "/glibc", "/musl"]);
+    Lazy::new(|| vec![ "/glibc", "/musl","/usr"]);
 
 static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -386,12 +386,19 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/musl/lib/tls_get_new-dtv_dso.so",
         "/glibc/lib/dlopen_dso.so",
          "/glibc/lib/libc.so", 
+         
+         "/glibc/lib/libc.so.6", 
+
+         "/glibc/lib/libm.so.6", 
+
+         "/glibc/lib/libm.so", 
          "/glibc/lib/tls_get_new-dtv_dso.so", 
          "/glibc/lib/ld-linux-riscv64-lp64.so.1",
     
          "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
           "/glibc/lib/tls_align_dso.so", 
-          "/glibc/lib/tls_init_dso.so"
+          "/glibc/lib/tls_init_dso.so",
+          "/usr/lib/ld-musl-riscv64-sf.so.1",
 
     ]
     .into_iter()
@@ -412,11 +419,11 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 //
 const INITPROC_SH:&str = "
 cd /glibc
-./run-static.sh
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 cd /musl
-./run-static.sh
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 ";
