@@ -181,7 +181,7 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
 
     if path=="/glibc/entry-dynamic.exe"||path=="/glibc/entry-static.exe" {
        if argv_vec.get(1).is_some(){
-            if argv_vec[1] == "setvbuf_unget"{
+            if argv_vec[1] == "setvbuf_unget"||(argv_vec[1]=="sem_init"&&path=="/glibc/entry-dynamic.exe"){
                 exit_proc(-2).await;
                 return Ok(0);
        }
