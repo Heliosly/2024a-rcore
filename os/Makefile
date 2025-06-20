@@ -1,5 +1,20 @@
 # Building
-TARGET := riscv64gc-unknown-none-elf
+ARCH ?= riscv64
+
+ifeq ($(ARCH), riscv64)
+	TARGET := riscv64gc-unknown-none-elf
+	BOOTLOADER := ../bootloader/rustsbi-qemu.bin
+	QEMU := qemu-system-riscv64
+	OBJDUMP := rust-objdump --arch-name=riscv64
+	OBJCOPY := rust-objcopy --binary-architecture=riscv64
+else ifeq ($(ARCH), loongarch64)
+	TARGET := loongarch64-unknown-none-elf
+	BOOTLOADER := ../bootloader/rustsbi-qemu.bin
+	QEMU := qemu-system-loongarch64
+	OBJDUMP := rust-objdump --arch-name=loongarch64
+	OBJCOPY := rust-objcopy --binary-architecture=loongarch64
+endif
+
 MODE := release
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
@@ -74,7 +89,8 @@ disasm-vim: kernel
 run: run-inner
 
 run-inner: build
-	@qemu-system-riscv64 \
+ifeq ($(ARCH), riscv64)
+	@$(QEMU) \
 		-machine virt \
 		-nographic \
 		-m 128M \
@@ -82,6 +98,13 @@ run-inner: build
 		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
 		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+else ifeq ($(ARCH), loongarch64)
+	@$(QEMU) \
+		-machine virt \
+		-nographic \
+		-m 128M \
+		-kernel $(KERNEL_BIN)
+endif
 
 gdb: build
 	@tmux new-session -d \

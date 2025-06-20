@@ -35,8 +35,14 @@ use riscv::register::{
     sie, stval, stvec,
     mstatus::FS,
 };
+
 #[cfg(target_arch = "riscv64")]
-global_asm!(include_str!("trap.S"));
+global_asm!(include_str!("../arch/riscv64/trap.S"));
+
+#[cfg(target_arch = "loongarch64")]
+global_asm!(include_str!("../arch/loongarch64/trap.S"));
+
+use crate::arch::CurrentArch;
 
 #[cfg(target_arch = "loongarch64")]
 global_asm!(include_str!("trap_loongArch.S"));
@@ -48,21 +54,13 @@ extern "C" {
 
 /// Initialize trap handling
 pub fn init() {
-    set_trap_entry();
-    unsafe {
-        sstatus::set_fs(FS::Clean);
-    }
-}
-
-extern "C" {
-    fn trap_vector_base();
+    CurrentArch::set_trap_entry(trap_vector_base as usize);
 }
 
 fn set_trap_entry(){
-    unsafe {
-        stvec::write(trap_vector_base as usize, TrapMode::Direct);
-    }
+    CurrentArch::set_trap_entry(trap_vector_base as usize);
 }
+
 // fn set_kernel_trap_entry() {
 //     unsafe {
 //         stvec::write(trap_from_kernel as usize, TrapMode::Direct);
@@ -83,23 +81,12 @@ fn set_trap_entry(){
 
 /// enable timer interrupt in supervisor mode
 pub fn enable_irqs() {
-    unsafe {
-        sie::set_stimer();
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-pub fn enable_irqs() {
-    unsafe {
-        core::arch::asm!("csrwr {}, 0x4", in(reg) 0x8); // ECFG 寄存器
-    }
+    crate::arch::enable_irqs();
 }
 
 /// disable timer interrupt in supervisor mode
 pub fn disable_irqs() {
-    unsafe {
-        sie::clear_stimer();
-    }
+    crate::arch::disable_irqs();
 }
 #[cfg(target_arch = "loongarch64")]
 pub fn disable_irqs() {
@@ -111,24 +98,22 @@ pub fn disable_irqs() {
 /// 开启内核中断
 #[inline]
 pub fn enable_kernel_irqs() {
-    unsafe { sstatus::set_sie() }
+    crate::arch::enable_kernel_irqs();
 }
 
-///  关闭内核中断
+/// 关闭内核中断
 #[inline]
 pub fn disable_kernel_irqs() {
-    unsafe { sstatus::clear_sie() }
+    crate::arch::disable_kernel_irqs();
 }
+
 /// Relaxes the current CPU and waits for interrupts.
 ///
 /// It must be called with interrupts enabled, otherwise it will never return.
 #[inline]
 pub fn wait_for_irqs() {
-    unsafe { riscv::asm::wfi() }
+    crate::arch::wait_for_irqs();
 }
-
-
-
 
 #[no_mangle]
 /// Unimplement: traps/interrupts/exceptions from kernel mode

@@ -402,11 +402,10 @@ impl MemorySet {
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
         let satp = self.page_table.token();
-        trace!("activate new page table token:{:#x}",satp);
-        unsafe {
-            satp::write(satp);
-            asm!("sfence.vma");
-        }
+        trace!("activate new page table token:{:#x}", satp);
+        
+        crate::arch::CurrentArch::activate_paging(satp);
+        crate::arch::CurrentArch::flush_tlb();
         
         trace!("activated");
     }
