@@ -177,7 +177,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                 //                    Arc::strong_count(&curr)
                 //                        );
 
-                trace!("run task tid = {}", curr.id());
+                // trace!("run task tid = {}", curr.id());
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
