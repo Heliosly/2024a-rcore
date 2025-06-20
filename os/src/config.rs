@@ -18,9 +18,9 @@ pub const UIO_MAXIOV: usize = 1024;
 
 pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16*16*10;
+pub const KERNEL_STACK_SIZE: usize = 4096 * 16*10;
 /// kernel heap size
-pub const KERNEL_HEAP_SIZE: usize = 0x200_0000;
+pub const KERNEL_HEAP_SIZE: usize = 134217728*2;
 ///于allocuserres中于分配页数
 pub const PRE_ALLOC_PAGES: usize = 8;
 /// page size : 4KB
@@ -68,7 +68,7 @@ pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
 /// user app's heap size 4mb
 pub const USER_HEAP_SIZE: usize = 0x40000;
 
-pub const MMAP_BASE:usize = 0xffff_e000;
+pub const MMAP_BASE:usize = MMAP_TOP-(134217728)*4;
 /// user app's stack size
 pub const USER_STACK_SIZE: usize = 4096 * 16*16*10;
 /// Kernel Stack Start

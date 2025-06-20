@@ -106,11 +106,13 @@ pub fn rust_main() -> ! {
     
     task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
+    // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
     // task::add_initproc("/musl   ", "/musl/busybox", "sh");
 
-    // task::add_initproc("/glibc", "/musl/busybox", "sh run-dynamic.sh");
+    //  task::add_initproc("/glibc", "/musl/busybox", "sh libcbench_testcode.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");

@@ -252,6 +252,7 @@ pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOp
     root_inode().find(&abs_path, flags, 0)
 }
 ///open file
+pub static mut TMP_NAME:usize= 0;
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
 
     log::debug!("[open] abs_path={},flags={:#?},mode:{}", abs_path,flags,mode);
@@ -262,6 +263,24 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
         
         ));
     }
+    if abs_path=="/tmp"{
+        // 如果带了 O_TMPFILE 就直接模拟 tmpfile 行为
+        // 生成随机文件名，比如 /tmp/tmp-abc123
+        let tmp_name = unsafe { TMP_NAME };
+        unsafe { TMP_NAME += 1 };
+
+        // 拼接完整路径
+        let full_path = format!("/tmp/{}", tmp_name);
+
+        // 创建文件（O_CREAT | O_EXCL | O_RDWR）
+        let tmp_flags = OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR;
+        let inode = open_file(&full_path, tmp_flags, 0o600)?;
+
+        
+
+       return  Ok(inode)
+    }
+    
     //判断是否是设备文件
     if find_device(abs_path) {
         let device = open_device_file(abs_path)?;
@@ -422,10 +441,12 @@ cd /glibc
 ./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
+./libcbench_testcode.sh
 cd /musl
 ./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
+./libcbench_testcode.sh
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";

@@ -193,7 +193,7 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_MEMBARRIER=>sys_membarrier(),
         SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32 , args[1] as usize, args[2] as *mut u8).await,
         SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0]  as i32, args[1] as usize, args[2] as *const u8),
-
+        SYSCALL_MADVISE => sys_madvise(args[0] , args[1], args[2] as u32).await,
         
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);

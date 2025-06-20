@@ -143,3 +143,4 @@ pub const SYSCALL_GETEGID:usize =177;
 pub const SYSCALL_MEMBARRIER :usize =283;
 pub const SYSCALL_SCHED_SETAFFINITY: usize = 122;
 pub const SYSCALL_SCHED_GETAFFINITY: usize = 123;
+pub const SYSCALL_MADVISE:usize = 233;

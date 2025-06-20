@@ -1,7 +1,8 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
-use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, KERNEL_PAGE_TABLE_TOKEN};
+use crate::mm::page_table::PTEFlags;
+use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
 use crate::syscall::flags::MremapFlags;
 use crate::task::aux::{Aux, AuxType};
 use crate::task::{current_process, current_token};
@@ -1128,6 +1129,60 @@ pub async fn mremap(&mut self, old_start: VirtAddr, old_size: usize, new_size: u
 
     debug!("[mremap] return addr: 0x{:x}", addr);
     Ok(addr)
+}
+/// Handles the MADV_DONTNEED advice.
+///
+/// This function iterates through the given virtual page range and decommits
+/// the pages. Decommitting means unmapping the page from the page table and
+/// deallocating the physical frame it was pointing to.
+///
+/// The associated Virtual Memory Area (VMA) is NOT removed, so a subsequent
+/// access to this memory region will trigger a page fault, and the kernel
+/// can re-allocate a new, zeroed page on demand.
+pub fn madvise_dontneed(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
+    // 遍历指定范围内的每一个虚拟页
+    for vpn in VPNRange::new(start_vpn, (end_vpn.0+ 1).into()) {
+        // 查找该虚拟页对应的页表项 (PTE)
+        if let Some(pte) = self.page_table.find_pte(vpn) {
+            // 检查页表项是否有效（即是否映射到了一个物理页）
+            if pte.is_valid() {
+                // 如果有效，则：
+                // 1. 获取其指向的物理页号
+                let ppn = pte.ppn();
+
+                // 2. 将页表项清空，解除映射关系
+                // Setting the entry to 0 clears all flags, including the Valid bit.
+                *pte = PageTableEntry::new(0.into(), PTEFlags::empty());
+
+                // 3. 释放对应的物理页帧
+                // The frame allocator will add this physical page back to the free list.
+                match self.areatree.find_area(vpn){
+                    Some(area) => {
+                        if let Some(area_mut) = self.areatree.get_mut(&area) {
+                            if let Some(_frame_tracker) = area_mut.data_frames.remove(&vpn) {
+                                
+                            } else {
+                                warn!("Frame tracker not found for vpn: {:?}", vpn);
+                            }
+                        }
+                    }
+                    None => {
+                        unreachable!();
+                    }
+                }
+                
+                // 4. 刷新 TLB
+                // This is crucial! It ensures that the CPU's cached translation
+                // for this virtual page is invalidated. Otherwise, the CPU might
+                // still be able to access the old physical memory.
+            }
+            // 如果 pte 无效 (pte.is_valid() is false)，说明该页尚未分配物理内存，
+            // 我们什么也不用做。
+        }
+        // 如果 find_pte 返回 None，说明连中间的页表都还没创建，
+        // 同样也什么都不用做。
+    }
+ flush_tlb();
 }
 }
 
