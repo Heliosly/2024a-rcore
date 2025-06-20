@@ -87,7 +87,7 @@ run-inner: build
 		-device virtio-net-device,netdev=net \
 		-netdev user,id=net \
 		-rtc base=utc\
-		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+		-drive file=../disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 	
 
 gdb: build
@@ -111,7 +111,7 @@ gdbserver: build
 		-device virtio-net-device,netdev=net \
 		-netdev user,id=net \
 		-rtc base=utc\
-		-drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+		-drive file=../disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 		-s -S
 		
 
