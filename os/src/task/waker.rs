@@ -62,7 +62,6 @@ pub fn wakeup_task(task_ptr: *const Task) {
             let task_ref = unsafe { Arc::from_raw(task_ptr) };
 
             info!("task wakeup   tid:{}",task_ref.id());
-            crate::utils::bpoint();
              add_task(task_ref);
 
         }

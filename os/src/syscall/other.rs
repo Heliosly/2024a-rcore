@@ -1,8 +1,8 @@
 
-use linux_raw_sys::general::MAX_CLOCKS;
+use linux_raw_sys::general::{CLOCK_MONOTONIC, CLOCK_REALTIME, MAX_CLOCKS};
 use alloc::{string::String, vec};
 use riscv::register::time;
-use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count, PID2PC}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
 
@@ -317,10 +317,10 @@ target_inode
     .map(|_| 0) // 成功则返回 0
 }
 
-pub async  fn sys_sched_getaffinity(
+pub async fn sys_sched_getaffinity(
     pid: i32,
     cpusetsize: usize,
-    user_mask: *mut u8,
+    user_mask: *mut usize,
 ) -> SyscallRet {
     trace!(
         "[sys_sched_getaffinity] pid:{}, cpusetsize:{}, user_mask:{:?}",
@@ -328,43 +328,230 @@ pub async  fn sys_sched_getaffinity(
         cpusetsize,
         user_mask
     );
+    
+    // --- 核心修正 ---
+    // 1. 定义内核实际支持的 CPU 数量和掩码大小
+    const KERNEL_NR_CPUS: usize = 1; // 我们的系统是单核
+    const KERNEL_CPU_MASK_SIZE: usize = (KERNEL_NR_CPUS + 7) / 8; // 计算所需字节数，这里是 1
 
-    if cpusetsize < 1 || cpusetsize > 1024 {
+    // 2. 检查用户提供的 cpusetsize 是否足够
+    //    如果用户提供的缓冲区太小，我们什么都不做，直接返回我们需要的真实大小。
+    //    这是 man page 规定的行为。
+    if cpusetsize < KERNEL_CPU_MASK_SIZE {
         return Err(SysErrNo::EINVAL);
     }
 
-    if user_mask.is_null() {
-        return Err(SysErrNo::EFAULT);
-    }
-
-    // 获取当前任务的 CPU 掩码
+    // 3. 获取目标任务的亲和性掩码
+    //    （在单核模型中，我们忽略 pid，因为所有任务都一样）
+    //    TODO: 如果需要支持多进程，这里需要根据 pid 查找任务
+    let current_pcb = current_process(); // 假设有 current_process()
+    let affinity_mask :usize= 1;
     
-    // 将掩码写入用户空间
+    // 4. 安全地将掩码写入用户空间
     let token = current_token().await;
-    current_process().manual_alloc_type_for_lazy(user_mask).await?;
-    put_data(token, user_mask, 0)?;
+    // 确保用户指针有效
+    current_pcb.manual_alloc_type_for_lazy(user_mask).await?;
 
-    Ok(0)
+    *translated_refmut(token, user_mask)?=affinity_mask;
+
+
+    // 7. 返回内核实际支持的掩码大小
+    Ok(KERNEL_CPU_MASK_SIZE) 
 }
-pub  fn sys_sched_setaffinity(
+pub async fn sys_sched_setaffinity(
     pid: i32,
     cpusetsize: usize,
-    user_mask: *const u8,
+    user_mask_ptr: *const usize,
 ) -> SyscallRet {
     trace!(
         "[sys_sched_setaffinity] pid:{}, cpusetsize:{}, user_mask:{:?}",
         pid,
         cpusetsize,
-        user_mask
+        user_mask_ptr
     );
 
-    if cpusetsize < 1 || cpusetsize > 1024 {
+   //多核心todo
+
+    // 成功
+    Ok(0)
+}
+
+
+
+
+
+// Scheduling policies
+pub const SCHED_OTHER: i32 = 0;
+pub const SCHED_FIFO: i32 = 1;
+pub const SCHED_RR: i32 = 2;
+// ... 其他策略 (BATCH, IDLE, DEADLINE)
+
+/// C-compatible struct sched_param
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct SchedParam {
+    pub sched_priority: i32,
+}
+/// man 2: int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param);
+pub async fn sys_sched_setscheduler(
+    pid: i32,
+    policy: i32,
+    param_ptr: *const SchedParam,
+) -> SyscallRet {
+    trace!(
+        "[sys_sched_setscheduler] pid:{}, policy:{}, param_ptr:{:?}",
+        pid,
+        policy,
+        param_ptr
+    );
+    
+    // --- 参数验证 ---
+
+    // 1. 验证 pid
+    if pid < 0&&!PID2PC.lock().contains_key(&(pid as usize))  {
         return Err(SysErrNo::EINVAL);
     }
 
-    if user_mask.is_null() {
+    // 2. 验证用户提供的指针
+    if param_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    
+    // 3. 验证策略 (Policy)
+    //    由于我们只实现了 CFS (SCHED_OTHER)，我们只接受这个策略。
+    //    尝试设置任何其他策略都是无效的。
+    // if policy != SCHED_OTHER {
+    //     // 对于实时策略，通常需要 root 权限，可以返回 EPERM。
+    //     // 对于其他无效策略，返回 EINVAL。我们统一返回 EINVAL。
+    //     return Err(SysErrNo::EINVAL);
+    // }
+    // --- 应用设置 ---
+    
+
+    // e.g., current_pcb.set_scheduler(policy, param);
+
+    // 成功
+    Ok(0)
+}
+
+/// man 2: int sched_getscheduler(pid_t pid);
+pub  fn sys_sched_getscheduler(pid: i32) -> SyscallRet {
+    trace!("[sys_sched_getscheduler] pid:{}", pid);
+    
+    
+    
+    if pid < 0&&!PID2PC.lock().contains_key(&(pid as usize))  {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 在我们的模型中，调度器是 CFS，对应的策略是 SCHED_OTHER。
+    // 这个值是固定的，因为我们不支持动态改变为实时策略。
+    let policy = SCHED_OTHER;
+
+    // 成功，返回策略值
+    Ok(policy as usize)
+}
+
+
+/// man 2: int sched_getparam(pid_t pid, struct sched_param *param);
+pub async fn sys_sched_getparam(pid: i32, param_ptr: *mut SchedParam) -> SyscallRet {
+    trace!(
+        "[sys_sched_getparam] pid:{}, param_ptr:{:?}",
+        pid,
+        param_ptr
+    );
+
+    // 1. 验证 pid 和指针，遵循您的风格
+    if pid < 0 && !PID2PC.lock().contains_key(&(pid as usize))  {
+        return Err(SysErrNo::EINVAL);
+    }
+    if param_ptr.is_null() {
         return Err(SysErrNo::EFAULT);
     }
 
-    return Ok(0);
+    // 2. 准备要返回的参数
+    //    在我们的 CFS-only 模型中，任何进程的 sched_priority 都是 0。
+    let param = SchedParam { sched_priority: 0 };
+
+    let token = current_token().await;
+    let current_pcb = current_process();
+
+    // 确保用户指针指向的内存已映射
+    current_pcb.manual_alloc_type_for_lazy(param_ptr).await?;
+    
+    // 翻译用户地址
+    *translated_refmut(token, param_ptr)?=param;
+   
+
+    // 成功
+    Ok(0)
+}
+
+/// man 2: int sched_setparam(pid_t pid, const struct sched_param *param);
+pub  fn sys_sched_setparam(pid: i32, param_ptr: *const SchedParam) -> SyscallRet {
+    trace!(
+        "[sys_sched_setparam] pid:{}, param_ptr:{:?}",
+        pid,
+        param_ptr
+    );
+    
+
+    // 1. 验证 pid
+    if pid < 0 && !PID2PC.lock().contains_key(&(pid as usize))  {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 2. 验证用户提供的指针
+    if param_ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    
+
+    
+    // 成功
+    Ok(0)
+}
+/// man 2: int clock_getres(clockid_t clockid, struct timespec *res);
+pub async fn sys_clock_getres(clockid: u32, res_ptr: *mut UserTimeSpec) -> SyscallRet {
+    trace!(
+        "[sys_clock_getres] clockid:{}, res_ptr:{:?}",
+        clockid,
+        res_ptr
+    );
+
+    // 1. 验证 clockid
+    //    我们只支持最常见的几种时钟
+    match clockid {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => {
+            // 这两种是我们支持的，继续执行
+        }
+        _ => {
+            // 其他 clockid 我们不支持
+            return Err(SysErrNo::EINVAL);
+        }
+    }
+
+    // 2. 验证用户指针
+    //    如果 res_ptr 为 NULL，我们什么都不做，直接成功返回 0。这是 man page 规定的行为。
+    if res_ptr.is_null() {
+        return Ok(0);
+    }
+
+    // 3. 准备要返回的分辨率
+    //    我们声明系统的时钟分辨率为 1 纳秒。这是一个常见且安全的值。
+    let resolution = UserTimeSpec {
+        tv_sec: 0,
+        tv_nsec: 1,
+    };
+
+    let token = current_token().await;
+    let current_pcb = current_process();
+
+   
+    current_pcb.manual_alloc_type_for_lazy(res_ptr).await?;
+
+   *translated_refmut(token, res_ptr)? = resolution;
+
+    // 成功
+    Ok(0)
 }

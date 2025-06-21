@@ -104,21 +104,21 @@ pub fn rust_main() -> ! {
     fs::init();
     // fs::list_app();
     
-    task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
+    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
     // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
     // task::add_initproc("/musl   ", "/musl/busybox", "sh");
 
-    //  task::add_initproc("/glibc", "/musl/busybox", "sh libcbench_testcode.sh");
+    //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
-    //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-dynamic.sh");
+     task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
     // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();
     extern  "C" {

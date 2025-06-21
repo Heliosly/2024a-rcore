@@ -268,7 +268,6 @@ impl<'a, F: Fn() -> bool + Unpin> Future for WaitUntilFuture<'a, F> {
             let task = cx.waker().data() as *const Task;
             unsafe { &*task }.set_state(TaskStatus::Blocking);
             info!("blocking in wait_until");
-            crate::utils::bpoint();
             let node = GeneralWaitWakerNode::new(cx.waker().clone());
             let node_arc = Arc::new(node);
           

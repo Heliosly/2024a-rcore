@@ -24,12 +24,12 @@ OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
 # GDB Dashboard 支持
-ifeq ($(shell which riscv64-unknown-elf-gdb),)
-GDB_PATH := gdb
-else
-GDB_PATH := riscv64-unknown-elf-gdb
-endif
-
+# ifeq ($(shell which riscv64-unknown-elf-gdb),)
+# GDB_PATH := gdb
+# else
+# GDB_PATH := riscv64-unknown-elf-gdb
+# endif
+GDB_PATH:=/home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 gdb := $(GDB_PATH) 
 
 # Building mode argument

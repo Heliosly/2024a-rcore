@@ -26,7 +26,10 @@ pub use page_table::{
     PageTableEntry, UserBuffer, UserBufferIterator,fill_str,TranslateError
 };
 use riscv::register::satp;
-
+pub const MPOL_DEFAULT: usize = 0;
+pub const MPOL_PREFERRED: usize = 1;
+pub const MPOL_BIND: usize = 2;
+pub const MPOL_INTERLEAVE: usize = 3;
 
 use crate::sync::Mutex;
  /// The kernel's initial memory mapping(kernel address space)

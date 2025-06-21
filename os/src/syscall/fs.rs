@@ -5,7 +5,7 @@ use crate::fs::mount::MNT_TABLE;
 use crate::fs::pipe::make_pipe;
 use crate::fs::vfs::VfsManager;
 use crate::signal::SigSet;
-use crate::syscall::flags::FaccessatMode;
+use crate::syscall::flags::{FaccessatMode, MlockallFlags};
 use crate::timer::{TimeVal,UserTimeSpec};
 use crate::utils::string::{get_abs_path, get_parent_path_and_filename, is_abs_path};
 use alloc::boxed::Box;
@@ -88,7 +88,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     }
 }
 pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
-    trace!(
+    info!(
         "[sys_openat] dirfd = {}, path_ptr = {:p}, flags = {:#x}, mode = {:#o}",
         dirfd,
         path_ptr,
@@ -185,7 +185,6 @@ pub async  fn sys_close(fd: i32) -> SyscallRet {
 }
 
 
-/// YOUR JOB: Implement fstat.
 pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
     trace!("kernel:pid[{}] sys_fstat ", current_task().get_pid());
     let proc= current_process();
@@ -2413,3 +2412,198 @@ pub async  fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 }
 
 
+
+
+/// man 2: int truncate(const char *path, off_t length);
+pub async fn sys_truncate(path_ptr: *const u8, length: u64) -> SyscallRet {
+    let proc = current_process();
+    let mut ms = proc.memory_set.lock().await;
+    // 从用户指针翻译出路径字符串
+    let path = ms.safe_translated_str(path_ptr).await;
+
+    trace!("[sys_truncate] path: {:?}, length: {}", path, length);
+
+    // 1. 验证 length 参数
+  
+
+    // 2. 解析为完整路径
+    let cwd = proc.cwd.lock().await.clone();
+    let full_path = normalize_and_join_path(cwd.as_str(), path.as_str())?;
+
+    // 3. 打开文件以进行写操作，然后立即截断并关闭。
+    //    我们需要一个能确保有写权限的打开模式。
+    //    O_WRONLY 即可。如果文件不存在，truncate 应该失败，所以不加 O_CREAT。
+    let inode = match open_file(&full_path, OpenFlags::O_WRONLY, 0) {
+        Ok(inode) => inode,
+        // open_file 可能会因为文件不存在(ENOENT)或无权限(EACCES)而失败，
+        // 这正是 truncate 应该有的行为。
+        Err(e) => return Err(e),
+    };
+
+    // 4. 调用 Inode 的 truncate 方法
+    if let Err(e) = inode.file()?.truncate(length){
+        warn!("[sys_truncate] Failed to truncate file '{}': {:?}", full_path, e);
+        return Err(e);
+    }
+
+  
+    Ok(0)
+}
+
+
+/// man 2: int ftruncate(int fd, off_t length);
+pub async fn sys_ftruncate(fd: i32, length: u64) -> SyscallRet {
+    trace!("[sys_ftruncate] fd: {}, length: {}", fd, length);
+
+    // 1. 验证 length 参数 (与 truncate 相同)
+    // 假设 usize 类型保证了非负。
+
+    // 2. 从文件描述符表中获取文件对象
+    let proc = current_process();
+    let file = match proc.fd_table.lock().await.get_file(fd as usize) {
+        Ok(f) => f,
+        Err(e) => return Err(e), // e.g., EBADF for invalid fd
+    };
+    let file = file.file()?;
+    // 3. 检查文件是否以可写模式打开
+    //    这是 ftruncate 的一个重要要求。
+    if !file.writable().unwrap() {
+        // 返回 EINVAL 或 EBADF 都是 man page 中提到的可能错误。
+        // EINVAL 更贴切，因为它指的是“不适合此操作”。
+        return Err(SysErrNo::EINVAL);
+    }
+    
+    if let Err(e) = file.truncate(length) {
+        return Err(e);
+    }
+    
+    Ok(0)
+}
+
+
+/// man 2: int mlock(const void *addr, size_t len);
+pub async fn sys_mlock(addr: usize, len: usize) -> SyscallRet {
+    trace!("[sys_mlock] addr: {:#x}, len: {}", addr, len);
+
+    // 1. 基本参数验证
+    if len == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    // man page 说 addr 应该对齐，但内核会处理，所以我们无需检查 addr 的对齐。
+
+    // 2. 获取进程的内存集合 (MemorySet)
+    let proc = current_process();
+    let memory_set = proc.memory_set.lock().await;
+
+    // 3. 计算需要操作的虚拟页范围
+    let start_va = VirtAddr::from(addr);
+    let end_va = VirtAddr::from(addr + len - 1);
+    
+    // 4. 验证内存区域是否已映射
+    //    我们需要遍历指定范围内的所有页，确保它们都存在于某个 MapArea 中。
+    //    这是 mlock 的核心验证步骤。
+    if !memory_set.is_region_alloc(start_va, end_va) {
+    
+        return Err(SysErrNo::ENOMEM);
+    }
+
+
+  
+    
+    trace!("[sys_mlock] Region {:#x} - {:#x} locked (no-op).", addr, addr + len);
+
+    // 6. 成功
+    Ok(0)
+}
+
+/// man 2: int munlock(const void *addr, size_t len);
+pub async fn sys_munlock(addr: usize, len: usize) -> SyscallRet {
+    trace!("[sys_munlock] addr: {:#x}, len: {}", addr, len);
+
+    // 1. 基本参数验证
+    if len == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 2. 获取进程的内存集合 (MemorySet)
+    let proc = current_process();
+    let mut memory_set = proc.memory_set.lock().await;
+
+    // 3. 计算需要操作的虚拟页范围
+    let start_va = VirtAddr::from(addr);
+    let end_va = VirtAddr::from(addr + len - 1);
+    
+    // 4. 验证内存区域是否已映射 (与 mlock 相同)
+    if !memory_set.is_region_alloc(start_va, end_va) {
+        return Err(SysErrNo::ENOMEM);
+    }
+
+    // 5. (空操作) 解除锁定
+    //    在支持换页的系统中，这里会清除 PTE 的 LOCKED 标志。
+    //    在我们的实现中，我们什么都不做。
+   
+    
+    trace!("[sys_munlock] Region {:#x} - {:#x} unlocked (no-op).", addr, addr + len);
+    
+    // 6. 成功
+    Ok(0)
+}
+
+
+/// man 2: int mlockall(int flags);
+pub async fn sys_mlockall(flags: u32) -> SyscallRet {
+    trace!("[sys_mlockall] flags: {}", flags);
+
+    // // 1. 将 u32 转换为我们定义的 bitflags 类型，并验证合法性
+    // let mlock_flags = match MlockallFlags::from_bits(flags) {
+    //     Some(f) => f,
+    //     None => return Err(SysErrNo::EINVAL), // 非法的 flags 组合
+    // };
+    // // 确保至少设置了一个有效标志
+    // if mlock_flags.is_empty() {
+    //     return Err(SysErrNo::EINVAL);
+    // }
+
+    // // 2. 获取进程的 MemorySet
+    // let proc = current_process();
+    // let mut memory_set = proc.memory_set.lock().await;
+
+    // // 3. 处理 MCL_CURRENT
+    // if mlock_flags.contains(MlockallFlags::MCL_CURRENT) {
+    //     // (空操作) 遍历所有已存在的 MapArea 并“锁定”它们
+    //     // for area in memory_set.areas.iter_mut() {
+    //     //     area.locked = true;
+    //     // }
+    //     trace!("[sys_mlockall] All current pages locked (no-op).");
+    // }
+
+    // // 4. 处理 MCL_FUTURE
+    // if mlock_flags.contains(MlockallFlags::MCL_FUTURE) {
+    //     // 设置 MemorySet 中的状态标志，以便未来映射时自动锁定
+    //     //todo()
+    //     // memory_set.mlockall_status |= MlockallFlags::MCL_FUTURE;
+    //     trace!("[sys_mlockall] Future pages will be locked.");
+    // }
+
+    // 5. 成功
+    Ok(0)
+}
+
+
+/// man 2: int munlockall(void);
+pub async fn sys_munlockall() -> SyscallRet {
+    trace!("[sys_munlockall] Unlocking all pages.");
+    
+    // 1. 获取进程的 MemorySet
+    // let proc = current_process();
+    // let mut memory_set = proc.memory_set.lock().await;
+    
+    // 2. 清除 MCL_FUTURE 状态标志
+    // memory_set.mlockall_status.remove(MlockallFlags::MCL_FUTURE);
+    
+    
+    trace!("[sys_munlockall] All pages unlocked (no-op).");
+    
+    // 4. 成功
+    Ok(0)
+}

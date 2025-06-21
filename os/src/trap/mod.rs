@@ -282,7 +282,8 @@ pub async fn user_task_top() -> i32 {
                 }
                 Trap::Exception(Exception::StorePageFault)
                 | Trap::Exception(Exception::LoadPageFault)
-                | Trap::Exception(Exception::InstructionPageFault) => {
+                | Trap::Exception(Exception::InstructionPageFault)
+                |Trap::Exception(Exception::IllegalInstruction)  => {
                     //懒分配
                     // println!(
                     //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
@@ -290,6 +291,12 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
+                    let stval=if scause.cause() == riscv::register::scause::Trap::Exception(Exception::IllegalInstruction) {
+                        // 如果是非法指令异常，stval 是 sepc
+                        sepc
+                    } else {
+                        stval
+                    };
                     if curr
                         .get_process()
                         .unwrap()
@@ -318,11 +325,7 @@ pub async fn user_task_top() -> i32 {
 
                     exit_current(-2).await;
                 }
-                Trap::Exception(Exception::IllegalInstruction) => {
-                    println!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    // illegal instruction exit code
-                    exit_current(-3).await;
-                }
+                
                 Trap::Exception(Exception::Breakpoint) => {
                     println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
 

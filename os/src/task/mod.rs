@@ -16,7 +16,7 @@
 #![allow(missing_docs)]
 
 // mod tls;
-pub mod aux;
+pub mod auxv;
 mod flags;
 mod current;
 mod id;
@@ -152,7 +152,6 @@ pub async fn exit_current(exit_code: i32) {
     let task = current_task();
     let process = current_process();
     debug!("[kernel] exit_current tid {}, exit_code: {}", task.id(), exit_code);
-    crate::utils::bpoint();
     // 检查是否是进程中的最后一个线程
     let is_lead = task.is_leader();
 
