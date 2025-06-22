@@ -94,7 +94,7 @@ impl PageTableEntry {
         PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
     }
     pub fn is_cow(&self)->bool{
-        PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::R | PTEFlags::W)
+        PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::COW)
     }
        // 判断是否设置了 W_BACKUP
     pub fn is_back_w(&self) -> bool {
@@ -295,6 +295,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
+                // println!("pte is invalid:vpn:{:x}",vpn.0);
                 let frame = frame_alloc().unwrap();
                 *pte = PageTableEntry::new(frame.ppn(), PTEFlags::V);
                 self.frames.push(frame);
@@ -334,6 +335,8 @@ impl PageTable {
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
+
+    
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn unmap(&mut self, vpn: VirtPageNum) {
@@ -408,38 +411,117 @@ pub struct UserBuffer<'b> {
 }
 
 impl<'b> UserBuffer<'b> {
-    /// Constuct UserBuffer
-    pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
+       /// Construct UserBuffer
+       pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
         Self { buffers }
     }
-    pub fn is_empty (&self) ->bool{
-          self.len()==0
-    }
-    /// Get the length of the buffer
+
+    /// Get the total length of all buffers combined
     pub fn len(&self) -> usize {
-        let mut total: usize = 0;
-        for b in self.buffers.iter() {
-            total += b.len();
-        }
-        total
+        self.buffers.iter().map(|b| b.len()).sum()
     }
-    /// 将内容数组返回
-    pub fn read(&mut self, len: usize) -> Vec<u8> {
-        let mut bytes = vec![0; len];
-        let mut current = 0;
+    
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    // --- 新增方法：write_all ---
+    ///
+    /// 将一个完整的 slice 写入 UserBuffer。
+    /// 如果 `buff` 的长度大于 UserBuffer 的总容量，将返回错误。
+    /// 这对于确保数据被完整写入非常有用。
+    ///
+    /// # Returns
+    /// - `Ok(())` 如果成功写入所有数据。
+    /// - `Err(SysErrNo::EINVAL)` 如果源 `buff` 太大，无法容纳。
+    pub fn write_all(&mut self, buff: &[u8]) -> Result<(), SysErrNo> {
+        if buff.len() > self.len() {
+            return Err(SysErrNo::EINVAL); // Invalid argument: source is too large
+        }
+
+        let mut bytes_written = 0;
         for sub_buff in self.buffers.iter_mut() {
-            let mut sblen = (*sub_buff).len();
-            if current + sblen > len {
-                sblen = len - current;
+            let space_in_sub = sub_buff.len();
+            let remaining_to_write = buff.len() - bytes_written;
+            
+            // 确定本次要拷贝的字节数
+            let copy_len = space_in_sub.min(remaining_to_write);
+            if copy_len == 0 {
+                // 如果 buff 已经写完，或者当前 sub_buff 为空，则跳过
+                continue;
             }
-            bytes[current..current + sblen].copy_from_slice(&(*sub_buff)[..sblen]);
-            current += sblen;
-            if current == len {
-                return bytes;
-            }
+
+            // 从源 buff 的正确位置拷贝数据
+            let source_slice = &buff[bytes_written..bytes_written + copy_len];
+            sub_buff[..copy_len].copy_from_slice(source_slice);
+
+            bytes_written += copy_len;
         }
-        bytes
+
+        Ok(())
     }
+
+    // --- 新增方法：read_from (替代 slice().read()) ---
+    ///
+    /// 从 UserBuffer 的指定偏移量开始，读取指定长度的数据到一个新的 Vec<u8>。
+    /// 这比 `slice().read()` 的组合更直接、更高效。
+    ///
+    /// # Arguments
+    /// * `offset` - 从 UserBuffer 的起始位置开始计算的偏移量。
+    /// * `len` - 希望读取的字节数。
+    ///
+    /// # Returns
+    /// - 一个 `Vec<u8>`，包含读取的数据。如果请求的范围超出边界，
+    ///   它将尽力读取到末尾。
+    pub fn read_from(&self, offset: usize, len: usize) -> Vec<u8> {
+        let total_len = self.len();
+        if offset >= total_len {
+            return Vec::new(); // 偏移量超出范围，返回空
+        }
+
+        // 调整读取长度，确保不越界
+        let read_len = len.min(total_len - offset);
+        let mut result = Vec::with_capacity(read_len);
+        
+        let mut bytes_to_skip = offset;
+        let mut bytes_to_read = read_len;
+        
+        for sub_buff in self.buffers.iter() {
+            if bytes_to_read == 0 {
+                break; // 已经读够了
+            }
+            let sub_len = sub_buff.len();
+            
+            if bytes_to_skip >= sub_len {
+                // 这个 sub_buff 完全在偏移量之前，整个跳过
+                bytes_to_skip -= sub_len;
+                continue;
+            }
+
+            // 计算在此 sub_buff 中开始读取的位置
+            let start_in_sub = bytes_to_skip;
+            // 剩下的部分就不再需要跳过了
+            bytes_to_skip = 0; 
+
+            // 计算在此 sub_buff 中可以读取的字节数
+            let can_read_from_sub = (sub_len - start_in_sub).min(bytes_to_read);
+
+            // 从 sub_buff 的正确位置拷贝数据到结果中
+            result.extend_from_slice(&sub_buff[start_in_sub..start_in_sub + can_read_from_sub]);
+
+            bytes_to_read -= can_read_from_sub;
+        }
+
+        result
+    }
+
+
+    pub fn read(&self, len: usize) -> Vec<u8> {
+        // 内部可以直接调用更通用的 read_from
+        self.read_from(0, len)
+    }
+
+   
     pub fn fill0(&mut self) -> usize {
         for sub_buff in self.buffers.iter_mut() {
             let sblen = (*sub_buff).len();
@@ -622,11 +704,11 @@ impl From<PutDataError> for SysErrNo {
 
         warn!("[PutDataError]err:{:#?}",err);
         match err {
-            PutDataError::TranslationFailed(_) => SysErrNo::ENOMEM,
+            PutDataError::TranslationFailed(_) => SysErrNo::EFAULT,
             PutDataError::UnalignedAccess => SysErrNo::EFAULT,
             PutDataError::NonContiguousPhysicalMemory => SysErrNo::EFAULT,
             PutDataError::PermissionDenied => SysErrNo::EACCES,
-            PutDataError::Other(_) => SysErrNo::EIO,
+            PutDataError::Other(_) => SysErrNo::EADV,
         }
     }
 }

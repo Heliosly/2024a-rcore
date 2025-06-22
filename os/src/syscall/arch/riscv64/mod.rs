@@ -156,3 +156,5 @@ pub const SYSCALL_MLOCK: usize= 228;
 pub const SYSCALL_MUNLOCK: usize= 229;
 pub const SYSCALL_MLOCKALL: usize= 230;
 pub const SYSCALL_MUNLOCKALL: usize= 231;
+pub const SYSCALL_GETRUSAGE: usize = 165;
+pub const SYSCALL_PSELECT6: usize = 72;

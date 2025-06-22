@@ -14,6 +14,7 @@ use log::warn;
 
 pub mod string;
 pub mod error;
+pub mod mm;
 use crate::{config::{PAGE_SIZE, PATH_MAX}, mm::{translated_str, FrameTracker, PhysAddr, VirtAddr}, trap::TrapContext};
 
 /// 跟踪函数的调用栈

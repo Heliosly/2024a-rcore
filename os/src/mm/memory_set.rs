@@ -2,13 +2,12 @@
 use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::page_table::PTEFlags;
-use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
+use crate::mm::{ area, translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
 use crate::syscall::flags::MremapFlags;
 use crate::task::auxv::{Aux, AuxType};
-use crate::utils;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
-use super::page_table::{self, PutDataError, PutDataRet};
+use super::page_table::{ PutDataError, PutDataRet};
 use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
@@ -20,7 +19,6 @@ use alloc::vec::Vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 use xmas_elf::ElfFile;
 use core::arch::asm;
-use core::ops::Range;
 use core::{ptr, slice};
 use riscv::register::satp;
 
@@ -57,17 +55,21 @@ pub enum PageFaultError {
     /// 找到的映射区类型不是 Mmap
     NotMmapType,
     /// 映射区的 vpn_range 为空，或者该页已经分配
-    RangeEmptyOrAlreadyAllocated,
+    RangeEmpty,
+    AlreadyAllocated,
     /// 虚拟页号虽在 area.vpn_range 内，但不满足懒分配条件
     VpnNotHandled,
+    __,
 }
 impl From<PageFaultError> for SysErrNo {
     fn from(err: PageFaultError) -> SysErrNo {
         match err {
             PageFaultError::AreaNotFound => SysErrNo::EFAULT,
             PageFaultError::NotMmapType => SysErrNo::EINVAL,
-            PageFaultError::RangeEmptyOrAlreadyAllocated => SysErrNo::EBUSY,
+            PageFaultError::RangeEmpty => SysErrNo::EBUSY,
             PageFaultError::VpnNotHandled => SysErrNo::EINVAL,
+            PageFaultError::AlreadyAllocated => SysErrNo::EEXIST,
+            PageFaultError::__ => SysErrNo::EFAULT,
         }
     }
 }
@@ -127,7 +129,7 @@ pub fn munmap(
     /// 复制逻辑段内容
     pub fn clone_area(&mut self, start_vpn: VirtPageNum, another:&MemorySet) {
     //    self.areatree.debug_print();
-       println!("b");
+       trace!("b");
     //    another.areatree.debug_print();
 
         if let Some(area) = another
@@ -161,7 +163,7 @@ pub fn munmap(
 
         let dst_area = self
             .areatree
-            .get(&dst_vpn)
+            .get_mut(&dst_vpn)
             .expect(&format!("dst_space missing area for vpn {:#x}", dst_vpn.0));
         let src_pages = src_area.range_size();
         let dst_pages = dst_area.range_size();
@@ -171,29 +173,12 @@ pub fn munmap(
             src_pages,
             dst_pages
         );
-        // dst_area.debug_print();
-        // println!("dst");
-        // src_area.debug_print();
-               // 2. 直接用 range.iter()，它是左闭右开，不会包含 end
-               let src_iter = src_area.vpn_range.iter();
-               let dst_iter = dst_area.vpn_range.iter();
-       
-               for (vpn_src, vpn_dst) in src_iter.zip(dst_iter) {
-                   // translate 不会再遇到右边界
-                   let src_ppn = src_space
-                       .translate(vpn_src)
-                       .expect(&format!("src_space missing page {:?}", vpn_src))
-                       .ppn();
-                   let dst_ppn = self
-                       .translate(vpn_dst)
-                       .expect(&format!("dst_space missing page {:?}", vpn_dst))
-                       .ppn();
-       
-                   // 内存拷贝
-                   dst_ppn
-                       .get_bytes_array()
-                       .copy_from_slice(src_ppn.get_bytes_array());
-               }
+        
+           
+
+            // Insert mapping with shared frames
+            dst_area.map_given_frames(&mut self.page_table, &src_area.data_frames,true);
+               
     }
    
 ///Create a new `MemorySet` from global kernel space
@@ -542,9 +527,9 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             ),
             None,
         ).unwrap();
-//  println!("sbrk ppn :");
+//  trace!("sbrk ppn :");
         // for (_,frame) in memory_set.areas.last().unwrap().data_frames.iter(){
-        //     println!("ppn:{:#x}",frame.ppn().0);
+        //     trace!("ppn:{:#x}",frame.ppn().0);
         // }
        
        
@@ -564,106 +549,129 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         )
     }
    
-    fn push_with_given_frames(&mut self, mut map_area: MapArea, frames: Vec<Arc<FrameTracker>>) {
-        map_area.map_given_frames(&mut self.page_table, frames);
+    pub fn push_with_given_frames(&mut self, mut map_area: MapArea, frames: &BTreeMap<VirtPageNum,Arc<FrameTracker>>,is_cow:bool) {
+        map_area.map_given_frames(&mut self.page_table, frames,is_cow);
+
+    //    println!("start_vpn:{:#x},flags:{:?}",map_area.start_vpn().0, self.page_table.translate(map_area.start_vpn()).unwrap().flags());
         self.areatree.push(map_area);
+           
     }
-    pub async  fn from_existed_user(user_space: &mut Self) -> Self {
-        let mut memory_set = Self::new_from_kernel();
-        
-        // 第一阶段：收集需要分配的VPN
-        let mut vpns_to_alloc = Vec::new();
-        
-        {
-            // 仅借用 areatree
-            let old_areatree = &mut user_space.areatree;
-            for (_, area) in old_areatree.iter_mut() {
-                if area.area_type == MapAreaType::Mmap && 
-                   !area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
-                {
-                    for vpn in area.vpn_range {
-                        if !area.allocated(vpn) {
-                            vpns_to_alloc.push(vpn);
-                        }
-                    }
-                }
-            }
-        } // 结束 areatree 的借用
-        
-        // 第二阶段：处理缺页
-        for vpn in vpns_to_alloc {
-            user_space.handle_page_fault(vpn.0 << PAGE_SIZE_BITS).await.expect(&format!("Failed to handle page fault for VPN {:#x}", vpn.0));
-        }
-        
-        // 第三阶段：处理所有区域
-        {
-            let old_areatree = &mut user_space.areatree;
-            // old_areatree.debug_print();
-            let old_page_table = &mut user_space.page_table;
-            
-            for (_, area) in old_areatree.iter_mut() {
-                let new_area = MapArea::from_another(area);
-                
-                if area.area_type == MapAreaType::Mmap && 
-                   area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
-                {
-                    // 共享映射
-                    let frames = area.data_frames.values().cloned().collect();
-                    memory_set.push_with_given_frames(new_area, frames);
-                } else {
-                    // 其他区域
-                    // new_area.debug_print();
-                    memory_set.push(new_area, None).unwrap();
-                    
-                    // 复制数据
-                    for vpn in area.vpn_range {
-                        let src_ppn = old_page_table.translate(vpn).unwrap().ppn();
-                        let dst_ppn = memory_set.page_table.translate(vpn).unwrap().ppn();
-                        dst_ppn
-                            .get_bytes_array()
-                            .copy_from_slice(src_ppn.get_bytes_array());
-                    }
-                }
-            }
-        }
-        
-        memory_set
-    }
+
     /// Create a new address space by copying code & data from an existing process's address space,
 /// using Copy-On-Write for private mappings and sharing for shared mappings.
-pub async fn from_existed_user1(user_space: &mut Self) -> Self {
+pub async fn from_existed_user(user_space: &mut Self) -> Self {
     let mut memory_set = Self::new_from_kernel();
 
     // Only process each area once
     {
         let old_areatree = &mut user_space.areatree;
-
-        for (_, area) in old_areatree.iter_mut().filter(|(_, a)| a.area_type != MapAreaType::Stack) {
+        let old_page_table_ref = &user_space.page_table;
+        for (_, area) in old_areatree.iter_mut().filter(|(_,f)|f.area_type != MapAreaType::Stack) {
             if area.area_type == MapAreaType::Mmap && area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
                 // Shared mapping: reuse original frames
-                let frames: Vec<Arc<FrameTracker>> = area.data_frames.values().cloned().collect();
+               
                 let new_area = MapArea::from_another(area);
-                memory_set.push_with_given_frames(new_area, frames);
-            } else {
+                memory_set.push_with_given_frames(new_area, &area.data_frames,false);
+            } else if area.area_type == MapAreaType::Mmap 
+          
+            
+            
+            {
                 // Private or other mappings: use COW
                 // Clone frame trackers to bump reference counts
-                let frames: Vec<Arc<FrameTracker>> = area.data_frames.values().cloned().collect();
                 let mut new_area = MapArea::from_another(area);
                 new_area.mmap_flags.insert(MmapFlags::MAP_PRIVATE);
 
                 // Insert mapping with shared frames
-                memory_set.push_with_given_frames(new_area, frames);
+                memory_set.push_with_given_frames(new_area, &area.data_frames,true);
+              // 对每对 (vpn, frame) 做映射并记录
+        for (vpn, _) in area.data_frames.iter(){
+              let   pte= user_space.page_table.find_pte(*vpn).unwrap();
+                pte.set_cow();
+            }
+            }
 
-                // Mark pages for Copy-On-Write
-                for vpn in area.vpn_range.iter() {
-                    if let Some(mut pte) = memory_set.page_table.translate(vpn) {
-                        pte.set_cow();
+           
+            else{
+
+
+                let area_to_push = MapArea::from_another(area);
+                memory_set.push(area_to_push, None).unwrap();
+                for vpn in area.vpn_range {
+                    let src_ppn = old_page_table_ref.translate(vpn).unwrap().ppn();
+                    let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
+                    // println!("copying vpn:{:#x} src_ppn:{:#x} dst_ppn:{:#x}",vpn.0,src_ppn.0,dst_ppn.0);
+                    dst_ppn
+                        .get_bytes_array()
+                        .copy_from_slice(src_ppn.get_bytes_array());
+                } 
+            }
+
+
+
+        }
+    }
+
+    memory_set
+}
+pub async  fn from_existed_user1(user_space: &mut Self) -> Self {
+    let mut memory_set = Self::new_from_kernel();
+    
+    // 第一阶段：收集需要分配的VPN
+    let mut vpns_to_alloc = Vec::new();
+    
+    {
+        // 仅借用 areatree
+        let old_areatree = &mut user_space.areatree;
+        for (_, area) in old_areatree.iter_mut() {
+            if area.area_type == MapAreaType::Mmap && 
+               !area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
+            {
+                for vpn in area.vpn_range {
+                    if !area.allocated(vpn) {
+                        vpns_to_alloc.push(vpn);
                     }
                 }
             }
         }
+    } // 结束 areatree 的借用
+    
+    // 第二阶段：处理缺页
+    for vpn in vpns_to_alloc {
+        user_space.handle_page_fault(vpn.0 << PAGE_SIZE_BITS,true).await.expect(&format!("Failed to handle page fault for VPN {:#x}", vpn.0));
     }
-
+    
+    // 第三阶段：处理所有区域
+    {
+        let old_areatree = &mut user_space.areatree;
+        // old_areatree.debug_print();
+        let old_page_table = &mut user_space.page_table;
+        
+        for (_, area) in old_areatree.iter_mut() {
+            let new_area = MapArea::from_another(area);
+            
+            if area.area_type == MapAreaType::Mmap && 
+               area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
+            {
+                
+                memory_set.push_with_given_frames(new_area, &area.data_frames.clone(),false);
+            } else {
+                // 其他区域
+                // new_area.debug_print();
+                memory_set.push(new_area, None).unwrap();
+                
+                // 复制数据
+                for vpn in area.vpn_range {
+                    let src_ppn = old_page_table.translate(vpn).unwrap().ppn();
+                    let dst_ppn = memory_set.page_table.translate(vpn).unwrap().ppn();
+                    dst_ppn
+                        .get_bytes_array()
+                        .copy_from_slice(src_ppn.get_bytes_array());
+                }
+            }
+        }
+    }
+   
     memory_set
 }
     /// Change page table by writing satp CSR Register.
@@ -685,7 +693,7 @@ pub async fn from_existed_user1(user_space: &mut Self) -> Self {
         loop{
         match self.page_table.translate(vpn) {
             None => {
-               if self.handle_page_fault(va).await.is_ok(){
+               if self.handle_page_fault(va,true).await.is_ok(){
                     // If the page fault is handled successfully, retry translation
                      
                     continue;
@@ -697,7 +705,7 @@ pub async fn from_existed_user1(user_space: &mut Self) -> Self {
             Some(ref pte) => {
                 if !pte.is_valid() {
                     //这里不确定有没有问题todo
-                   if self.handle_page_fault(va).await.is_ok(){
+                   if self.handle_page_fault(va,true).await.is_ok(){
                     // If the page fault is handled successfully, retry translation
                     continue;
                    }
@@ -767,12 +775,12 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
         let end=end_va.ceil();
      
         while vpn < end {
-           match self.handle_page_fault(VirtAddr::from(vpn).0 ).await{
+           match self.handle_page_fault(VirtAddr::from(vpn).0 ,true).await{
             
             Err(e) => 
 {
-    // println!("[ manual_alloc_range_for_lazy] err:{:#?},vpn:{:#x}",e,vpn.0);
-                if matches!(e, PageFaultError::NotMmapType | PageFaultError::RangeEmptyOrAlreadyAllocated) {
+    // trace!("[ manual_alloc_range_for_lazy] err:{:#?},vpn:{:#x}",e,vpn.0);
+                if matches!(e, PageFaultError::NotMmapType | PageFaultError::RangeEmpty| PageFaultError::AlreadyAllocated) {
                     {
                   
 
@@ -876,12 +884,17 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
 pub async fn handle_page_fault(
     &mut self,
     stval: usize,
+    is_write:bool,
 ) -> Result<bool, PageFaultError> {
+
     let fault_va = VirtAddr::from(stval);
     let vpn = fault_va.floor();
     let va: VirtAddr = vpn.into();
     // 先只查找，不借用：获取起始页号
     let start = self.areatree.find_area(vpn);
+
+    // self.areatree.debug_print();
+    // println!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", va.0, vpn.0, start.map_or(0, |v| v.0));
     // 1. 找不到映射区 → AreaNotFound
     let start_vpn = if let Some(v) = start {
         v
@@ -891,23 +904,31 @@ pub async fn handle_page_fault(
     };
 
     
-    let MemorySet { areatree, page_table, .. } = &mut *self;
     
+    let MemorySet { areatree, page_table, .. } = &mut *self;
+    // areatree.debug_print();
     let area = areatree.get_mut(&start_vpn).unwrap();
 
-    // 2. 不是 mmap 类型 → NotMmapTyper
-    // area.debug_print();
-    if area.area_type != MapAreaType::Mmap&&area.area_type != MapAreaType::Stack {
+    
+   let area_type = &area.area_type;
+  if area_type != &MapAreaType::Mmap && area_type != &MapAreaType::Stack {
+        // 2. 如果不是 mmap 区域 → NotMmapType
         return Err(PageFaultError::NotMmapType);
     }
 
     // 3. 如果页范围为空，或该页已经被分配 → RangeEmptyOrAlreadyAllocated
-    if area.vpn_range.empty() || area.allocated(vpn) {
-        return Err(PageFaultError::RangeEmptyOrAlreadyAllocated);
+    if area.vpn_range.empty()  {
+        return Err(PageFaultError::RangeEmpty);
     }
 
+    if !area.allocated(vpn) {
+        // 该页已经被分配
+
+
+
     // 4. 如果 vpn 在范围内，则进行懒分配处理
-    if area.vpn_range.contains(vpn) {
+if area.vpn_range.contains(vpn) {
+    trace!("[mmap_page_fault] lazy allocate page for vpn");
         // 映射一个页（lazy allocate）
         area.map_one(page_table, vpn).expect("no memery ");
 
@@ -940,7 +961,6 @@ pub async fn handle_page_fault(
         }
 
         // 最后刷新 TLB
-        flush_tlb();
 
         trace!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
@@ -948,11 +968,64 @@ pub async fn handle_page_fault(
             area.vpn_range.get_end().0,
             stval
         );
-        Ok(true)
+        return Ok(true)
     } else {
         // 4. 虚拟页号在映射区外 → VpnNotHandled
         unreachable!();
     }
+
+
+
+}else {
+    if let Some(pte) =  page_table.find_pte(vpn){
+      match pte.is_cow(){
+            true=>{
+    
+             let ref_count=Arc::strong_count( area.data_frames.get(&vpn).expect("cow page should have frame"));
+   if ref_count > 1 {
+    trace!("[mmap_page_fault] cow allocate page for vpn,pte:{:#? }",pte.flags());
+
+    let src = &mut page_table.translate(vpn).unwrap().ppn().get_bytes_array()[..PAGE_SIZE];
+    area.unmap_one(page_table, vpn);
+    area.map_one(page_table, vpn).unwrap();
+    let dst = &mut page_table.translate(vpn).unwrap().ppn().get_bytes_array()[..PAGE_SIZE];
+    dst.copy_from_slice(src);
+    {
+        let mut new_pte = page_table.translate(vpn)
+                             .expect("mapped just now");
+        new_pte.un_cow();    
+    }
+
+        flush_tlb();
+        return Ok(true);
+        // 如果引用计数大于1，说明是共享页，需要进行COW
+        // 这里需要克隆一份页帧
+        // 更新页表项为新页帧
+    } else {
+        // 如果引用计数为1，说明是私有页，不需要COW
+    trace!("[mmap_page_fault] cow not allocate page for vpn,pte:{:#? }",pte.flags());
+
+            pte.un_cow();
+
+        flush_tlb();
+        return Ok(true);
+    }
+            }
+            _=>return Ok(false),
+      }
+
+ }
+ else{
+    unimplemented!();
+ };
+
+}
+
+   
+
+
+
+
 }
 /// Translate&Copy a ptr[u8] array end with `\0` to a `String` Vec through page table
 pub  async fn safe_translated_str(&mut self, ptr: *const u8) -> String {
@@ -1320,6 +1393,6 @@ pub fn remap_test() {
         .translate(mid_data.floor())
         .unwrap()
         .executable(),);
-    println!("remap_test passed!");
+    trace!("remap_test passed!");
 }
 

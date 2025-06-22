@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use core::task::{Context, Poll};
 
 use crate::sync::waitqueue::WaitQueue;
-use crate::task::{current_task_id, current_task_id_may_uninit};
+use crate::task::{current_task, current_task_id, current_task_id_may_uninit, yield_now};
 
 #[must_use = "If unused, the lock will be immediately unlocked"]
 pub struct Mutex<T: ?Sized> {
@@ -78,7 +78,7 @@ impl<T: ?Sized> Mutex<T> {
             Err(_) => None,
         }
     }
-
+   
     /// # Safety
     /// 强制解锁。调用者必须确保这是安全的操作，例如当前任务确实是锁的拥有者。
     /// （通常在 MutexGuard::drop 内部调用，此时 Guard 的存在就暗示了所有权）
@@ -139,7 +139,7 @@ impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
         unsafe {
             match self.data_ptr {
                 Some(ptr) => &*ptr, // 如果已经加锁，data_ptr 是 Some，直接解引用返回引用
-                
+
                 None => panic!("MutexGuard: Dereferenced before lock acquired need await"), // 未加锁时解引用，panic 防止未定义行为
             }
         }

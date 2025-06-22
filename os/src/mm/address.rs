@@ -126,7 +126,7 @@ impl From<usize> for VirtPageNum {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << VPN_WIDTH_SV39) - 1))
         let tmp = v >> (VPN_WIDTH_SV39 - 1);
-        assert!(tmp == 0 || tmp == (1 << (52 - VPN_WIDTH_SV39 + 1)) - 1);
+        assert!(tmp == 0 || tmp == (1 << (52 - VPN_WIDTH_SV39 + 1)) - 1, "invalid vpn: {:#x}", v);
         Self(v)
     }
 }

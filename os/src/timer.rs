@@ -17,6 +17,9 @@ const NANO_PER_SEC: usize = 1_000_000_000;
 
 /// Get the current time in ticks
 pub fn get_time() -> usize {
+    time::read() / CLOCK_FREQ
+}
+pub fn get_time_ticks() -> usize {
     time::read()
 }
 
@@ -25,7 +28,7 @@ pub fn get_time_ms() -> usize {
     time::read() * MSEC_PER_SEC / CLOCK_FREQ
 }
 #[repr(C)]
-#[derive(Debug,PartialEq, Eq,PartialOrd, Ord,Clone, Copy)]
+#[derive(Debug,PartialEq, Eq,PartialOrd, Ord,Clone, Copy,Default)]
 pub struct TimeVal {
     pub sec: usize,
     pub usec: usize,
@@ -176,12 +179,10 @@ pub fn get_time_ns() -> usize {
     nanos as usize
 }
 
-pub fn get_time_ticks() -> usize {
-    time::read()
-}
+
 /// Set the next timer interrupt
 pub fn set_next_trigger() {
-    set_timer(get_time() + CLOCK_FREQ / TICKS_PER_SEC);
+    set_timer(get_time_ticks() + CLOCK_FREQ / TICKS_PER_SEC);
 }
 
 pub fn get_usertime() -> UserTimeSpec {

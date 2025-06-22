@@ -136,7 +136,7 @@ pub fn sys_sendmsg(_sockfd: usize, _addr: *const u8, _flags: u32) -> SyscallRet 
 }
 
 pub async  fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> SyscallRet {
-    debug!(
+    info!(
         "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
         domain, stype, protocol, sv as usize
     );

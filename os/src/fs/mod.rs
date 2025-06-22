@@ -12,6 +12,7 @@ pub mod dev;
 pub mod net;
 pub mod mount;
 pub mod ext4;
+pub mod select;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;

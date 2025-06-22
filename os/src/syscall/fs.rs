@@ -29,7 +29,7 @@ use super::process;
 
 
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_write,fd:{}", current_task().get_pid(), fd);
+    info!("kernel:pid[{}] sys_write,fd:{}", current_task().get_pid(), fd);
     let token = current_token().await;
     let proc = current_process();
     let fd_table = proc.fd_table.lock().await;
@@ -42,7 +42,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     match &fd_table.table[fd] {
         Some(file) => {
             // 2. 检查是否可写
-            if !file.any().writable().map_err(|_| SysErrNo::EIO)? {
+            if !file.any().writable()? {
                 return Err(SysErrNo::EACCES);
             }
             let file = file.clone();
@@ -51,7 +51,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .any()
                 .write(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
-                .map_err(|_| SysErrNo::EIO)?;
+                ?;
             Ok(bytes )
         }
         None => Err(SysErrNo::EBADF),
@@ -59,7 +59,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 }
 
 pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_read,fd:{}", current_task().get_pid(), fd);
+    info!("[sys_read],fd:{}",  fd);
     let token = current_token().await;
     let proc = current_process();
     let fd_table = proc.fd_table.lock().await;
@@ -72,7 +72,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     match &fd_table.table[fd] {
         Some(file) => {
             // 2. 检查是否可读
-            if !file.any().readable().map_err(|_| SysErrNo::EIO)? {
+            if !file.any().readable()? {
                 return Err(SysErrNo::EACCES);
             }
             let file = file.clone();
@@ -81,7 +81,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .any()
                 .read(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
-                .map_err(|_| SysErrNo::EIO)?;
+               ?;
             Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),
@@ -1095,7 +1095,7 @@ pub async fn sys_ppoll(
     tmo_user_ptr: *const UserTimeSpec, // 指向用户空间的 timespec
     sigmask_user_ptr: *const SigSet,   // 指向用户空间的 sigset_t
 ) -> SyscallRet {
-    log::trace!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
+    log::info!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
                 fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr );
 
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
@@ -1109,7 +1109,6 @@ pub async fn sys_ppoll(
             //     Ok(old_mask) => old_sigmask_to_restore = Some(old_mask),
             //     Err(e) => return Err(e), // 复制或设置掩码失败
             // }
-            // 简化：假设我们有一个函数可以原子地交换掩码
             // old_sigmask_to_restore = Some(swap_current_thread_sigmask_from_user(token, sigmask_user_ptr)?);
             // 这里需要更底层的实现。我们将使用一个 RAII Guard 来确保恢复。
             // 或者在 defer 块中恢复。
@@ -1202,6 +1201,7 @@ pub async fn sys_ppoll(
         }
     };
 
+    info!("[sys_ppoll] user_pollfds_kernel_copy: {:?}", user_pollfds_kernel_copy);
     // 5. 构建 parsed_requests (与 sys_poll 相同)
     let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
     let fd_table_guard = pcb_arc.fd_table.lock().await;
@@ -2172,7 +2172,10 @@ pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet 
             ),
         )
     } {
-        Ok(()) => Ok(0), // 成功
+        Ok(_) => {
+            log::info!("[sys_pipe2] Successfully created pipe with fds: read={}, write={}", fd_read, fd_write);
+            Ok(0)
+        }
         Err(_translate_err) => {
             // 写回失败，这是一个严重的问题。
             // 理论上应该尝试关闭已分配的 fd_read 和 fd_write。

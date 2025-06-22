@@ -181,7 +181,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
-                // warn!("no tasks available in run_tasks");
+                error!("no tasks available in run_tasks");
 
                 wait_for_irqs();
             }
@@ -282,8 +282,8 @@ pub async fn user_task_top() -> i32 {
                 }
                 Trap::Exception(Exception::StorePageFault)
                 | Trap::Exception(Exception::LoadPageFault)
-                | Trap::Exception(Exception::InstructionPageFault)
-                |Trap::Exception(Exception::IllegalInstruction)  => {
+                | Trap::Exception(Exception::InstructionPageFault)=>
+                 {
                     //懒分配
                     // println!(
                     //     "[kernel] trap_handler:  {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
@@ -291,6 +291,9 @@ pub async fn user_task_top() -> i32 {
                     //     stval,
                     //     sepc
                     // );
+                    let is_write:bool=
+                        scause.cause() == Trap::Exception(Exception::StorePageFault);
+
                     let stval=if scause.cause() == riscv::register::scause::Trap::Exception(Exception::IllegalInstruction) {
                         // 如果是非法指令异常，stval 是 sepc
                         sepc
@@ -301,10 +304,8 @@ pub async fn user_task_top() -> i32 {
                         .get_process()
                         .unwrap()
                         .memory_set
-                        .lock()
-                        .await
-                        .handle_page_fault(stval)
-                        .await
+                        .lock().await
+                        .handle_page_fault(stval,is_write).await
                         .is_err()
                     {
                         exit_proc(-2).await;
@@ -331,6 +332,13 @@ pub async fn user_task_top() -> i32 {
 
                     exit_current(-4).await;
                 }
+Trap::Exception(Exception::IllegalInstruction)  =>{
+                    println!("[kernel] Illegal instruction exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
+
+                    exit_current(-2).await;
+                }
+                
+
                 Trap::Interrupt(Interrupt::SupervisorTimer) => {
                     set_next_trigger();
 

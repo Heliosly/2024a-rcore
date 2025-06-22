@@ -18,7 +18,7 @@ pub mod arch;
 mod net;
 pub mod flags;
 use flags::{IoVec, Utsname};
-use crate::{signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
+use crate::{fs::select::FdSet, signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
 use fs::*;
 use process::*;
 use other::*;
@@ -222,6 +222,8 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_MLOCKALL => sys_mlockall(args[0] as u32).await,
         SYSCALL_MUNLOCKALL => sys_munlockall().await,
 
+        SYSCALL_GETRUSAGE=>sys_getrusage(args[0] as i32,args[1] as *mut Rusage ).await,
+        SYSCALL_PSELECT6=>sys_pselect6(args[0] as i32, args[1] as *mut FdSet, args[2] as *mut FdSet,args[3] as *mut FdSet, args[4] as *const UserTimeSpec, args[5] as *const SigSet).await,
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{mm::get_target_ref, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigInfo, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, timer::UserTimeSpec, utils::error::{SysErrNo, SyscallRet}};
+use crate::{mm::{get_target_ref, translated_refmut}, signal::{load_trap_for_signal, send_signal_to_task, SigAction, SigInfo, SigMaskHow, SigSet, Signal, NSIG}, task::{current_process, current_task, PID2PC, TID2TC}, timer::UserTimeSpec, utils::error::{SysErrNo, SyscallRet}};
 
 // pub fn sys_rt_sigaction(
 //     signo: usize,
@@ -74,9 +74,9 @@ pub async fn sys_sigaction(
         shared_state.sigactions[sig as usize] = *new_action;
         let handler = shared_state.sigactions[sig as usize].handler;
         let flags = shared_state.sigactions[sig as usize].flags;
-        info!("step 1: sig={:?}", sig as usize);
-info!("step 2: handler={:#x}", handler);
-info!("step 3: flags={:?}", flags);
+        trace!("step 1: sig={:?}", sig as usize);
+trace!("step 2: handler={:#x}", handler);
+trace!("step 3: flags={:?}", flags);
         // 校验 new_action 的合法性 (例如 handler 地址)
         // ...
 
@@ -93,14 +93,18 @@ pub async  fn sys_sigprocmask(
     set_user_ptr: *const SigSet,
     oldset_user_ptr: *mut SigSet,
 ) -> SyscallRet {
-    info!("[sys_sisgprocmask]");
+    // info!("[sys_sisgprocmask]");
     let current_task_arc = current_task();
     let mut signal_state = current_task_arc.signal_state.lock().await;
     let old_mask = signal_state.sigmask;
 
-    if !set_user_ptr.is_null() {
-        let set = * current_process().memory_set.lock().await.safe_get_target_ref( set_user_ptr).await?;
+        let proc = current_process();
 
+        let token = proc .get_user_token().await;
+    if !set_user_ptr.is_null() {
+        proc.manual_alloc_type_for_lazy(set_user_ptr).await?;
+        let set =  *get_target_ref( token,set_user_ptr)?;
+      
         let enum_how = match SigMaskHow::try_from(how) {
             Ok(how) => how,
             Err(_) => return Err(SysErrNo::EINVAL),
@@ -147,8 +151,8 @@ pub async  fn sys_sigprocmask(
     drop(signal_state); // 先释放锁，再复制到用户空间
 
     if !oldset_user_ptr.is_null() {
-        *current_process().memory_set.lock().await.
-        safe_translated_refmut( oldset_user_ptr).await?=old_mask;
+        current_process().manual_alloc_type_for_lazy(oldset_user_ptr)  .await?;
+        *translated_refmut(token, oldset_user_ptr)?=old_mask;
         
     }
 

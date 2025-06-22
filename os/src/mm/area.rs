@@ -387,16 +387,41 @@ impl MapArea {
             map_type: another.map_type,
             map_perm: another.map_perm,
             area_type: another.area_type,
-            fd: None,
+            fd: another.fd.clone(),
 
             mmap_flags: MmapFlags::empty(),
         }
     }
-    pub fn map_given_frames(&mut self, page_table: &mut PageTable, frames: Vec<Arc<FrameTracker>>) {
-        for (vpn, frame) in self.vpn_range.clone().into_iter().zip(frames.into_iter()) {
-            let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
-            page_table.map(vpn, frame.ppn, pte_flags);
-            self.data_frames.insert(vpn, frame);
+       /// Map each provided frame to its corresponding VPN.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_table` – 目标页表
+    /// * `frames` – 一个 BTreeMap，键是要映射的 VirtPageNum，值是相应的 FrameTracker
+    pub fn map_given_frames(
+        &mut self,
+        page_table: &mut PageTable,
+        frames: &BTreeMap<VirtPageNum, Arc<FrameTracker>>,
+        is_cow:bool,
+    ) {
+        // 先获取 PTE flags
+        let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize)
+            .expect("Invalid permission flags");
+
+        // 对每对 (vpn, frame) 做映射并记录
+        for (vpn, frame) in frames {
+            // println!("[MapArea] mapping vpn:{:#x} to frame ppn:{:#x} cow :{:?}", vpn.0, frame.ppn().0,is_cow);
+            // 将这条映射插入页表
+            page_table.map(*vpn, frame.ppn(), pte_flags);
+            if is_cow {
+                // 如果是 COW 映射，设置相应的标志
+              let   pte=  page_table.find_pte(*vpn).unwrap();
+                pte.set_cow();
+                // println!("pte:{:?}",pte.flags());
+                // 记录到 data_frames 中
+
+            self.data_frames.insert(*vpn, frame.clone());
+            }
         }
     }
     /// Update area's mapping flags and write it to page table. You need to flush TLB after calling

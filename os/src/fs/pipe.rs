@@ -21,7 +21,7 @@ use crate::{
 const RING_BUFFER_SIZE: usize = 0x4000; // 16KB
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-enum RingBufferStatus {
+pub enum RingBufferStatus {
     Full,
     Empty,
     Normal,
