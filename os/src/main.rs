@@ -34,6 +34,7 @@ extern crate alloc;
 #[macro_use]
 mod console;
 
+pub mod arch;
 pub mod config;
 pub mod drivers;
 pub mod fs;
@@ -52,15 +53,16 @@ pub mod trap;
 ///utils;
 
 pub mod utils;
-use core::arch::{asm, global_asm};
+// use core::arch::{asm, global_asm};
 use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
 use trap::user_task_top;
 
 use crate::fs::{open_file, OpenFlags};
 
-global_asm!(include_str!("entry.asm"));
-global_asm!(include_str!("signal.S"));
+// global_asm!(include_str!("entry.asm"));
+// global_asm!(include_str!("signal.S"));
+
 /// clear BSS segment
 fn clear_bss() {
     extern "C" {
@@ -74,17 +76,17 @@ fn clear_bss() {
 
 }
 
-#[no_mangle]
-///立即数高于12位用rust处理
-pub fn setbootsp() {
-   unsafe {
-        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
-        asm!("la t0, rust_main");
-        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
-        asm!("jalr zero, 0(t0)");
+// #[no_mangle]
+// ///立即数高于12位用rust处理
+// pub fn setbootsp() {
+//    unsafe {
+//         asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
+//         asm!("la t0, rust_main");
+//         asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
+//         asm!("jalr zero, 0(t0)");
        
-    }
-}
+//     }
+// }
 
 #[no_mangle]
 /// the rust entry-point of os
@@ -127,15 +129,11 @@ pub fn rust_main() -> ! {
     }
 }
 
-
 #[no_mangle]
 pub static mut __stack_chk_guard: usize = 0xdead_beef_dead_beef;
 
 // 栈溢出检测失败时调用的函数
 #[no_mangle]
 pub extern "C" fn __stack_chk_fail() {
-   
-  
   panic!("stack overflow detected");
-   
 }

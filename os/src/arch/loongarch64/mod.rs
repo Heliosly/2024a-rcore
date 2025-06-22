@@ -1,0 +1,42 @@
+use core::arch::global_asm;
+
+global_asm!(include_str!("entry.asm"));
+global_asm!(include_str!("signal.S"));
+
+pub mod trap;
+// pub mod context;
+// pub mod mm;
+// pub mod timer;
+
+use crate::arch::ArchInit;
+use crate::config::KERNEL_DIRECT_OFFSET;
+use core::arch::asm;
+
+pub struct LoongArch64;
+
+impl ArchInit for LoongArch64 {
+    fn arch_init() {
+        trap::LoongArch64Trap::init_trap();
+    }
+    
+    fn set_boot_stack() {
+        unsafe {
+            asm!("add.d $sp, $sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
+        }
+    }
+    
+    fn jump_to_rust_main() -> ! {
+        unsafe {
+            asm!("la.global $t0, rust_main");
+            asm!("add.d $t0, $t0, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("jirl $zero, $t0, 0");
+        }
+        unreachable!()
+    }
+}
+
+#[no_mangle]
+pub fn setbootsp() -> ! {
+    LoongArch64::set_boot_stack();
+    LoongArch64::jump_to_rust_main();
+}
