@@ -114,6 +114,9 @@ impl OsInode {
         self.inner.lock().inode.set_timestamps(atime, mtime, ctime)
          
     }
+    pub fn truncate(&self, size: u64) -> SyscallRet {
+        self.inner.lock().inode.truncate(size).map_err(|err| SysErrNo::from(-err))
+    }
 }
 
 impl OpenFlags {

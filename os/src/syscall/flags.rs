@@ -24,7 +24,15 @@ bitflags! {
         const REMOVEDIR       = 0x200;  // 仅用于 unlinkat
     }
 }
-
+bitflags::bitflags! {
+    #[derive(Default)]
+    pub struct MlockallFlags: u32 {
+        /// 锁定当前进程中**所有已经映射的内存页**
+        const MCL_CURRENT = 0x0001;
+        /// 未来所有映射（mmap/brk）都自动锁定（如同自动 mlock）
+        const MCL_FUTURE  = 0x0002;
+    }
+}
 
 pub const  AT_FDCWD :i32=  -100;
 

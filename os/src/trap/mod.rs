@@ -185,20 +185,27 @@ pub async fn user_task_top() -> i32 {
                 }
 
                 disable_irqs();
-            } else if CurrentTrap::is_page_fault(&scause) {
+            } else if CurrentTrap::is_page_fault(&scause) || CurrentTrap::is_illegal_instruction(&scause) {
                 //懒分配
                 // println!(
                 //     "[kernel] trap_handler:  PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
                 //     stval,
                 //     sepc
                 // );
+                let fault_addr = if CurrentTrap::is_illegal_instruction(&scause) {
+                    // 如果是非法指令异常，fault_addr 是 sepc
+                    sepc
+                } else {
+                    stval
+                };
+                
                 if curr
                     .get_process()
                     .unwrap()
                     .memory_set
                     .lock()
                     .await
-                    .handle_page_fault(stval)
+                    .handle_page_fault(fault_addr)
                     .await
                     .is_err()
                 {
@@ -213,10 +220,8 @@ pub async fn user_task_top() -> i32 {
                     stval,
                     tf.sepc,
                 );
+                // page fault exit code
                 exit_current(-2).await;
-            } else if CurrentTrap::is_illegal_instruction(&scause) {
-                println!("[kernel] IllegalInstruction in application, kernel killed it.");
-                exit_current(-3).await;
             } else if CurrentTrap::is_breakpoint(&scause) {
                 println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
                 exit_current(-4).await;
@@ -225,6 +230,8 @@ pub async fn user_task_top() -> i32 {
                 tf.trap_status = TrapStatus::Done;
                 on_timer_tick();
                 if let Some(curr) = current_task_may_uninit() {
+                    // if task is already exited or blocking,
+                    // no need preempt, they are rescheduling
                     if curr.need_resched()
                         && curr.can_preempt()
                         && !curr.is_exited()

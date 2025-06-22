@@ -2,7 +2,8 @@
 //!
 
 
-use core::{ffi::c_void, future::Future, hint, pin::Pin};
+
+use core::{future::Future, pin::Pin};
 
 use alloc::{
    boxed::Box, collections::linked_list::LinkedList, format, string::{String, ToString}, sync::Arc, vec::Vec
@@ -11,12 +12,12 @@ use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
-        flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
-    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
-        current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
-    }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
-         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path, va_is_valid
+    config::{MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
+        flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
+    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
+        current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock,  RobustList, TaskStatus, PID2PC, TID2TC
+    }, timer::{ current_time,  get_usertime, TimeVal, UserTimeSpec}, utils::{
+         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     }
 };
 pub const MADV_NORMAL: u32 = 0;
@@ -751,8 +752,8 @@ pub async fn sys_mmap(
             Err(SysErrNo::EINVAL)},
     };
  info!(
-        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?}",
-        addr, len, fd , off, flags,mmap_prot, map_perm
+        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot is {:?}, map_perm {:?} pid:{},tid:{}",
+        addr, len, fd , off, flags,mmap_prot, map_perm,current_process().get_pid(),current_task_id()
     );
     if !flags.contains(MmapFlags::MAP_ANONYMOUS)&&fd<0{
         return Err(SysErrNo::EINVAL);
@@ -1667,4 +1668,118 @@ pub async  fn sys_madvise(
         return Err(SysErrNo::EINVAL);
         }
     }
+}
+
+
+
+
+/// man 2: int get_mempolicy(int *mode, unsigned long *nodemask, unsigned long maxnode, void *addr, int flags);
+pub async   fn sys_get_mempolicy(
+    mode_ptr: *mut i32,
+    nodemask_ptr: *mut usize,
+    maxnode: usize,
+    _addr: usize, // 我们忽略 addr 和 flags，因为策略是 per-process 的
+    _flags: i32,
+) ->  SyscallRet {
+    trace!(
+        "[sys__get_mempolicy] policy: {:p}, nmask: {:p}, maxnode: {}, addr: {}, flags: {}",
+        mode_ptr, nodemask_ptr, maxnode, _addr, _flags
+    );
+    let task = current_task();
+    let token = current_token().await;
+
+    // 1. 写回 mode
+    let proc = current_process();
+    proc.manual_alloc_type_for_lazy(mode_ptr).await?;
+
+    proc.manual_alloc_type_for_lazy(nodemask_ptr).await?;
+    drop(proc);
+    if !mode_ptr.is_null() {
+        if let Ok(user_mode) = translated_refmut(token, mode_ptr) {
+            *user_mode =task.get_noma_policy() as i32;
+        } else {
+            return Err(SysErrNo::EFAULT);
+        }
+    }
+
+    // 2. 写回 nodemask
+    if !nodemask_ptr.is_null() {
+        if maxnode < 1 {
+            return Err(SysErrNo::EINVAL);// 用户提供的 buffer 太小
+        }
+        // 我们唯一的 node 是 "node 0", 对应的 mask 是 1
+        if let Ok(user_mask) = translated_refmut(token, nodemask_ptr) {
+            *user_mask = 1; 
+        } else {
+            return Err(SysErrNo::EFAULT);
+        }
+        // 如果 maxnode 很大，还需要清零其余部分
+        if maxnode > usize::BITS as usize {
+            let buffer_size = (maxnode as usize + 7) / 8; // bytes
+            let nodemask_bytes = translated_byte_buffer(token, nodemask_ptr as *const u8, buffer_size);
+            
+            let mut offset = core::mem::size_of::<usize>();
+            for buf in nodemask_bytes {
+                if offset > 0 {
+                    let skip = offset.min(buf.len());
+                    buf[skip..].fill(0);
+                    offset -= skip;
+                } else {
+                    buf.fill(0);
+                }
+            }
+        }
+    }
+
+    Ok(0) 
+
+    // 目前不支持 NUMA 策略
+}
+/// man 2: int set_mempolicy(int mode, const unsigned long *nodemask, unsigned long maxnode);
+pub async  fn sys_set_mempolicy(mode: usize, nodemask_ptr: *const usize, maxnode: usize) -> SyscallRet {
+    trace!(
+        "[sys__set_mempolicy] policy: {}, nmask: {:p}, maxnode: {}",
+        mode, nodemask_ptr, maxnode
+    );
+     // 1. 验证 mode
+     if !(MPOL_DEFAULT..=MPOL_PREFERRED).contains(&mode) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 2. 根据 mode 验证 nodemask
+    match mode {
+        MPOL_BIND => {
+            // BIND 策略要求 nodemask 必须非空，且只能指向我们唯一的 "node 0"
+            if nodemask_ptr.is_null() {
+                
+        return Err(SysErrNo::EINVAL);
+
+            }
+            // 验证 maxnode 至少能覆盖到 node 0
+            if maxnode < 1 {
+                return Err(SysErrNo::EINVAL);
+            }
+            current_process().manual_alloc_type_for_lazy(nodemask_ptr).await?;
+            // 从用户空间安全读取 nodemask
+            let nodemask = if let Ok(val) = get_target_ref(current_token().await, nodemask_ptr) {
+                *val
+            } else {
+                return Err(SysErrNo::EINVAL);
+            };
+            // 在我们的模型中，唯一有效的 nodemask 是 1 (代表 node 0)
+            if nodemask != 1 {
+                return Err(SysErrNo::EINVAL);
+            }
+        }
+        _ => {
+            // 其他策略 (DEFAULT, INTERLEAVE, PREFERRED) 应该使用 NULL nodemask
+            // Linux 在这里比较宽容，我们也可以选择忽略非空的 nodemask
+            // 为简单起见，我们不作严格检查
+        }
+    }
+
+    // 3. 更新任务的策略
+    current_task().set_noma_policy(mode);
+
+    Ok(0) 
 }

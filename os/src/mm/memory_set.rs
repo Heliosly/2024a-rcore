@@ -4,26 +4,23 @@ use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::page_table::PTEFlags;
 use crate::mm::{ translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
 use crate::syscall::flags::MremapFlags;
-use crate::task::aux::{Aux, AuxType};
-use crate::task::{current_process, current_token};
-use crate::timer::get_time_ticks;
+use crate::task::auxv::{Aux, AuxType};
+use crate::utils;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
 use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
-use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::btree_map::{BTreeMap};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
-use riscv::addr::page;
-use riscv::register::scause::{Exception,  Trap};
 use xmas_elf::ElfFile;
 use core::arch::asm;
-use core::ptr::write_volatile;
+use core::ops::Range;
 use core::{ptr, slice};
 use riscv::register::satp;
 
@@ -129,18 +126,74 @@ pub fn munmap(
     
     /// 复制逻辑段内容
     pub fn clone_area(&mut self, start_vpn: VirtPageNum, another:&MemorySet) {
+    //    self.areatree.debug_print();
+       println!("b");
+    //    another.areatree.debug_print();
+
         if let Some(area) = another
             .areatree.get(&start_vpn)
             
         {
+            
             for vpn in area.vpn_range {
-                let src_ppn = another.translate(vpn).unwrap().ppn();
-                let dst_ppn = self.translate(vpn).unwrap().ppn();
+                let src_ppn = another.translate(vpn).expect(&format!("translate failed in `another` for vpn {:#x}", vpn.0)).ppn();
+                let dst_ppn = self.translate(vpn).expect(&format!("translate failed in `self` for vpn {:#x}", vpn.0)).ppn();
                 dst_ppn
                     .get_bytes_array()
                     .copy_from_slice(src_ppn.get_bytes_array());
             }
         }
+    }
+    // 从 `src_space` 的 `src_area` 复制数据到当前空间的 `dst_area`。
+    /// 要求两者的 vpn_range.size() 相同，否则 panic。
+    pub fn copy_area_data(
+        &mut self,
+        src_space: &MemorySet,
+        src_vpn: VirtPageNum,
+        dst_vpn: VirtPageNum,
+    ) {
+        // self.areatree.debug_print();
+        // 1. 断言大小一致
+        let src_area = src_space
+            .areatree
+            .get(&src_vpn)
+            .expect(&format!("src_space missing area for vpn {:#x}", src_vpn.0));
+
+        let dst_area = self
+            .areatree
+            .get(&dst_vpn)
+            .expect(&format!("dst_space missing area for vpn {:#x}", dst_vpn.0));
+        let src_pages = src_area.range_size();
+        let dst_pages = dst_area.range_size();
+        assert!(
+            src_pages == dst_pages,
+            "copy_area_data: src_pages ({}) != dst_pages ({})",
+            src_pages,
+            dst_pages
+        );
+        // dst_area.debug_print();
+        // println!("dst");
+        // src_area.debug_print();
+               // 2. 直接用 range.iter()，它是左闭右开，不会包含 end
+               let src_iter = src_area.vpn_range.iter();
+               let dst_iter = dst_area.vpn_range.iter();
+       
+               for (vpn_src, vpn_dst) in src_iter.zip(dst_iter) {
+                   // translate 不会再遇到右边界
+                   let src_ppn = src_space
+                       .translate(vpn_src)
+                       .expect(&format!("src_space missing page {:?}", vpn_src))
+                       .ppn();
+                   let dst_ppn = self
+                       .translate(vpn_dst)
+                       .expect(&format!("dst_space missing page {:?}", vpn_dst))
+                       .ppn();
+       
+                   // 内存拷贝
+                   dst_ppn
+                       .get_bytes_array()
+                       .copy_from_slice(src_ppn.get_bytes_array());
+               }
     }
    
 ///Create a new `MemorySet` from global kernel space
@@ -169,6 +222,7 @@ pub fn munmap(
         permission: MapPermission,
         area_type: MapAreaType,
     ) ->GeneralRet{
+      
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission, area_type),
             None,
@@ -196,10 +250,13 @@ pub fn munmap(
     /// Assuming that there are no conflicts in the virtual address
     /// space.
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>)->GeneralRet{
+
         map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data,0);
         }
+
+       
         self.areatree.push(map_area);
         Ok(())
     }
@@ -511,63 +568,104 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
         map_area.map_given_frames(&mut self.page_table, frames);
         self.areatree.push(map_area);
     }
-      /// Create a new address space by copy code&data from a exited process's address space.
-      pub fn from_existed_user(user_space: &mut Self) -> Self {
+    pub async  fn from_existed_user(user_space: &mut Self) -> Self {
         let mut memory_set = Self::new_from_kernel();
-
-        let mut old_page_table_ref = &mut user_space.page_table; 
-        let old_areatree_mut_ref = &mut user_space.areatree; 
-        // memory_set.map_trampoline();
-
-        for (_vpn_key, area) in old_areatree_mut_ref.iter_mut().filter(|(_, a)| a.area_type != MapAreaType::Stack) {
-            let  new_area = MapArea::from_another(area);
-
-            if area.area_type == MapAreaType::Mmap  {
-                if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
-                    // 对于共享映射:
-                    let frames:  Vec<Arc<FrameTracker>> = area.data_frames.values().cloned().collect();
-                    memory_set.push_with_given_frames(new_area, frames);
-
-                    continue; 
-
+        
+        // 第一阶段：收集需要分配的VPN
+        let mut vpns_to_alloc = Vec::new();
+        
+        {
+            // 仅借用 areatree
+            let old_areatree = &mut user_space.areatree;
+            for (_, area) in old_areatree.iter_mut() {
+                if area.area_type == MapAreaType::Mmap && 
+                   !area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
+                {
+                    for vpn in area.vpn_range {
+                        if !area.allocated(vpn) {
+                            vpns_to_alloc.push(vpn);
+                        }
                     }
-                   
-
-                   
-                
-
-                // 为了解决第一个所有权冲突：先收集需要操作的VPN
-                let mut vpns_to_map_one = Vec::new();
-                for vpn_key in area.vpn_range { // 不可变借用 area.data_frames
-                   
-                    if !area.allocated(vpn_key){ // 不可变借用 area
-                        
-                        // println!("vpn:{:#x} not allocated",vpn_key.0);
-                        vpns_to_map_one.push(vpn_key);
-                    }
-                }
-                // area.data_frames.iter() 的借用在这里结束
-                for vpn_to_map in vpns_to_map_one {
-                    area.map_one(&mut old_page_table_ref, vpn_to_map).unwrap();
                 }
             }
-
-            let area_to_push = new_area; 
-            memory_set.push(area_to_push, None).unwrap();
-            // area.debug_print();
-
-            // copy data from another space
-            for vpn in area.vpn_range {
-                let src_ppn = old_page_table_ref.translate(vpn).unwrap().ppn();
-                let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
-                // println!("copying vpn:{:#x} src_ppn:{:#x} dst_ppn:{:#x}",vpn.0,src_ppn.0,dst_ppn.0);
-                dst_ppn
-                    .get_bytes_array()
-                    .copy_from_slice(src_ppn.get_bytes_array());
-            } 
+        } // 结束 areatree 的借用
+        
+        // 第二阶段：处理缺页
+        for vpn in vpns_to_alloc {
+            user_space.handle_page_fault(vpn.0 << PAGE_SIZE_BITS).await.expect(&format!("Failed to handle page fault for VPN {:#x}", vpn.0));
         }
+        
+        // 第三阶段：处理所有区域
+        {
+            let old_areatree = &mut user_space.areatree;
+            // old_areatree.debug_print();
+            let old_page_table = &mut user_space.page_table;
+            
+            for (_, area) in old_areatree.iter_mut() {
+                let new_area = MapArea::from_another(area);
+                
+                if area.area_type == MapAreaType::Mmap && 
+                   area.mmap_flags.contains(MmapFlags::MAP_SHARED) 
+                {
+                    // 共享映射
+                    let frames = area.data_frames.values().cloned().collect();
+                    memory_set.push_with_given_frames(new_area, frames);
+                } else {
+                    // 其他区域
+                    // new_area.debug_print();
+                    memory_set.push(new_area, None).unwrap();
+                    
+                    // 复制数据
+                    for vpn in area.vpn_range {
+                        let src_ppn = old_page_table.translate(vpn).unwrap().ppn();
+                        let dst_ppn = memory_set.page_table.translate(vpn).unwrap().ppn();
+                        dst_ppn
+                            .get_bytes_array()
+                            .copy_from_slice(src_ppn.get_bytes_array());
+                    }
+                }
+            }
+        }
+        
         memory_set
     }
+    /// Create a new address space by copying code & data from an existing process's address space,
+/// using Copy-On-Write for private mappings and sharing for shared mappings.
+pub async fn from_existed_user1(user_space: &mut Self) -> Self {
+    let mut memory_set = Self::new_from_kernel();
+
+    // Only process each area once
+    {
+        let old_areatree = &mut user_space.areatree;
+
+        for (_, area) in old_areatree.iter_mut().filter(|(_, a)| a.area_type != MapAreaType::Stack) {
+            if area.area_type == MapAreaType::Mmap && area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
+                // Shared mapping: reuse original frames
+                let frames: Vec<Arc<FrameTracker>> = area.data_frames.values().cloned().collect();
+                let new_area = MapArea::from_another(area);
+                memory_set.push_with_given_frames(new_area, frames);
+            } else {
+                // Private or other mappings: use COW
+                // Clone frame trackers to bump reference counts
+                let frames: Vec<Arc<FrameTracker>> = area.data_frames.values().cloned().collect();
+                let mut new_area = MapArea::from_another(area);
+                new_area.mmap_flags.insert(MmapFlags::MAP_PRIVATE);
+
+                // Insert mapping with shared frames
+                memory_set.push_with_given_frames(new_area, frames);
+
+                // Mark pages for Copy-On-Write
+                for vpn in area.vpn_range.iter() {
+                    if let Some(mut pte) = memory_set.page_table.translate(vpn) {
+                        pte.set_cow();
+                    }
+                }
+            }
+        }
+    }
+
+    memory_set
+}
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
         let satp = self.page_table.token();
@@ -690,7 +788,15 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
         }
         Ok(())
     }
+    pub fn is_region_alloc(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        
+        self.areatree.is_fully_contained(&core::ops::Range {
+            start: start_va.floor(),
+            end: end_va.ceil(),
+        })
+    
 
+    }
 
     pub  async  fn safe_put_data<T:Copy +'static>(&mut self, ptr: *mut T, data: T) -> PutDataRet {
         let data_size = core::mem::size_of::<T>();
@@ -780,16 +886,18 @@ pub async fn handle_page_fault(
     let start_vpn = if let Some(v) = start {
         v
     } else {
-        // println!("vpn:{:#x}",vpn.0);
         // self.areatree.debug_print();
         return Err(PageFaultError::AreaNotFound);
     };
 
+    
     let MemorySet { areatree, page_table, .. } = &mut *self;
+    
     let area = areatree.get_mut(&start_vpn).unwrap();
 
-    // 2. 不是 mmap 类型 → NotMmapType
-    if area.area_type != MapAreaType::Mmap {
+    // 2. 不是 mmap 类型 → NotMmapTyper
+    // area.debug_print();
+    if area.area_type != MapAreaType::Mmap&&area.area_type != MapAreaType::Stack {
         return Err(PageFaultError::NotMmapType);
     }
 

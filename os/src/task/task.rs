@@ -14,7 +14,7 @@ use crate::mm::{
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
 use crate::syscall::flags::AT_FDCWD;
-use crate::task::aux::{Aux, AuxType};
+use crate::task::auxv::{Aux, AuxType};
 use crate::task::kstack::current_stack_top;
 use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
@@ -248,10 +248,14 @@ impl ProcessControlBlock {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-        let _ = self.memory_set
+      match self.memory_set
             .lock()
             .await
-            .insert_framed_area(start_va, end_va, permission, area_type);
+            .insert_framed_area(start_va, end_va, permission, area_type){
+                Ok(s) => s,
+                Err(e) => error!("insert_framed_area error: {:?}", e),
+            }
+      
     }
 
     /// 根据 hint 插入页面到指定的 area 并返回 (va_bottom, va_top)。
@@ -288,8 +292,7 @@ impl ProcessControlBlock {
 
         let start_va = VirtAddr::from(base_vpn);
         let end_va = VirtAddr::from(top_vpn);
-        self.insert_framed_area(start_va, end_va, map_perm, area_type)
-            .await;
+        self.insert_framed_area(start_va, end_va, map_perm, area_type) .await;
         (start_va.0, end_va.0)
     }
 
@@ -301,8 +304,7 @@ impl ProcessControlBlock {
                 USER_STACK_SIZE,
                 MapPermission::R | MapPermission::W | MapPermission::U,
                 MapAreaType::Stack,
-            )
-            .await;
+            ) .await;
 
         self.set_user_stack_top(ustack_top);
 
@@ -312,11 +314,11 @@ impl ProcessControlBlock {
         //     .unwrap()
         //     .is_valid());
 
-        trace!(
-            "[alloc_user_stack]user_stack_top:{:#x},bottom:{:#x}",
-            ustack_top,
-            ustack_bottom
-        );
+        // println!(
+        //     "[alloc_user_stack]user_stack_top:{:#x},bottom:{:#x}",
+        //     ustack_top,
+        //     ustack_bottom
+        // );
     }
 
     /// fork
@@ -326,9 +328,14 @@ impl ProcessControlBlock {
     /// * `another`: 另一个 `ProcessControlBlock` 的引用。
     pub async fn clone_user_res(&self, another: &ProcessControlBlock) {
         self.alloc_user_res().await;
-        self.memory_set.lock().await.clone_area(
-            VirtAddr::from(self.user_stack_top() - USER_STACK_SIZE).floor(),
-            another.memory_set.lock().await.deref(),
+        let self_vpn=VirtAddr::from(self.user_stack_top() - USER_STACK_SIZE).floor();
+        let another_vpn=VirtAddr::from(another.user_stack_top() - USER_STACK_SIZE).floor();
+
+        self.memory_set.lock().await.copy_area_data(
+
+            &*(another.memory_set.lock().await),
+                       another_vpn,
+                      self_vpn,
         );
     }
 
@@ -462,7 +469,7 @@ impl ProcessControlBlock {
 
         let process_control_block = Self {
             pid: pid_handle,
-            user_stack_top: AtomicUsize::new(0),
+            user_stack_top: AtomicUsize::new(USER_STACK_TOP),
             is_init: AtomicBool::new(true),
             base_size: AtomicUsize::new(user_sp),
             cwd: Mutex::new(cwd),
@@ -737,7 +744,7 @@ impl ProcessControlBlock {
             } else {
                 Arc::new(Mutex::new(MemorySet::from_existed_user(
                     &mut *self.memory_set.lock().await,
-                )))
+                ).await))
             };
             let token = ms.lock().await.token();
             (Some(ms), token)
@@ -826,7 +833,7 @@ impl ProcessControlBlock {
                 ))),
                 heap_bottom: AtomicUsize::new(self.heap_bottom.load(Ordering::Relaxed)),
                 program_brk: AtomicUsize::new(self.program_brk.load(Ordering::Relaxed)),
-                user_stack_top: AtomicUsize::new(0),
+                user_stack_top: AtomicUsize::new(USER_STACK_TOP),
 
                 signal_shared_state: new_proc_sig_state,
                 tasks: Mutex::new(Vec::new()),
@@ -844,7 +851,7 @@ impl ProcessControlBlock {
             tcb.set_lead();
             if user_stack == 0 {
                 if !flags.contains(CloneFlags::CLONE_VM) {
-                    process_control_block.clone_user_res(self).await;
+                    // process_control_block.clone_user_res(self).await;
                 }
             }
             info!(
@@ -1115,6 +1122,7 @@ pub struct TaskControlBlock {
     pub robust_list: Mutex<RobustList>,
     pub tms:UnsafeCell<TimeData>,
     pub uid:AtomicUsize,
+    noma_policy:AtomicUsize,
     // pub cpu_set: AtomicU64,
 }
 impl TaskControlBlock {
@@ -1153,6 +1161,7 @@ impl TaskControlBlock {
 
             tms:UnsafeCell::new( TimeData::default()),
             uid:AtomicUsize::new(0),
+            noma_policy:AtomicUsize::new(0),
         }
     }
 
@@ -1290,6 +1299,12 @@ impl TaskControlBlock {
 }
 pub fn set_lead(&self){
       self.is_leader.store(true, Ordering::Release);
+}
+pub  fn set_noma_policy(&self, policy: usize) {
+    self.noma_policy.store(policy, Ordering::Release);
+}
+pub fn get_noma_policy(&self) -> usize {
+    self.noma_policy.load(Ordering::Acquire)
 }
 pub fn join(&self, waker: Waker) {
     let task = waker.data() as *const Task;

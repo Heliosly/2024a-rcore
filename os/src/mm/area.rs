@@ -40,6 +40,7 @@ impl VmAreaTree {
     pub fn push(&mut self, area: MapArea) {
         // trace!("[VmAreaTree] push area: l:{:#x} r:{:#x}",area.vpn_range.get_start().0,area.vpn_range.get_end().0 );
 
+
         self.areas.insert(area.vpn_range.get_start(), area);
     }
     /// 创建一个空的树
@@ -189,6 +190,34 @@ impl VmAreaTree {
         }
     }
 
+    pub fn is_fully_contained(&self, range: &Range<VirtPageNum>) -> bool {
+        let mut cursor = range.start.0;
+        let end = range.end.0;
+    
+        while cursor < end {
+            // 找到最后一个 vpn_range.start <= cursor 的 area
+            let entry = self.areas.range(..=VirtPageNum(cursor)).next_back();
+            let (_, area) = match entry {
+                Some(e) => e,
+                None => return false, // 没有任何区域覆盖 cursor
+            };
+    
+            let a_start = area.vpn_range.get_start().0;
+            let a_end = area.vpn_range.get_end().0;
+    
+            // ️注意是左闭右开：如果 cursor < a_start，说明有空洞；如果 cursor >= a_end，同样不在当前区间
+            if cursor < a_start || cursor >= a_end {
+                return false;
+            }
+    
+            // 推进 cursor 到当前区域结尾
+            cursor = a_end;
+        }
+    
+        // 成功走完所有 cursor，说明整段 range 都被覆盖
+        true
+    }
+    
     /// 检查一个页号区间是否与已存在任何区域重叠
     pub fn is_overlap(&self, range: &Range<VirtPageNum>) -> bool {
         for area in self.areas.values() {
@@ -383,12 +412,12 @@ impl MapArea {
 
         match self.map_type {
             MapType::Framed => {
+                
                 let frame = match frame_alloc(){
                     Some(f) => f,
                     None => return Err(crate::utils::error::SysErrNo::ENOMEM),
                 };
                 ppn = frame.ppn();
-                ppn.get_bytes_array().fill(0);
 
                 self.data_frames.insert(vpn, frame);
             }
@@ -597,11 +626,11 @@ impl MapArea {
         self.vpn_range.set_end(vpn);
         right
     }
-    pub fn lazy_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) {
-        // 仅映射页面
-        vma.map_one(page_table, va.floor());
-        flush_tlb();
-    }
+    // pub fn lazy_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) {
+    //     // 仅映射页面
+    //     vma.map_one(page_table, va.floor()).unwrap();
+    //     flush_tlb();
+    // }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]

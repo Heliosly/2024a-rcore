@@ -191,10 +191,37 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETGID=>sys_getgid(),
         SYSCALL_GETEGID=>sys_getegid(),
         SYSCALL_MEMBARRIER=>sys_membarrier(),
-        SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32 , args[1] as usize, args[2] as *mut u8).await,
-        SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0]  as i32, args[1] as usize, args[2] as *const u8),
+        SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32 , args[1] as usize, args[2] as *mut usize).await,
+        SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0]  as i32, args[1] as usize, args[2] as *const usize).await,
         SYSCALL_MADVISE => sys_madvise(args[0] , args[1], args[2] as u32).await,
-        
+        SYSCALL_SET_MEMPOLICY => sys_set_mempolicy(
+            args[0] ,
+            args[1] as *const usize,
+            args[2] ,
+        ).await,
+        SYSCALL_GET_MEMPOLICY => sys_get_mempolicy(
+            args[0] as *mut i32,
+            args[1] as *mut usize,
+            args[2] ,
+            args[3]  ,
+            args[4] as i32
+        ).await,
+        SYSCALL_SCHED_SETSCHEDULER => sys_sched_setscheduler(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const SchedParam
+        ).await,
+        SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
+        SYSCALL_SCHED_GETPARAM => sys_sched_getparam(args[0] as i32, args[1] as *mut SchedParam).await,
+        SYSCALL_SCHED_SETPARAM => sys_sched_setparam(args[0] as i32, args[1] as *const SchedParam),
+        SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as u32, args[1] as *mut UserTimeSpec).await,
+        SYSCALL_FTRUNCATE=> sys_ftruncate(args[0] as i32, args[1] as u64).await,
+        SYSCALL_TRUNCATE=> sys_truncate(args[0] as *const u8, args[1] as u64).await,
+        SYSCALL_MLOCK => sys_mlock(args[0] , args[1]).await,
+        SYSCALL_MUNLOCK => sys_munlock(args[0] , args[1]).await,
+        SYSCALL_MLOCKALL => sys_mlockall(args[0] as u32).await,
+        SYSCALL_MUNLOCKALL => sys_munlockall().await,
+
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

@@ -32,6 +32,9 @@ bitflags::bitflags! {
         /// Indicates the virtual page has been written since the last time the
         /// D bit was cleared.
         const D =   1 << 7;
+        const COW=1<<8;
+        const W_BACKUP= 1<<9;
+        
     }
 }
 #[derive(Copy, Clone)]
@@ -90,7 +93,39 @@ impl PageTableEntry {
    pub fn is_huge(&self) -> bool {
         PTEFlags::from_bits_truncate(self.bits).intersects(PTEFlags::R | PTEFlags::X)
     }
+    pub fn is_cow(&self)->bool{
+        PTEFlags::from_bits_truncate(self.bits).contains(PTEFlags::R | PTEFlags::W)
+    }
+       // 判断是否设置了 W_BACKUP
+    pub fn is_back_w(&self) -> bool {
+        self.flags().contains(PTEFlags::W_BACKUP)
+    }
+    pub fn set_cow(&mut self) {
+        let mut flags = self.flags();
+        if flags.contains(PTEFlags::W) {
+            flags.insert(PTEFlags::W_BACKUP);
+        }
+        flags.remove(PTEFlags::W);
+        flags.insert(PTEFlags::COW);
+        self.set_raw_flags(flags);
+    }
+        /// 解除 COW 状态，并根据 W_BACKUP 恢复 W 权限
+    pub fn un_cow(&mut self) {
+            let mut flags = self.flags();
     
+            if flags.contains(PTEFlags::W_BACKUP) {
+                flags.insert(PTEFlags::W);
+            }
+    
+            flags.remove(PTEFlags::COW);
+            flags.remove(PTEFlags::W_BACKUP);
+    
+            self.set_raw_flags(flags);
+        }
+    // 内部使用：安全更新 flags 保留物理地址
+    fn set_raw_flags(&mut self, flags: PTEFlags) {
+        self.bits = (self.bits & Self::PHYS_ADDR_MASK) | flags.bits();
+    }
    
 }
 
@@ -233,6 +268,7 @@ impl PageTable {
     }
     /// Create a new page table
     pub fn new() -> Self {
+
         let frame = frame_alloc().unwrap();
         debug!("frame: {:#x}",frame.ppn().0);
         PageTable {
