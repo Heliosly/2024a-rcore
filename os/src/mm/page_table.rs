@@ -274,14 +274,15 @@ impl PageTable {
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.get_pte_array()[*idx];
-            if i == 2 {
-                result = Some(pte);
-                break;
-            }
             if !pte.is_valid() {
                 info!("pte is invalid:vpn:{:x}",vpn.0);
                 return None;
             }
+            if i == 2 {
+                result = Some(pte);
+                break;
+            }
+           
             ppn = pte.ppn();
         }
         result
@@ -319,8 +320,8 @@ impl PageTable {
             let offset = va.page_offset();
             let aligned_pa_usize: usize = aligned_pa.into();
              let res= aligned_pa_usize + offset;
-             if res ==0{
-               warn!("[translate_va] translate res=0,va={:#x},pte:{}",va.0,pte.bits);
+             if res <=1000{
+               warn!("[translate_va] translate res<=1000,va={:#x},pte:{}",va.0,pte.bits);
              };
             (res).into()
         })

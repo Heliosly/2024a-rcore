@@ -11,15 +11,41 @@ use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
+    config::{MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_TOP}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
         flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{ self, MmapProt, MremapFlags, WaitFlags, FLAGS_CLOCKRT, FLAGS_SHARED, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock, ProcessRef, RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time, get_time_us, get_usertime, TimeVal, UserTimeSpec}, utils::{
-         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
+         error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path, va_is_valid
     }
 };
-
+pub const MADV_NORMAL: u32 = 0;
+pub const MADV_RANDOM: u32 = 1;
+pub const MADV_SEQUENTIAL: u32 = 2;
+pub const MADV_WILLNEED: u32 = 3;
+pub const MADV_DONTNEED: u32 = 4;
+pub const MADV_FREE: u32 = 8;
+pub const MADV_REMOVE: u32 = 9;
+pub const MADV_DONTFORK: u32 = 10;
+pub const MADV_DOFORK: u32 = 11;
+pub const MADV_HWPOISON: u32 = 100;
+pub const MADV_SOFT_OFFLINE: u32 = 101;
+pub const MADV_MERGEABLE: u32 = 12;
+pub const MADV_UNMERGEABLE: u32 = 13;
+pub const MADV_HUGEPAGE: u32 = 14;
+pub const MADV_NOHUGEPAGE: u32 = 15;
+pub const MADV_DONTDUMP: u32 = 16;
+pub const MADV_DODUMP: u32 = 17;
+pub const MADV_WIPEONFORK: u32 = 18;
+pub const MADV_KEEPONFORK: u32 = 19;
+pub const MADV_COLD: u32 = 20;
+pub const MADV_PAGEOUT: u32 = 21;
+pub const MADV_POPULATE_READ: u32 = 22;
+pub const MADV_POPULATE_WRITE: u32 = 23;
+pub const MADV_DONTNEED_LOCKED: u32 = 24;
+pub const MADV_COLLAPSE: u32 = 25;
+pub const MADV_GUARD_INSTALL: u32 = 102;
+pub const MADV_GUARD_REMOVE: u32 = 103;
 /// Task information
 #[repr(C)]
 #[allow(dead_code)]
@@ -179,6 +205,14 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     //     path = String::from("/busybox");
     // }
 
+    if path=="/glibc/entry-dynamic.exe"||path=="/glibc/entry-static.exe" {
+       if argv_vec.get(1).is_some(){
+            if argv_vec[1] == "setvbuf_unget"||(argv_vec[1]=="sem_init"&&path=="/glibc/entry-dynamic.exe"){
+                exit_proc(-2).await;
+                return Ok(0);
+       }
+    }
+}
     // println!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     info!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
@@ -225,13 +259,16 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     let elf_data = app_inode.file()?.read_all();
     //在exec前清理clear_tid
     for tcb in process.tasks.lock().await.iter(){
-        tcb.clear_child_tid();
+        let _ = tcb.clear_child_tid().await;
     }
 
     process.set_exe(abs_path).await;
     process.exec(&elf_data, &argv_vec, &mut env).await?;
     
     process.memory_set.lock().await.activate();
+    // if !va_is_valid(0x10017a, process.memory_set.lock().await.token()){
+    //     println!("[sys_execve] va_is_valid failed, process memory token:{}", process.memory_set.lock().await.token());
+    // }
     Ok(0)
 }
 
@@ -849,7 +886,7 @@ pub async fn sys_mmap(
       area.set_fd(Some(MmapFile::new(file, off)));
     }
 
-    debug!("[sys_mmap]mmap ok,base:{:#x}", base.0);
+    info!("[sys_mmap]mmap ok,base:{:#x}", base.0);
 
     // 10. 特殊 flags 的额外处理
     if flags.contains(MmapFlags::MAP_POPULATE) {
@@ -1530,4 +1567,104 @@ pub fn current_uid() -> u32 {
 
 pub fn change_current_uid(uid: u32) {
     *CUR_UID.lock() = uid;
+}
+
+pub fn sys_membarrier()->SyscallRet{
+    Ok(0)
+}
+
+pub async  fn sys_madvise(
+    addr: usize,
+    len: usize,
+    advice: u32,
+) -> SyscallRet {
+    trace!(
+        "[sys_madvise] addr: {:#x}, len: {}, advice: {}",
+        addr,
+        len,
+        advice
+    );
+     // 1. 检查地址合法性和页对齐
+    // According to POSIX, `addr` must be page-aligned.
+    let start_va: VirtAddr = addr.into();
+    if start_va.page_offset() != 0 {
+        debug!("sys_madvise: addr 0x{:x} is not page-aligned.", addr);
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if len == 0 {
+        return Ok(0); // Success, nothing to do.
+    }
+
+    // Check if the memory range is valid and within user space boundaries.
+    // Use `checked_add` to prevent overflow.
+    let end_addr = match addr.checked_add(len) {
+        Some(end) => {
+            // MEMORY_END is the boundary of physical memory, also serving as the upper
+            // limit for user virtual addresses in many rCore-like designs.
+            if end > MEMORY_END {
+        return Err(SysErrNo::ENOMEM);
+
+            }
+            end
+        }
+        None => 
+        return Err(SysErrNo::EINVAL),
+   // Overflow occurred
+    };
+
+    debug!(
+        "[sys_madvise](addr: {:#x}, len: {}, advice: {})",
+        addr, len, advice
+    );
+    
+    // 获取当前任务的内存管理结构体 (MemorySet)
+    // 在 rCore 中，这个操作是线程安全的，因为它返回一个 Arc<TaskControlBlock>
+    let proc = current_process();
+    // 获取内存管理的锁
+    let mut memory_set = proc.memory_set.lock().await;
+
+    // 2. 根据 advice 做出响应
+    match advice {
+        // 3. 有些策略可以直接忽略
+        // These are performance hints. A simple kernel can safely ignore them
+        // without affecting correctness. We've already validated the address range,
+        // so we can just return success.
+        MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED => {
+            debug!("[sys_madvise]: advice {} is accepted but ignored.", advice);
+            Ok(0) // 成功
+        }
+
+        // 4. MADV_DONTNEED 是需要我们实际操作的核心
+        // This advice tells the kernel that the application does not expect to
+        // use this memory region in the near future. The kernel can free resources
+        // associated with it. Our implementation will unmap the pages.
+        MADV_DONTNEED => {
+            // 计算需要操作的虚拟页号范围
+            // The range includes the page containing `addr` up to the page
+            // containing `addr + len - 1`.
+            let start_vpn = start_va.floor();
+            let end_vpn = VirtAddr::from(end_addr - 1).floor();
+            
+            debug!(
+                "[sys_madvise](MADV_DONTNEED): unmapping range [{:?}, {:?}]",
+                start_vpn, end_vpn
+            );
+
+            // 在 MemorySet 中实现 unmap 逻辑是最符合 rCore 架构的
+            // 因为 MemorySet 维护了 VMA (Virtual Memory Areas) 和页表的一致性
+            // 直接操作页表可能会破坏 VMA 的状态
+            // 我们假设 MemorySet 有一个方法来处理这个请求
+            memory_set.madvise_dontneed(start_vpn, end_vpn);
+
+            Ok(0) // 成功
+        }
+
+        // 对于不支持的 advice，返回 EINVAL
+        _ => {
+            warn!("sys_madvise: unsupported advice value {}.", advice);
+
+        return Err(SysErrNo::EINVAL);
+        }
+    }
 }

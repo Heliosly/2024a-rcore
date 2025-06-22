@@ -257,7 +257,7 @@ impl Future for FutexWaitInternalFuture {
             
         info!("poll futex is EINTR");
             // bpoint();
-            return Poll::Ready(Err(SysErrNo::EINTR));
+            return Poll::Ready(Err(SysErrNo::ERESTART));
         }
     }
 }

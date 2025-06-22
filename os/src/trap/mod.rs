@@ -8,8 +8,7 @@ use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, VirtAddr};
 use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current, pick_next_task,
-    run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus,
+    current_process, current_task, current_task_may_uninit, exit_current, exit_proc, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus
 };
 use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
@@ -91,7 +90,12 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                     None
                 }
             }) {
-                trace!("run task tid = {}", curr.id());
+                //  debug!("run_task pid:{},Arc count:{}",curr.pid.0,
+
+                //                    Arc::strong_count(&curr)
+                //                        );
+
+                // trace!("run task tid = {}", curr.id());
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
@@ -164,6 +168,7 @@ pub async fn user_task_top() -> i32 {
                             warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
                             -(err as isize) as usize
                         }
+                        // debug!("[Syscall]Err:{}", err.str());
                     }
                 };
                
@@ -171,13 +176,22 @@ pub async fn user_task_top() -> i32 {
                 tf.set_arg0(result);
                 syscall_ret = Some(result);
 
+                // trace!("sys_call end1"); 
+                // 判断任务是否退出
                 if curr.is_exited() {
+                    // 任务结束，需要切换至其他任务，关中断
                     disable_irqs();
                     return curr.get_exit_code() as i32;
                 }
 
                 disable_irqs();
             } else if CurrentTrap::is_page_fault(&scause) {
+                //懒分配
+                // println!(
+                //     "[kernel] trap_handler:  PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                //     stval,
+                //     sepc
+                // );
                 if curr
                     .get_process()
                     .unwrap()
@@ -191,9 +205,9 @@ pub async fn user_task_top() -> i32 {
                     exit_current(-2).await;
                     log_page_fault_error(stval, sepc);
                 }
-            } else if CurrentTrap::is_store_fault(&scause) || 
-                      CurrentTrap::is_instruction_fault(&scause) || 
-                      CurrentTrap::is_load_fault(&scause) {
+            } else if CurrentTrap::is_store_fault(&scause) 
+                || CurrentTrap::is_instruction_fault(&scause)
+                || CurrentTrap::is_load_fault(&scause) {
                 println!(
                     "[kernel] trap_handler: Fault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it....",
                     stval,

@@ -88,6 +88,7 @@ pub struct TrapContext {
         pub stval: usize,//84
         /// 表示是否需要进行处理
         pub trap_status: TrapStatus,//85
+        
 
 }
 

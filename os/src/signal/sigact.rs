@@ -73,7 +73,7 @@ impl SigAction {
 #[repr(transparent)] // So it's just like u64/usize array
 pub struct SigSet {
     // Assuming NSIG <= 64. If more, use an array like [u64; NSIG / 64].
-    bits: u64,
+   pub bits: u64,
 }
 
 impl SigSet {
@@ -107,6 +107,7 @@ impl SigSet {
     pub fn intersect_with(&mut self, other: &SigSet) {
         self.bits &= other.bits;
     }
+
     // ... and so on
 }
 
@@ -117,10 +118,16 @@ pub struct TaskSignalState {
     pub sigmask: SigSet,    // 当前阻塞的信号 (per-task)
     // pub shared_sigpending: Option<Arc<Mutex<SigSet>>>, // 如果有线程组共享的挂起信号
     pub last_context: Option<TrapContext>, // ss_t for sigaltstack
+
+    
+    pub is_restart:bool,
     /// Alternative signal stack
     pub alternate_stack: SignalStack,
 }
-
+#[derive(Clone, Debug,Default)]
+pub struct RestartInfo{
+    pub restart_sepc:usize,
+}
 impl TaskSignalState {
    pub fn init(sigmask:SigSet) -> Self {
         Self {
@@ -129,8 +136,10 @@ impl TaskSignalState {
            sigmask,
            last_context:None,
            alternate_stack:SignalStack::default(),
+           ..Default::default()
         }
-    }
+    
+}
 }
 impl Default for TaskSignalState {
     fn default() -> Self {
@@ -140,6 +149,7 @@ impl Default for TaskSignalState {
             sigmask: SigSet::empty(),
             last_context: None,
             alternate_stack: SignalStack::default(),
+               is_restart:false,
         }
     }
 }

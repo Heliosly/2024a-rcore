@@ -12,7 +12,7 @@ use spin::Mutex;
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
 use crate::mm::UserBuffer;
-use crate::utils::error::{ SysErrNo, SyscallRet, TemplateRet};
+use crate::utils::error::{ GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
 pub const NONE_MODE: u32 = 0;
@@ -110,7 +110,10 @@ impl OsInode {
     pub fn offset(&self) -> usize {
         self.inner.lock().offset
     }
-
+    pub fn set_timestamps(&self,atime:Option<u32>,mtime:Option<u32>,ctime:Option<u32>)->SyscallRet{
+        self.inner.lock().inode.set_timestamps(atime, mtime, ctime)
+         
+    }
 }
 
 impl OpenFlags {

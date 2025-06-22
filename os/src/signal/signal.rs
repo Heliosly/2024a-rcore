@@ -115,10 +115,41 @@ pub enum Signal {
     SIGIO = 29,  // Also SIGPOLL
     SIGPWR = 30, // Not in POSIX, but on Linux
     SIGSYS = 31, // Also SIGUNUSED
-                 // Real-time signals could be added here (SIGRTMIN to SIGRTMAX)
+                 // Real-time signals could be added here SIGRTIN toSIGRTAX)
                  // For simplicity, we'll stick to standard signals for now.
-                 SIGRTMIN = 32,
-SIGRTMAX = 64,
+                SIGRT1 = 32,
+                SIGRT2 = 33,
+                SIGRT3 = 34,
+                SIGRT4 = 35,
+                SIGRT5 = 36,
+                SIGRT6 = 37,
+                SIGRT7 = 38,
+                SIGRT8 = 39,
+                SIGRT9 = 40,
+                SIGRT10 = 41,
+                SIGRT11 = 42,
+                SIGRT12 = 43,
+                SIGRT13 = 44,
+                SIGRT14 = 45,
+                SIGRT15 = 46,
+                SIGRT16 = 47,
+                SIGRT17 = 48,
+                SIGRT18 = 49,
+                SIGRT19 = 50,
+                SIGRT20 = 51,
+                SIGRT21 = 52,
+                SIGRT22 = 53,
+                SIGRT23 = 54,
+                SIGRT24 = 55,
+                SIGRT25 = 56,
+                SIGRT26 = 57,
+                SIGRT27 = 58,
+                SIGRT28 = 59,
+                SIGRT29 = 60,
+                SIGRT30 = 61,
+                SIGRT31 = 62,
+                SIGRT32 = 63,
+SIGRTAX = 64,
 }
 
 impl Signal {

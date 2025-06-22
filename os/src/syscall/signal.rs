@@ -96,7 +96,6 @@ pub async  fn sys_sigprocmask(
     info!("[sys_sisgprocmask]");
     let current_task_arc = current_task();
     let mut signal_state = current_task_arc.signal_state.lock().await;
-    let token = current_task_arc.get_process().unwrap().get_user_token().await;
     let old_mask = signal_state.sigmask;
 
     if !set_user_ptr.is_null() {
@@ -106,6 +105,8 @@ pub async  fn sys_sigprocmask(
             Ok(how) => how,
             Err(_) => return Err(SysErrNo::EINVAL),
         };
+
+    info!("[sys_sisgprocmask] sigMaskHow:{:?},set:{:#x},tid:{}",enum_how,set.bits,current_task_arc.id());
         match enum_how {
             SigMaskHow::SIG_BLOCK => {
                 signal_state.sigmask.union_with(&set);

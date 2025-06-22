@@ -1,5 +1,6 @@
 GDBSERVER = localhost:1234
 GDB = gdb-multiarch
+GDBt = /home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
 all:
 
 
@@ -11,7 +12,7 @@ run:
 	qemu-system-riscv64 \
    	  -machine virt \
 	  -kernel kernel-rv \
-	  -m 128M \
+	  -m 1024M \
 	  -nographic \
 	  -smp 1 \
 	  -bios default \
@@ -19,13 +20,14 @@ run:
 	  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 	  -no-reboot \
 	  -device virtio-net-device,netdev=net \
+	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 	  -netdev user,id=net \
 	  -rtc base=utc
 gdbserver:
 	qemu-system-riscv64 \
    	  -machine virt \
 	  -kernel kernel-rv \
-	  -m 128M \
+	  -m 1024M \
 	  -nographic \
 	  -smp 1 \
 	  -bios default \
@@ -34,6 +36,7 @@ gdbserver:
 	  -no-reboot \
 	  -device virtio-net-device,netdev=net \
 	  -netdev user,id=net \
+	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 	  -rtc base=utc \
 	  -s -S
 all-debug:
@@ -46,5 +49,6 @@ all-debug:
 
 gdb:
 	$(GDB) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64"
-
+gdb2:
+	$(GDBt) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64" 
 .PHONY: all run gdbserver gdb

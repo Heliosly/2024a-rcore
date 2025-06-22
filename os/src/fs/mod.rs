@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
 
-use crate::{ drivers, fs::{mount::MNT_TABLE, vfs::VfsManager}, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
+use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{bpoint, error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
 use hashbrown::{HashMap, HashSet};
 use inode::InodeType;
@@ -252,6 +252,7 @@ pub fn find_inode(mut abs_path :&str, flags:OpenFlags)->Result<Arc<dyn VfsNodeOp
     root_inode().find(&abs_path, flags, 0)
 }
 ///open file
+pub static mut TMP_NAME:usize= 0;
 pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileDescriptor, SysErrNo> {
 
     log::debug!("[open] abs_path={},flags={:#?},mode:{}", abs_path,flags,mode);
@@ -262,6 +263,24 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
         
         ));
     }
+    if abs_path=="/tmp"{
+        // 如果带了 O_TMPFILE 就直接模拟 tmpfile 行为
+        // 生成随机文件名，比如 /tmp/tmp-abc123
+        let tmp_name = unsafe { TMP_NAME };
+        unsafe { TMP_NAME += 1 };
+
+        // 拼接完整路径
+        let full_path = format!("/tmp/{}", tmp_name);
+
+        // 创建文件（O_CREAT | O_EXCL | O_RDWR）
+        let tmp_flags = OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR;
+        let inode = open_file(&full_path, tmp_flags, 0o600)?;
+
+        
+
+       return  Ok(inode)
+    }
+    
     //判断是否是设备文件
     if find_device(abs_path) {
         let device = open_device_file(abs_path)?;
@@ -277,7 +296,10 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     let abs_path = &fix_path(abs_path);
     // let (ops,path) =  VfsManager::resolve_mnt_path(abs_path);
     let path =abs_path;
-
+    let (parent,_)= get_parent_path_and_filename(&path);
+    if find_device(&parent){
+        return Err(SysErrNo::ENOTDIR)
+    }
     // info!("open_path:{:?},open_ops:{}",path,ops.name());
     // println!("open_file abs_path={},pid:{}", abs_path, current_task_may_uninit().map_or_else(|| 0, |f| f.get_pid()));
     let mut inode: Option<Arc<dyn VfsNodeOps >> = None;
@@ -285,6 +307,8 @@ pub fn open_file(mut abs_path: &str, flags: OpenFlags, mode: u32) -> Result<File
     if has_inode(abs_path) {
         inode = find_inode_idx(abs_path);
     } else {
+       
+        
         let found_res =root_inode().find(&path, flags, 0);
         if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
             warn!("[open_file] Error: A component in the path is not a directory: {:?}", &path);
@@ -370,7 +394,7 @@ pub fn map_dynamic_link_file( path: &str) -> &str {
     path
 }
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> =
-    Lazy::new(|| vec![ "/glibc", "/musl"]);
+    Lazy::new(|| vec![ "/glibc", "/musl","/usr"]);
 
 static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -381,12 +405,19 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/musl/lib/tls_get_new-dtv_dso.so",
         "/glibc/lib/dlopen_dso.so",
          "/glibc/lib/libc.so", 
+         
+         "/glibc/lib/libc.so.6", 
+
+         "/glibc/lib/libm.so.6", 
+
+         "/glibc/lib/libm.so", 
          "/glibc/lib/tls_get_new-dtv_dso.so", 
          "/glibc/lib/ld-linux-riscv64-lp64.so.1",
     
          "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
           "/glibc/lib/tls_align_dso.so", 
-          "/glibc/lib/tls_init_dso.so"
+          "/glibc/lib/tls_init_dso.so",
+          "/usr/lib/ld-musl-riscv64-sf.so.1",
 
     ]
     .into_iter()
@@ -407,13 +438,15 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 //
 const INITPROC_SH:&str = "
 cd /glibc
-./run-static.sh
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
+./libcbench_testcode.sh
 cd /musl
-./run-static.sh
+./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
+./libcbench_testcode.sh
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
@@ -531,6 +564,11 @@ pub async  fn create_init_files() -> GeneralRet {
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
         DEFAULT_DIR_MODE,
     )?;
+    open_file(
+        "/tmp",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
     //注册设备/dev/misc/rtc
     register_device("/dev/misc/rtc");
     //创建/etc文件夹
@@ -635,14 +673,8 @@ pub fn init(){
     drivers::system_init_with_multi_disk();
     
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
-    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
-    create_file("/usr/rsu", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, 0755, root_inode()).unwrap();
+    create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
     VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
-    println!("Mount table after mounting /dev/vdb:");
-    MNT_TABLE.lock().entries.iter().for_each(|entry| {
-        println!("Device: {}, Mount Point: {}", entry.special_device, entry.mount_point);
-    });
-
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();

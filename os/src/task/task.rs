@@ -23,7 +23,7 @@ use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC
 use crate::timer::{TimeData, Tms};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
-use crate::utils::string::normalize_absolute_path;
+use crate::utils::string::{get_parent_path_and_filename, normalize_absolute_path};
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::vec_deque::VecDeque;
@@ -441,7 +441,7 @@ impl ProcessControlBlock {
         let pid_handle = pid_alloc();
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
-        let (memory_set, user_sp, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_sp, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
         // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
         let token = memory_set.token();
@@ -577,7 +577,10 @@ impl ProcessControlBlock {
         trap_cx.regs.a1 = argv.len();
         trap_cx.regs.a2 = argv_base;
         trap_cx.regs.a3 = envp_base;
-
+        if is_dl{
+            trap_cx.regs.a0 = entry_point;
+          }
+  
         add_task(new_task.clone());
         TID2TC.lock().insert(new_task.id.0, new_task);
         process_control_block
@@ -592,7 +595,7 @@ impl ProcessControlBlock {
     ) -> GeneralRet {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, user_heap_base, entry_point, mut auxv) = MemorySet::from_elf(elf_data);
+        let (memory_set, user_heap_base, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
 
         // **** access current TCB exclusively
 
@@ -643,6 +646,8 @@ impl ProcessControlBlock {
         //将auxv放入栈中
         auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
         auxv.push(Aux::new(AuxType::NULL, 0));
+
+        let auxv_base = user_sp;
         for aux in auxv.iter().rev() {
             // println!("{:?}", aux);
             user_sp -= size_of::<Aux>();
@@ -693,9 +698,14 @@ impl ProcessControlBlock {
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
-        // trap_cx.regs.a1 = argv.len();
-        // trap_cx.regs.a2 = argv_base;
-        // trap_cx.regs.a3 = envp_base;
+        trap_cx.regs.a1 = argv.len();
+        trap_cx.regs.a2 = argv_base;
+        trap_cx.regs.a3 = envp_base;
+        
+        
+        // if is_dl{
+        //   trap_cx.regs.a0 = entry_point;
+        // }
 
         // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);
@@ -964,7 +974,6 @@ impl ProcessControlBlock {
                     // 从 FileDescriptor 获取其代表的 VfsNodeOps
                     let dir_vfs_node = dir_file_desc.file()?;
                     if !dir_vfs_node.is_dir() {
-                        // VfsNodeOps 需要 is_dir()
                         return Err(SysErrNo::ENOTDIR);
                     }
                     base_path_string = dir_vfs_node.get_path();
@@ -996,11 +1005,7 @@ impl ProcessControlBlock {
                     return Ok(found_vfs_node.file().unwrap().get_path()); // 返回 Result<String, SysErrNo>
                 }
                 Err(SysErrNo::ENOENT) => {
-                    // 如果 find 返回 ENOENT，但我们不 follow 最后一个符号链接，
-                    // 并且原始路径（规范化后）的父目录存在，
-                    // 那么结果应该是这个符号链接本身的路径（如果它存在的话）。
-                    //  find 方法在 O_ASK_SYMLINK 时，如果最后一个是符号链接，会直接返回它。
-                    // 所以，如果到这里是 ENOENT，意味着路径（或其前缀）确实不存在。
+                    
                     return Err(SysErrNo::ENOENT);
                 }
                 Err(e) => return Err(e),

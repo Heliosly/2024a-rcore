@@ -42,7 +42,7 @@ pub fn run_task2(mut curr: CurrentTask) {
 
     // debug!("poll");
     let res = curr.get_fut().as_mut().poll(cx);
-    debug!("polled task res:{:#?}", res);
+    // debug!("polled task res:{:#?}", res);
     match res {
         Poll::Ready(exit_code) => {
             debug!("task exit: todo, exit_code={}", exit_code);

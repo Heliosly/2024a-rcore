@@ -14,7 +14,7 @@ use log::warn;
 
 pub mod string;
 pub mod error;
-use crate::{config::{PAGE_SIZE, PATH_MAX}, mm::{FrameTracker, VirtAddr}, trap::TrapContext};
+use crate::{config::{PAGE_SIZE, PATH_MAX}, mm::{translated_str, FrameTracker, PhysAddr, VirtAddr}, trap::TrapContext};
 
 /// 跟踪函数的调用栈
 pub fn backtrace() {
@@ -142,6 +142,22 @@ pub fn normalize_and_join_path(
     }
 
     Ok(result)
+}
+pub fn va_is_valid(va: usize,token:usize) -> bool {
+    let page_table = crate::mm::PageTable::from_token(token);
+    let va =VirtAddr::from(va);
+    page_table.find_pte(va.clone().floor()).map(|pte| {
+        let aligned_pa: PhysAddr = pte.ppn().into();
+        let offset = va.page_offset();
+        let aligned_pa_usize: usize = aligned_pa.into();
+         let res= aligned_pa_usize + offset;
+         if res <=1000{
+           warn!("[translate_va] translate res<=1000,va={:#x},pte:{}",va.0,pte.bits);
+           return false;
+         };
+        return true;
+    });
+    return false;
 }
 #[inline(never)]         // 禁止内联
 #[no_mangle]            

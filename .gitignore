@@ -19,7 +19,6 @@ tools/
 pushall.sh
 *.bak
 os/sdcard-rv.img
-os/disk.img
 os/fs.img
 os/mnt
 os/build
