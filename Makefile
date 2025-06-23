@@ -20,7 +20,7 @@ run:
 	  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 	  -no-reboot \
 	  -device virtio-net-device,netdev=net \
-	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+	  -drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 	  -netdev user,id=net \
 	  -rtc base=utc
 gdbserver:
@@ -36,7 +36,7 @@ gdbserver:
 	  -no-reboot \
 	  -device virtio-net-device,netdev=net \
 	  -netdev user,id=net \
-	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+	  -drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
 	  -rtc base=utc \
 	  -s -S
 all-debug:
