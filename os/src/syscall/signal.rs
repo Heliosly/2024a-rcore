@@ -52,6 +52,7 @@ pub async fn sys_sigaction(
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
     };
+   
     let process = current_process();
     let token =process.get_user_token().await;
     // SIGKILL 和 SIGSTOP 的动作不能被改
@@ -162,6 +163,7 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
     trace!("[sys_kill] target_pid: {}, signum: {}", target_pid, signum_usize);
 
     // 步骤1：验证信号有效性（复用 tkill 的逻辑）
+    
     let sig = match Signal::from_usize(signum_usize) {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
@@ -176,7 +178,9 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
             Err(SysErrNo::ESRCH) // 进程不存在
         };
     };
-
+ if sig == Signal::SIGNONE{
+        return Ok(0)
+    }
     // 步骤3：找到目标 PID 下的所有活跃线程（TID）
      let target_tids: Vec<usize> = PID2PC.lock().get(&target_pid)
     .map_or(Err(SysErrNo::ESRCH), |s|Ok(s))?.tasks.lock().await
@@ -229,7 +233,9 @@ pub async fn sys_tgkill(target_pid: usize, target_tid: usize, signum_usize: usiz
             return Err(SysErrNo::ESRCH); // 不存在
         }
     }
-
+    if sig == Signal::SIGNONE{
+        return Ok(0)
+    }
     let target_task_arc = match TID2TC.lock().get(&target_tid) {
         Some(task_ref) => task_ref.clone(),
         None => return Err(SysErrNo::ESRCH), // No such process/task
@@ -259,7 +265,9 @@ pub async  fn sys_tkill(target_tid: usize, signum_usize: usize) -> SyscallRet {
             return Err(SysErrNo::ESRCH); // 不存在
         }
     }
-
+    if sig == Signal::SIGNONE{
+        return Ok(0)
+    }
     let target_task_arc = match TID2TC.lock().get(&target_tid) {
         Some(task_ref) => task_ref.clone(),
         None => return Err(SysErrNo::ESRCH), // No such process/task
