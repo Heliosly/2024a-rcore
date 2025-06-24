@@ -814,12 +814,24 @@ pub async fn sys_mmap(
     // 7. 如果是文件映射，要检查文件权限和 off_file
 
     let file = if !anon {
+
         // 7.1 拿到文件对象
         let file = fd_table.get_file(fd)?; 
         // 7.2 写映射需可写权限
         if map_perm.contains(MapPermission::W) && !file.writable()? {
             return Err(SysErrNo::EACCES);
         }
+
+        // if let Some(dev_shm) = file.as_any().downcast_ref::<crate::fs::dev::DevShm>() {
+        //     // 如果转换成功，说明 file 底层的类型就是 DevShm
+        //     // dev_shm 是一个 &DevShm 类型的引用，但我们这里其实只需要判断成功与否
+        //     // 接下来我们就可以调用 file.mmap，因为我们知道它是 DevShm 的 mmap
+            
+        //     drop(fd_table); // 释放锁
+            
+        //     // 调用 mmap 方法，它会通过 vtable（虚函数表）正确地分派到 DevShm::mmap
+        //     return dev_shm.mmap(addr, len, map_perm , flags , off).await;
+        // }
         // 7.3 offset 超出文件长度？
         if off > file.fstat().st_size as usize {
             return Err(SysErrNo::EINVAL);

@@ -334,8 +334,9 @@ pub async fn user_task_top() -> i32 {
                 
                 Trap::Exception(Exception::Breakpoint) => {
                     println!("[kernel] Breakpoint exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
-
-                    exit_current(-4).await;
+                    let task= current_task();
+                    let cx = task.get_trap_cx().unwrap();
+                     cx.sepc += 2;
                 }
 Trap::Exception(Exception::IllegalInstruction)  =>{
                     println!("[kernel] Illegal instruction exception in application (sepc={:#x}). Probably from abort(). Terminating process.", tf.sepc);
@@ -382,6 +383,7 @@ Trap::Exception(Exception::IllegalInstruction)  =>{
                 //处理完系统调用过后，对应的信号处理和时钟更新
                 crate::signal::handle_pending_signals(syscall_ret).await;
                 crate::task::sleeplist::process_timed_events();
+                crate::timer::handle_timer_tick().await;
             }
 
             // trace!("sys_call end3");

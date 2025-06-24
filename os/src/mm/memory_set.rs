@@ -2,9 +2,11 @@
 use crate::config::{ DL_INTERP_OFFSET, KERNEL_DIRECT_OFFSET, MMAP_PGNUM_TOP, PAGE_SIZE_BITS};
 use crate::fs::{map_dynamic_link_file, open_file, File, OpenFlags, NONE_MODE};
 use crate::mm::page_table::PTEFlags;
+use crate::mm::shm::SHM_MANAGER;
 use crate::mm::{ area, translated_byte_buffer, FrameTracker, UserBuffer, VPNRange, KERNEL_PAGE_TABLE_TOKEN};
 use crate::syscall::flags::MremapFlags;
 use crate::task::auxv::{Aux, AuxType};
+use crate::task::current_process;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{ PutDataError, PutDataRet};
@@ -590,6 +592,17 @@ pub async fn from_existed_user(user_space: &mut Self) -> Self {
                 pte.set_cow();
             }
             }
+            else if let MapAreaType::Shm { shmid } = area.area_type {
+              let guard= SHM_MANAGER.lock().await;
+              let shm= guard.id_to_segment.get(&shmid).unwrap();
+              shm.lock().await.attach(current_process().get_pid() as u32);
+              let new_area = MapArea::from_another(area);
+              memory_set.push_with_given_frames(new_area,
+                  &area.data_frames,
+                  /* is_cow = */ false
+              );
+
+            }
 
            
             else{
@@ -722,6 +735,37 @@ pub async  fn from_existed_user1(user_space: &mut Self) -> Self {
     
   }
 }
+    ///Remove all `MapArea`
+    pub async  fn recycle_data_pages(&mut self) -> SyscallRet {
+        // 先检测是否需要munmap
+        for (_,area) in self.areatree.iter_mut() {
+            if area.area_type == MapAreaType::Mmap {
+                if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
+                    && area.map_perm.contains(MapPermission::W)
+                {
+                    let addr: VirtAddr = area.vpn_range.get_start().into();
+                    let mapped_len: usize = area
+                        .vpn_range
+                        .into_iter()
+                        .filter(|vpn| area.data_frames.contains_key(&vpn))
+                        .count()
+                        * PAGE_SIZE;
+                    let file = area.fd.clone().unwrap();
+                    file.file.write(UserBuffer {
+                        buffers: translated_byte_buffer(
+                            self.page_table.token(),
+                            addr.0 as *const u8,
+                            mapped_len,
+                        )
+                        ,
+                    }).await?;
+                }
+            }
+        }
+        self.areatree.clear();
+        self.page_table.clear();
+        Ok(0)
+    }
 pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
     self.safe_translate(va.clone().floor()).await.map(|pte| {
         let aligned_pa: PhysAddr = pte.ppn().into();
@@ -737,13 +781,7 @@ pub async  fn safe_translate_va(&mut self, va: VirtAddr) -> Option<PhysAddr> {
         self.page_table.translate(vpn)
     }
 
-    ///Remove all `MapArea`
-    pub fn recycle_data_pages(&mut self) {
-        self.page_table.clear();
-        self.areatree.clear();
-    }
-
-    /// shrink the area to new_end
+     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
         if let Some(area) = self
@@ -961,7 +999,7 @@ if area.vpn_range.contains(vpn) {
         }
 
         // 最后刷新 TLB
-
+        flush_tlb();
         trace!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
             area.vpn_range.get_start().0,
@@ -978,7 +1016,7 @@ if area.vpn_range.contains(vpn) {
 
 }else {
     if let Some(pte) =  page_table.find_pte(vpn){
-      match pte.is_cow(){
+      match pte.is_cow()||is_write{
             true=>{
     
              let ref_count=Arc::strong_count( area.data_frames.get(&vpn).expect("cow page should have frame"));

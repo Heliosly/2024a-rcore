@@ -250,6 +250,9 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         //     args[2] as u32,
         //     args[3] as *mut u8, 
         // ).await,
+        SYSCALL_GETITIMER=>sys_getitimer(args[0] as i32, args[1] as *mut ITimerVal).await,
+        SYSCALL_SETITIMER=>sys_setitimer(args[0] as i32, args[1] as *const ITimerVal, args[2] as *mut ITimerVal).await,
+        SYSCALL_UMASK=>sys_umaske(),
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

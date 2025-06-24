@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use crate::fs::{File, Kstat, OpenFlags, PollEvents};
 use crate::fs::stat::StMode;
 use crate::mm::UserBuffer;
-use crate::sync::Mutex;
+use spin::Mutex;
 use crate::task::yield_now;
 use crate::utils::error::{SysErrNo, TemplateRet};
 
@@ -31,6 +31,9 @@ struct RingBuffer {
 
 // RingBuffer 的 impl 块保持不变...
 impl RingBuffer {
+    fn is_fully_closed(&self) -> bool {
+        self.read_closed && self.write_closed
+    }
     fn new() -> Self {
         Self {
             buf: [0; RING_CAPACITY], head: 0, tail: 0, len: 0,
@@ -145,6 +148,9 @@ pub fn make_pipe(flags: OpenFlags) -> (Arc<PipeReader>, Arc<PipeWriter>) {
 
 #[async_trait]
 impl File for PipeReader {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable(&self) -> TemplateRet<bool> { Ok(true) }
     fn writable(&self) -> TemplateRet<bool> { Ok(false) }
 
@@ -168,7 +174,9 @@ impl File for PipeReader {
         
         poll_fn(|cx: &mut Context<'_>| {
             let mut guard = self.inner.lock();
-            
+            if guard.is_fully_closed() {
+                return Poll::Ready(Err(SysErrNo::ECONNRESET));
+            }
             let avail = guard.available_read();
             if avail > 0 {
                 let read_len = avail.min(ub.len());
@@ -213,6 +221,9 @@ impl Drop for PipeReader {
 
 #[async_trait]
 impl File for PipeWriter {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable(&self) -> TemplateRet<bool> { Ok(false) }
     fn writable(&self) -> TemplateRet<bool> { Ok(true) }
 
@@ -371,5 +382,8 @@ impl File for Socket {
     fn fstat(&self) -> Kstat {
         // 返回 FSOCK 表示这是一个 socket
         Kstat { st_mode: crate::fs::stat::StMode::FSOCK.bits(), st_nlink: 1, ..Default::default() }
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
     }
 }

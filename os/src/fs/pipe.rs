@@ -218,6 +218,9 @@ impl Drop for Pipe {
 // --- Pipe 的 File trait 实现 ---
 #[async_trait]
 impl File for Pipe {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn poll(&self, requested_events: PollEvents, waker_to_register: &Waker) -> PollEvents {
         let mut revents = PollEvents::empty();
         let mut buffer_guard = self.buffer.lock(); // 获取共享缓冲区的锁

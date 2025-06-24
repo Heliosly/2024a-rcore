@@ -13,6 +13,7 @@ pub mod net;
 pub mod mount;
 pub mod ext4;
 pub mod select;
+// pub mod shm;
 use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
@@ -135,6 +136,10 @@ unimplemented!()
  
     fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents{
         unimplemented!()
+    }
+
+    fn get_path(&self)->String{
+     unimplemented!();
     }
       
 }
@@ -438,13 +443,6 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 //
 const INITPROC_SH:&str = "
-cd /glibc
-./libctest_testcode.sh
-./busybox_testcode.sh
-./basic_testcode.sh
-./libcbench_testcode.sh
-./lua_testcode.sh
-./iozone_testcode.sh
 cd /musl
 ./libctest_testcode.sh
 ./busybox_testcode.sh
@@ -452,6 +450,13 @@ cd /musl
 ./libcbench_testcode.sh
 ./lua_testcode.sh
 ./iozone_testcode.sh
+cd /glibc
+./busybox_testcode.sh
+./basic_testcode.sh
+./libcbench_testcode.sh
+./lua_testcode.sh
+./iozone_testcode.sh
+
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
@@ -563,6 +568,8 @@ pub async  fn create_init_files() -> GeneralRet {
     register_device("/dev/null");
     //注册设备/dev/cpu_dma_latency
     register_device("/dev/cpu_dma_latency");
+
+ 
     //创建./dev/misc文件夹
     open_file(
         "/dev/misc",

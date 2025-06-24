@@ -33,4 +33,7 @@ impl File for Socket {
         buf.write(&[b'1']);
         Ok(1)
     }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
 }

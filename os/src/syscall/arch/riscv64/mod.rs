@@ -170,3 +170,6 @@ pub const SYSCALL_SHMGET: usize= 194;
 pub const SYSCALL_SHMAT: usize= 196;
 pub const SYSCALL_SHMCTL: usize= 195;
 pub const SYSCALL_SHMDT: usize= 197;
+pub const SYSCALL_GETITIMER: usize = 102;
+pub const SYSCALL_SETITIMER: usize = 103;
+pub const SYSCALL_UMASK:usize = 166;

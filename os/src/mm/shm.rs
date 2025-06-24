@@ -161,7 +161,6 @@ impl ShmManager {
         }
     }
 
-    // ... shmget, shmat, shmctl, shmdt 的辅助方法将在这里实现
 }
 
 pub static SHM_MANAGER: LazyInit<Mutex<ShmManager>> = LazyInit::new();

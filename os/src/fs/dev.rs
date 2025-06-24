@@ -31,7 +31,7 @@
 /// `DevRandom`用随机字节填充用户缓冲区。`DevRtc`提供当前时间。
 /// `DevTty`提供终端界面。`DevCpuDmaLatency`允许用户获取/设置CPU的最大反应时间。
 use crate::{
-    mm::UserBuffer, utils::error::{SysErrNo, SyscallRet, TemplateRet},
+    mm::{MapPermission, MmapFlags, UserBuffer, VirtAddr}, syscall::flags::MmapProt, task::current_process, utils::error::{SysErrNo, SyscallRet, TemplateRet}
    
 };
 use alloc::{
@@ -42,6 +42,7 @@ use alloc::{
     sync::Arc,
 };
 use async_trait::async_trait;
+use linux_raw_sys::general::xattr_args;
 use core::{cmp::min, task::Waker};
 use spin::{Lazy, Mutex, RwLock};
 
@@ -96,6 +97,8 @@ pub fn open_device_file(abs_path: &str) -> Result<Arc<dyn File>, SysErrNo> {
         "/dev/random" => Ok(Arc::new(DevRandom::new())),
         "/dev/tty" => Ok(Arc::new(DevTty::new())),
         "/dev/cpu_dma_latency" => Ok(Arc::new(DevCpuDmaLatency::new())),
+
+       
         _ => Err(SysErrNo::ENOENT),
     }
 }
@@ -105,10 +108,17 @@ impl DevZero {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/zero".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevZero {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -165,9 +175,16 @@ impl DevNull {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/null".to_string()
+    }
 }
 #[async_trait]
 impl File for DevNull {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -244,6 +261,7 @@ impl RtcTime {
 }
 
 impl Debug for RtcTime {
+    
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
@@ -255,14 +273,22 @@ impl Debug for RtcTime {
 
 /// 时钟设备
 impl DevRtc {
+ 
     pub fn new() -> Self {
         Self
+    }
+
+    fn get_path(&self) -> String {
+        "/dev/rtc".to_string()
     }
 }
 
 
 #[async_trait]
 impl File for DevRtc {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -324,10 +350,17 @@ impl DevRandom {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/random".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevRandom {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -390,12 +423,19 @@ impl DevTty {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/tty".to_string()
+    }
 }
 
 
 
 #[async_trait]
 impl File for DevTty {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -457,10 +497,17 @@ impl DevCpuDmaLatency {
             reaction_time: RwLock::new(10),
         }
     }
+
+    fn get_path(&self) -> String {
+        "/dev/cpu_dma_latency".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevCpuDmaLatency {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         // Always readable
         Ok(true)
@@ -538,5 +585,173 @@ impl File for DevCpuDmaLatency {
     fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
         // Seeking is not supported on this device
         Err(SysErrNo::ESPIPE)
+    }
+    
+}
+
+
+
+pub struct DevShm;
+
+impl DevShm {
+    pub fn new() -> Self {
+        Self
+    }
+    /// 关键实现：处理 mmap 系统调用
+    /// 当用户对 /dev/shm 的文件描述符调用 mmap 时，此函数被触发。
+    /// 我们利用 offset 参数作为共享内存的 key。
+    pub async fn mmap(
+        &self,
+        addr: usize,    // 建议的映射地址
+        len: usize,     // 映射长度
+        prot: MapPermission,    // 保护位 (PROT_READ, PROT_WRITE, etc.)
+        flags: MmapFlags,   // 标志位 (MAP_SHARED, MAP_PRIVATE, etc.)
+        offset: usize,  // **我们将用 offset 作为共享内存的 key **
+    ) -> Result<usize, SysErrNo> {
+        info!("[Devshm mmap]");
+        // 1. 参数校验
+        if len == 0 || len > crate::config::MAX_SHM_SIZE {
+            return Err(SysErrNo::EINVAL);
+        }
+        // mmap 到 /dev/shm 必须是 MAP_SHARED
+        if flags .contains(MmapFlags::MAP_SHARED) {
+            return Err(SysErrNo::EINVAL);
+        }
+        // offset 作为 key，我们将其转换为 i32
+        let key = offset as i32;
+
+        // 2. 获取或创建共享内存段
+        let mut manager = crate::mm::shm::SHM_MANAGER.lock().await;
+
+        let shmid = match manager.key_to_id.get(&key) {
+            // --- 情况 A: 共享内存已存在 ---
+            Some(&existing_shmid) => {
+                let segment_arc = manager.id_to_segment.get(&existing_shmid).unwrap();
+                let segment = segment_arc.lock();
+                // 检查请求的长度是否超过段大小
+                if len > segment.id_ds.shm_segsz {
+                    return Err(SysErrNo::EINVAL);
+                }
+                existing_shmid
+            }
+            // --- 情况 B: 创建新的共享内存 ---
+            None => {
+                let pid = current_process().pid.0;
+                let new_segment = match crate::mm::shm::SharedMemorySegment::new(key, len, pid) {
+                    Some(seg) => seg,
+                    None => return Err(SysErrNo::ENOMEM), // 物理内存分配失败
+                };
+                let new_shmid = manager.next_id.fetch_add(1, core::sync::atomic::Ordering::Relaxed) as i32;
+                let segment_arc = Arc::new(crate::sync::Mutex::new(new_segment));
+
+                manager.id_to_segment.insert(new_shmid, segment_arc);
+                // 对于 /dev/shm 模型，key 总是公开的
+                manager.key_to_id.insert(key, new_shmid);
+                new_shmid
+            }
+        };
+        
+
+        let segment_arc = manager.id_to_segment.get(&shmid).unwrap().clone();
+        drop(manager); // 释放管理器锁
+
+        let process = current_process();
+        let mut ms = process.memory_set.lock();
+        let segment = segment_arc.lock();
+
+        let page_count = (len + crate::config::PAGE_SIZE - 1) / crate::config::PAGE_SIZE;
+
+        // 分配虚拟地址空间
+        let start_vpn = ms.areatree.alloc_pages_from_hint(page_count, VirtAddr::from(addr).ceil())
+            .ok_or(SysErrNo::ENOMEM)?;
+        let end_vpn = crate::mm::VirtPageNum(start_vpn.0 + page_count);
+
+        // 创建 MapArea
+        
+        let map_area = crate::mm::MapArea::new_by_vpn(
+            start_vpn,
+            end_vpn,
+            crate::mm::MapType::Framed, 
+            prot|MapPermission::U,
+            crate::mm::MapAreaType::Shm { shmid }, // 存储 shmid 以便 munmap
+        );
+
+        // 准备物理帧映射
+        let map: BTreeMap<crate::mm::VirtPageNum, Arc<crate::mm::FrameTracker>> = segment
+            .frames
+            .iter()
+            .take(page_count) // 只映射请求的长度对应的页
+            .enumerate()
+            .map(|(i, frame)| (crate::mm::VirtPageNum(start_vpn.0 + i), frame.clone()))
+            .collect();
+        
+        ms.push_with_given_frames(map_area, &map, false);
+
+        // 更新段的附加信息
+        drop(segment);
+        segment_arc.lock().attach(process.pid.0 as u32);
+        
+        Ok(VirtAddr::from(start_vpn).0)
+    }
+}
+
+#[async_trait]
+impl File for DevShm {
+    
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        // /dev/shm 本身不可读
+        Ok(false)
+    }
+
+    fn writable<'a>(&'a self) -> TemplateRet<bool> {
+        // /dev/shm 本身不可写
+        Ok(false)
+    }
+
+    async fn read<'a>(
+        &self,
+        _user_buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo> {
+        // 对设备本身的读操作没有意义
+        Err(SysErrNo::EINVAL)
+    }
+
+    async fn write<'a>(
+        &self,
+        _user_buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo> {
+        // 对设备本身的写操作没有意义
+        Err(SysErrNo::EINVAL)
+    }
+
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
+        // 不支持 seek
+        Err(SysErrNo::ESPIPE)
+    }
+
+    fn fstat(&self) -> Kstat {
+        // 提供一个典型的字符设备元数据
+        let devno = get_devno("/dev/shm"); // 假设您有这样一个函数获取设备号
+        Kstat {
+            st_dev: devno,
+            st_mode: StMode::FCHR.bits() | 0o666, // 字符设备，权限 rw-rw-rw-
+            st_rdev: devno,
+            st_nlink: 1,
+            st_size: 0, // 设备文件大小为 0
+            ..Kstat::default()
+        }
+    }
+    
+    // poll 方法可以像您的例子一样实现，表示总是可读写（虽然实际操作会失败）
+    // 或者更准确地，返回错误。
+    fn poll(&self, _events: PollEvents, _waker: &Waker) -> PollEvents {
+        // 报告错误，因为常规的 I/O 不被支持
+        PollEvents::POLLERR
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self 
+    }
+    fn get_path(&self)->String{
+        return "/dev/shm/cyclictest9".to_string()
     }
 }

@@ -20,7 +20,7 @@ use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
 use crate::task::waker::waker_from_task;
 use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC, TID2TC};
-use crate::timer::{TimeData, Tms};
+use crate::timer::{KernelTimer, TimeData, Tms, UserTimeSpec};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use crate::utils::string::{get_parent_path_and_filename, normalize_absolute_path};
@@ -47,6 +47,8 @@ unsafe impl Send for ProcessControlBlock {}
 ///
 /// Directly save the contents that will not change during running
 pub struct ProcessControlBlock {
+
+    pub timers: [Mutex<KernelTimer>; 3],
     /// The  trapcontext
     // Immutable
     /// Process identifier
@@ -482,6 +484,8 @@ impl ProcessControlBlock {
         )));
 
         let process_control_block = Self {
+
+            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
             pid: pid_handle,
             user_stack_top: AtomicUsize::new(USER_STACK_TOP),
             is_init: AtomicBool::new(true),
@@ -621,6 +625,7 @@ impl ProcessControlBlock {
         // **** access current TCB exclusively
         memory_set.activate();
         flush_tlb();
+        self.memory_set.lock().await.recycle_data_pages().await?;
         self.replace_memory_set(memory_set).await;
         self.alloc_user_res().await;
 
@@ -861,7 +866,9 @@ impl ProcessControlBlock {
                     let mut map = BTreeMap::new();
                     map.insert(tcb.id(), waker_from_task(Arc::into_raw(tcb.clone())));
                     map
-                })
+                }),
+
+            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
 
             });
 
@@ -1026,7 +1033,7 @@ impl ProcessControlBlock {
             match open_file(&normalized_path_to_find, find_flags,NONE_MODE) {
                 Ok(found_vfs_node) => {
                     // 5. 从找到的 VfsNodeOps 获取其最终的绝对路径
-                    return Ok(found_vfs_node.file().unwrap().get_path()); // 返回 Result<String, SysErrNo>
+                    return Ok(found_vfs_node.any().get_path()); // 返回 Result<String, SysErrNo>
                 }
                 Err(SysErrNo::ENOENT) => {
                     
@@ -1102,6 +1109,7 @@ pub struct TaskControlBlock {
     fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     trap_cx: UnsafeCell<Option<Box<TrapContext>>>,
 
+    pub tms:UnsafeCell<TimeData>,
     // executor: SpinNoIrq<Arc<Executor>>,
     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     // pub scheduler: SpinNoIrq<Arc<SpinNoIrq<Scheduler>>>,
@@ -1137,7 +1145,6 @@ pub struct TaskControlBlock {
     pub child_tid_ptr: Option<AtomicUsize>,
     pub need_clear_child_tid: AtomicBool,
     pub robust_list: Mutex<RobustList>,
-    pub tms:UnsafeCell<TimeData>,
     pub uid:AtomicUsize,
     noma_policy:AtomicUsize,
     // pub cpu_set: AtomicU64,

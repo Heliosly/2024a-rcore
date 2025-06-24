@@ -4,6 +4,11 @@ use core::ops::{Add, Sub};
 
 use crate::config::CLOCK_FREQ;
 use crate::sbi::set_timer;
+use crate::signal::{send_signal, Signal};
+use crate::sync::Mutex;
+use crate::task::PID2PC;
+use alloc::collections::BTreeMap;
+use lazy_init::LazyInit;
 use riscv::register::time;
 
 /// The number of ticks per second
@@ -33,7 +38,7 @@ pub struct TimeVal {
     pub sec: usize,
     pub usec: usize,
 }
-
+const NSEC_PER_USEC: u64 = 1_000;
 pub fn current_time() -> TimeVal {
     let time_ns = get_time_ns();
     TimeVal {
@@ -66,7 +71,12 @@ impl TimeVal {
             let usec = self.usec + ts.tv_nsec as usize / 1000;
            TimeVal::normalize(sec,usec)
         }
-    
+    pub fn from_ns(time:u64)->Self{
+        TimeVal {
+            sec: (time / NANO_PER_SEC as u64) as usize,
+            usec: ((time % NANO_PER_SEC as u64) / 1000) as usize,
+        }
+    }
 }
 
 impl Add for TimeVal {
@@ -84,6 +94,23 @@ impl Add for TimeVal {
 pub struct UserTimeSpec { // 对应 struct timespec
     pub tv_sec: usize,  // seconds
     pub tv_nsec: usize, // nanoseconds (long)
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KernelTimer {
+    pub interval: u64, // 间隔时间，单位：纳秒
+    pub value: u64,    // 剩余时间，单位：纳秒
+}
+impl KernelTimer {
+    /// 检查定时器是否已启动
+    pub fn is_armed(&self) -> bool {
+        self.value > 0
+    }
+}
+impl From<TimeVal> for u64 {
+    /// 从 TimeVal 转换为纳秒
+    fn from(tv: TimeVal) -> Self {
+        (tv.sec as u64 * NANO_PER_SEC as u64) + (tv.usec as u64 * NSEC_PER_USEC)
+    }
 }
 impl UserTimeSpec{
     pub fn as_nanos(&self) -> usize {
@@ -268,3 +295,94 @@ impl TimeData {
     }
 }
 
+static REAL_TIMERS: LazyInit<Mutex<BTreeMap<u64, usize>>> = LazyInit::new();
+
+pub fn init_timer_backend() {
+    REAL_TIMERS.init_by(Mutex::new(BTreeMap::new()));
+}
+
+/// 当 sys_setitimer 设置 ITIMER_REAL 时调用此函数
+pub async  fn set_real_timer(pid: usize, value_ns: u64) {
+    let mut timers = REAL_TIMERS.lock().await;
+    // 首先移除该进程可能存在的旧定时器
+    timers.retain(|_, p| *p != pid);
+    
+    // 如果 value > 0，说明是启动定时器
+    if value_ns > 0 {
+        let deadline = get_time_ns() as u64 + value_ns; // get_time_ns() 获取当前时间
+        timers.insert(deadline, pid);
+    }
+}
+pub const ITIMER_REAL: i32 = 0;
+pub const ITIMER_VIRTUAL: i32 = 1;
+pub const ITIMER_PROF: i32 = 2;
+
+/// 在每个时钟中断处理函数的末尾调用
+pub async  fn check_real_timers() {
+    let mut timers = REAL_TIMERS.lock().await;
+    let now = get_time_ns();
+
+    while let Some((&deadline, &pid)) = timers.iter().next() {
+        if deadline > now as u64 {
+            break; // 最早的定时器还没到期，后面的肯定也没到
+        }
+        
+        // 定时器到期，从队列中移除
+        timers.pop_first();
+
+        // 找到进程并处理
+        if let Some(process) = PID2PC.lock().get(&pid) {
+            let mut real_timer = process.timers[ITIMER_REAL as usize].lock().await;
+
+            // 发送信号
+            send_signal(pid, None, crate::signal::Signal::SIGALRM).await.unwrap();
+
+            // 如果是周期性定时器，重新设置并加入队列
+            if real_timer.interval > 0 {
+                real_timer.value = real_timer.interval;
+                let next_deadline = now as u64 + real_timer.interval;
+                timers.insert(next_deadline as u64, pid);
+            } else {
+                // 一次性定时器，清零
+                real_timer.value = 0;
+            }
+        }
+    }
+}
+pub async fn handle_timer_tick() {
+    const NSEC_PER_SEC: u64 = 1_000_000_000;
+const TICK_FREQUENCY: u64 = 100; // 假设是 100Hz
+const NSEC_PER_TICK: u64 = NSEC_PER_SEC / TICK_FREQUENCY;
+    // 1. 更新当前进程的 TimeData (您的内核应该已经有这部分逻辑了)
+    let process = crate::task::current_process();
+
+
+    // 2. ★★★ 新增：驱动 CPU 时间定时器 ★★★
+
+    // --- 驱动 ITIMER_VIRTUAL (只消耗用户时间) ---
+        let mut vtimer = process.timers[ITIMER_VIRTUAL as usize].lock().await;
+        if vtimer.value > 0 { // 如果定时器已启动
+            if vtimer.value <= NSEC_PER_TICK {
+                // 时间到！
+                send_signal(process.get_pid(), None, crate::signal::Signal::SIGVTALRM).await.unwrap();
+                vtimer.value = vtimer.interval; // 重置为间隔值或清零
+            } else {
+                vtimer.value -= NSEC_PER_TICK; // 倒计时
+            }
+        }
+    ;
+    // --- 驱动 ITIMER_PROF (消耗用户和内核时间) ---
+    let mut ptimer = process.timers[ITIMER_PROF as usize].lock().await;
+    if ptimer.value > 0 { // 如果定时器已启动
+        if ptimer.value <= NSEC_PER_TICK {
+            // 时间到！
+            send_signal(process.get_pid(), None, crate::signal::Signal::SIGPROF).await.unwrap();
+            ptimer.value = ptimer.interval; // 重置
+        } else {
+            ptimer.value -= NSEC_PER_TICK; // 倒计时
+        }
+    }
+
+    
+    check_real_timers().await; 
+}

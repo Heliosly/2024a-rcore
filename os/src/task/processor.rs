@@ -142,6 +142,7 @@ pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>)
 
     println!("current kernel stack bottom:{:#x}", current_stack_bottom());
     // kstack::alloc_current_stack();
+    
     UTRAP_HANDLER.init_by(utrap_handler);
     let scheduler = CFScheduler::new();
     KERNEL_SCHEDULER.init_by(Arc::new(Spin::new(scheduler)));
