@@ -14,12 +14,13 @@ mod fs;
 mod process;
 mod signal;
 mod other;
-// mod mm;
+mod mm;
 pub mod arch;
 mod net;
 pub mod flags;
+use mm::*;
 use flags::{IoVec, Utsname};
-use crate::{fs::select::FdSet, signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
+use crate::{fs::select::FdSet, mm::shm::ShmIdDs, signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
 use fs::*;
 use process::*;
 use other::*;
@@ -227,7 +228,28 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_PSELECT6=>sys_pselect6(args[0] as i32, args[1] as *mut FdSet, args[2] as *mut FdSet,args[3] as *mut FdSet, args[4] as *const UserTimeSpec, args[5] as *const SigSet).await,
         SYSCALL_SYNC=>sys_sync(),
         SYSCALL_FSYNC=>sys_fsync(args[0]).await,
-        194=>Err(crate::utils::error::SysErrNo::ENOSYS),
+        SYSCALL_SHMGET=>sys_shmget(
+            args[0] as i32,
+            args[1] as usize,
+            args[2] ,
+        ).await,
+        SYSCALL_SHMAT=>sys_shmat(
+            args[0] as i32,
+            args[1] as usize,
+            args[2] as usize,
+        ).await,
+        SYSCALL_SHMCTL=>sys_shmctl(     
+            args[0] as i32,
+            args[1] ,
+            args[2] as *mut ShmIdDs,
+        ).await,
+        SYSCALL_SHMDT=>sys_shmdt(args[0] as usize).await,
+        // SYSCALL_GETSOCKOPT=>sys_getsockopt(
+        //     args[0] as i32,
+        //     args[1] as u32,
+        //     args[2] as u32,
+        //     args[3] as *mut u8, 
+        // ).await,
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

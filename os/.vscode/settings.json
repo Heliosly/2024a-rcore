@@ -2,6 +2,20 @@
     "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
     "cmake.sourceDirectory": "/home/ustc/desktop1/myos1/2024a-rcore/os/lwext4_rust/c/lwext4",
     "rust-analyzer.trace.server": "verbose",
-    "rust-analyzer.server.path"   : "/usr/local/bin/rust-analyzer"
+    "rust-analyzer.server.path"   : "/usr/local/bin/rust-analyzer",
+    "rust-analyzer.server.extraEnv": {
+    "RA_LOG": "error",
+    "RA_PROFILE": "slow",
+    "RA_WORLD_SIZE_LIMIT": "5000000"
+},
+"rust-analyzer.memoryUsageLimit": 8192,
+
+"rust-analyzer.procMacro.enable": true,
+"files.watcherExclude": {
+    "**/target/**": true,
+    "**/build/**": true
+},
+"rust-analyzer.rustup.toolchain": "nightly"
+
   }
   

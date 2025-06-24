@@ -176,13 +176,15 @@ impl File for PipeReader {
                 let actual_read = guard.read_bytes(&mut temp_buf);
                 
                 // --- 修正点 1 (改进) ---
-                // 使用 write_all 以便利用其错误处理能力
                 ub.write_all(&temp_buf[..actual_read])?;
                 
                 return Poll::Ready(Ok(actual_read));
             }
 
             if guard.write_closed {
+                if guard.read_closed {
+                    return Poll::Ready(Err(SysErrNo::ECONNRESET));
+                }
                 return Poll::Ready(Ok(0));
             }
             if nonblk {

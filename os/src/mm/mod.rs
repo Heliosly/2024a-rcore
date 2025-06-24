@@ -12,8 +12,8 @@ pub mod heap_allocator;
 mod memory_set;
 mod area;
 pub mod page_table;
-// pub mod shm;
 use core::arch::asm;
+pub mod shm;
 
 use alloc::sync::Arc;
 use lazy_init::LazyInit;
