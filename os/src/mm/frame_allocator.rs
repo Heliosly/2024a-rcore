@@ -167,6 +167,24 @@ pub fn frame_alloc() -> Option<Arc<FrameTracker>> {
         .map(FrameTracker::new)
         .map(Arc::new)
 }
+
+/// Allocate a continuous physical page frames in FrameTracker style
+pub fn frame_alloc_continuous(num: usize) -> Option<Vec<Arc<FrameTracker>>> {
+    let mut frames = Vec::new();
+    for _ in 0..num {
+        match frame_alloc() {
+            Some(frame) => frames.push(frame),
+            None => {
+                // Rollback: deallocate already allocated frames
+                for frame in frames {
+                    frame_dealloc(frame.ppn());
+                }
+                return None;
+            }
+        }
+    }
+    Some(frames)
+}
 pub fn remaining_frames() -> usize {
     FRAME_ALLOCATOR.lock().remaining_frames()
 }

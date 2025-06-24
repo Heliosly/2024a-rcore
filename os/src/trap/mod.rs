@@ -16,16 +16,12 @@
 
 mod context;
 mod ucontext;
-use crate::config::PAGE_SIZE;
-use crate::fs::File;
-use crate::mm::{flush_tlb, translated_byte_buffer, MemorySet, VirtAddr};
-use crate::sync::Mutex;
 use crate::syscall::syscall;
 use crate::task::{
-    current_process, current_task, current_task_may_uninit, exit_current, exit_proc, pick_next_task, run_task2, task_count, task_tick, yield_now, CurrentTask, TaskStatus
+     current_task, current_task_may_uninit, exit_current, exit_proc, pick_next_task, run_task2,  task_tick, yield_now, CurrentTask, TaskStatus
 };
 use crate::timer::set_next_trigger;
-use crate::utils::error::{GeneralRet, SysErrNo};
+use crate::utils::error::SysErrNo;
 pub use context::user_return;
 
 pub use context::TrapStatus;
@@ -33,7 +29,6 @@ use core::arch::global_asm;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
-use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
 use riscv::register::scause::Scause;
 use riscv::register::{
     mstatus::FS,
@@ -246,20 +241,24 @@ pub async fn user_task_top() -> i32 {
                         Err(err) => {
                             if err == SysErrNo::EAGAIN {
                                 tf.sepc -= 4;
-                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
 
                                 yield_now().await;
 
                                 tf.regs.a0
                             } else if err == SysErrNo::ECHILD {
-                                debug!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                               
+                                debug!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+
 
                                 -(err as isize) as usize
                             } else if err == SysErrNo::EINVAL {
-                                println!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
+
                                 -(err as isize) as usize
+                                
                             } else {
-                                warn!("\x1b[93m [Syscall]Err: {}\x1b[0m", err.str());
+                                warn!("\x1b[93m [Syscall]Err: {},syscall:{}\x1b[0m", err.str(),tf.regs.a7);
                                 -(err as isize) as usize
                             }
                             // debug!("[Syscall]Err:{}", err.str());
@@ -300,16 +299,22 @@ pub async fn user_task_top() -> i32 {
                     } else {
                         stval
                     };
-                    if curr
+                    let handleres= curr
                         .get_process()
                         .unwrap()
                         .memory_set
                         .lock().await
-                        .handle_page_fault(stval,is_write).await
-                        .is_err()
-                    {
-                        exit_proc(-2).await;
-                        log_page_fault_error(scause, stval, sepc)
+                        .handle_page_fault(stval,is_write).await;
+                    match handleres {
+                        Ok(value) if value == false => {
+                            exit_proc(-2).await;
+                            log_page_fault_error(scause, stval, sepc);
+                        }
+                        Err(_) => {
+                            exit_proc(-2).await;
+                            log_page_fault_error(scause, stval, sepc);
+                        }
+                        _ => {}
                     }
                 }
                 Trap::Exception(Exception::StoreFault)

@@ -158,3 +158,15 @@ pub const SYSCALL_MLOCKALL: usize= 230;
 pub const SYSCALL_MUNLOCKALL: usize= 231;
 pub const SYSCALL_GETRUSAGE: usize = 165;
 pub const SYSCALL_PSELECT6: usize = 72;
+pub const SYSCALL_SYNC: usize= 81;
+pub const SYSCALL_FSYNC: usize = 82;
+
+
+
+
+//todo();
+pub const SYSCALL_GETSOCKOPT: usize = 209;
+pub const SYSCALL_SHMGET: usize= 194;
+pub const SYSCALL_SHMAT: usize= 196;
+pub const SYSCALL_SHMCTL: usize= 195;
+pub const SYSCALL_SHMDT: usize= 197;

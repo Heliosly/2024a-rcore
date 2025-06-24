@@ -708,7 +708,7 @@ pub enum MapAreaType {
     /// Mmap
     Mmap,
     /// Shared memory
-    Shm,
+    Shm { shmid: i32 }, 
     /// Physical frames(for kernel)
     Physical,
     /// MMIO(for kernel)

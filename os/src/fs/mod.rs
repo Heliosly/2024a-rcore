@@ -173,11 +173,11 @@ pub use stdio::{Stdin, Stdout};
 
 
 pub fn list_app(){
-     EXT4FS.ls();
+     EXT4FS.lock().ls();
 }
 pub fn root_inode() -> Arc<dyn VfsNodeOps > {
    
-    let root = EXT4FS.root_inode();
+    let root = EXT4FS.lock().root_inode();
     root
 }
 pub fn fix_path(path: &str) -> String {
@@ -443,11 +443,15 @@ cd /glibc
 ./busybox_testcode.sh
 ./basic_testcode.sh
 ./libcbench_testcode.sh
+./lua_testcode.sh
+./iozone_testcode.sh
 cd /musl
 ./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 ./libcbench_testcode.sh
+./lua_testcode.sh
+./iozone_testcode.sh
 ";
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";

@@ -5,6 +5,7 @@
 ///最大解析深度
 pub const          MAX_SYMLINK_DEPTH :usize =100;
 
+pub const MAX_SHM_SIZE : usize = 1024 * 1024 * 1024; // 1 GiB
 ///
 pub const MNT_TABLE_MAX_ENTRIES: usize = 16;
 ///File descriptor set size

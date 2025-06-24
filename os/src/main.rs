@@ -104,18 +104,21 @@ pub fn rust_main() -> ! {
     fs::init();
     // fs::list_app();
     
-    task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
+    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
     // task::add_initproc("/", "/argcc.exe",  "asdasdad");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
-    // task::add_initproc("/musl   ", "/musl/busybox", "sh");
+    task::add_initproc("/musl   ", "/musl/busybox", "sh");
 
+    //  task::add_initproc("/musl", "/musl/busybox", "sh netperf_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh iozone_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh lmbench_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
+
+    // task::add_initproc("/glibc", "/musl/busybox", "sh run-dynamic.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 

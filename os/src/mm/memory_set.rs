@@ -894,7 +894,7 @@ pub async fn handle_page_fault(
     let start = self.areatree.find_area(vpn);
 
     // self.areatree.debug_print();
-    // println!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", va.0, vpn.0, start.map_or(0, |v| v.0));
+    trace!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", va.0, vpn.0, start.map_or(0, |v| v.0));
     // 1. 找不到映射区 → AreaNotFound
     let start_vpn = if let Some(v) = start {
         v

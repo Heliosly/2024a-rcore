@@ -483,6 +483,17 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         }
         info!("********************\n");
     }
+    pub fn sync(&mut self) -> Result<usize, i32> {
+        unsafe {
+            let r = ext4_block_cache_flush(&mut *self.value);
+            if r != EOK as i32 {
+                error!("ext4_block_cache_flush: rc = {:?}\n", r);
+                return Err(r);
+            }
+            Ok(0)
+        }
+    }
+
 }
 
 impl<K: KernelDevOp> Drop for Ext4BlockWrapper<K> {

@@ -24,6 +24,18 @@ use crate::utils::error::{GeneralRet, SysErrNo};
 pub struct VfsManager;
 
 impl VfsManager {
+    pub fn sync(){
+       
+        let mut mnt_table = MNT_TABLE.lock();
+        EXT4FS.lock().sync().unwrap_or_else(|e| {
+            warn!("Failed to sync EXT4 filesystem: {:?}", e);
+        });
+        for entry in mnt_table.entries.iter_mut() {
+            (entry.fs_instance).lock().sync().unwrap_or_else(|e| {
+                warn!("Failed to sync filesystem at {}: {:?}", entry.mount_point, e);
+            });
+        }
+    }
     /// 挂载一个新的文件系统。这是 VFS 层的核心 mount 实现。
     pub fn mount(
         special_device: &str,
@@ -36,7 +48,7 @@ impl VfsManager {
 
         // --- 步骤 1: 驱动层挂载 ---
         // 根据 fstype 创建和初始化文件系统驱动实例
-        let fs_instance: Arc<dyn VfsOps> = match fstype {
+        let fs_instance = match fstype {
             "ext4" => {
                 // a. 找到并初始化块设备
                 let disk = find_block_device(special_device)?; 
@@ -45,12 +57,15 @@ impl VfsManager {
                 // b. 创建 Ext4VfsOps 实例
                 
                 let  mut ext4_fs = Ext4FileSystem::new(disk,special_device.into(),mount_point);
-                let res=Arc::new(ext4_fs);
+
                 if special_device=="/dev/vda"{
-                   EXT4FS.init_by(res.clone());
+                   EXT4FS.init_by(Arc::new(spin::Mutex::new(ext4_fs)));
+                   return Ok(());
+                }else{
+
                 }
                 // res.ls();
-                res
+                Arc::new(spin::Mutex::new(ext4_fs)) 
                 
             },
             // "tmpfs" => { /* 创建一个 TmpFs 实例 */ },
@@ -87,7 +102,7 @@ impl VfsManager {
     }
 
     /// 解析一个绝对路径，找到应该处理它的文件系统和其在该文件系统内的相对路径
-    pub fn resolve_mnt_path(abs_path: &str) -> (Arc<dyn VfsOps>, String) {
+    pub fn resolve_mnt_path(abs_path: &str) -> (Arc<spin::Mutex<dyn VfsOps>>, String) {
         let mnt_table = MNT_TABLE.lock();
 
         // 查找最长匹配的挂载点

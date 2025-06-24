@@ -1695,7 +1695,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
         let result = VfsManager::mount(&special, &dir, &fstype, flags, data_opt);
     
         // 将 VfsManager 的返回结果 (GeneralRet, 即 Result<(), SysErrNo>) 转换为系统调用返回值
-        result.map(|_| 0) // 成功时，将 Ok(()) 映射为 0
+        Ok(0) // 成功时，将 Ok(()) 映射为 0
     }
 
 /// umount 系统调用实现
@@ -2608,5 +2608,23 @@ pub async fn sys_munlockall() -> SyscallRet {
     trace!("[sys_munlockall] All pages unlocked (no-op).");
     
     // 4. 成功
+    Ok(0)
+}
+pub fn sys_sync() -> SyscallRet {
+    trace!("[sys_sync] Syncing all filesystems (no-op).");
+    
+    VfsManager::sync();
+    Ok(0)
+}   
+pub async  fn sys_fsync(fd: usize) -> SyscallRet {
+    trace!("[sys_fsync] fd: {}", fd);
+    let task = current_process();
+    let  file = task.get_file(fd).await;
+    if  file.is_err() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let file = file.unwrap().file()?;
+    file.inner.lock().inode.sync();
     Ok(0)
 }

@@ -14,6 +14,7 @@ mod fs;
 mod process;
 mod signal;
 mod other;
+// mod mm;
 pub mod arch;
 mod net;
 pub mod flags;
@@ -224,6 +225,9 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         SYSCALL_GETRUSAGE=>sys_getrusage(args[0] as i32,args[1] as *mut Rusage ).await,
         SYSCALL_PSELECT6=>sys_pselect6(args[0] as i32, args[1] as *mut FdSet, args[2] as *mut FdSet,args[3] as *mut FdSet, args[4] as *const UserTimeSpec, args[5] as *const SigSet).await,
+        SYSCALL_SYNC=>sys_sync(),
+        SYSCALL_FSYNC=>sys_fsync(args[0]).await,
+        194=>Err(crate::utils::error::SysErrNo::ENOSYS),
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

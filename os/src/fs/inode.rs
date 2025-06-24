@@ -63,6 +63,7 @@ pub struct OSInodeInner {
 }
 
 impl OsInode {
+  
     pub fn new(readable: bool, writable: bool, inode: Arc<dyn VfsNodeOps>) -> Self {
         OsInode {
             readable,
@@ -237,6 +238,7 @@ impl File for OsInode {
             Ok(total)
       
     }
+
     fn lseek(&self, offset: isize, whence: u32) -> crate::utils::error::SyscallRet {
         if whence > 2 {
             return Err(SysErrNo::EINVAL);

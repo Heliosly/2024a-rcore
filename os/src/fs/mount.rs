@@ -25,7 +25,7 @@ pub struct MountEntry {
     // pub filesystem_type: String, // 这个信息可以从 fs_instance 中获取
     pub flags: u32,
     // 核心改动：存储一个指向活动文件系统实例的引用
-    pub fs_instance: Arc<dyn VfsOps>, 
+    pub fs_instance: Arc<Mutex<dyn VfsOps>>, 
 }
 
 // ... MountEntry 的 Debug impl 也需要相应更新 ...
@@ -34,7 +34,7 @@ impl fmt::Debug for MountEntry {
         f.debug_struct("MountEntry")
             .field("special", &self.special_device)
             .field("dir", &self.mount_point)
-            .field("fstype", &self.fs_instance.name())
+            .field("fstype", &self.fs_instance.lock().name())
             .field("flags", &self.flags)
             .finish()
     }
@@ -93,7 +93,7 @@ impl MountTable {
         }
 
         info!("Registering mount: '{}' on '{}' as type '{}'", 
-              new_entry.special_device, new_entry.mount_point, new_entry.fs_instance.name());
+              new_entry.special_device, new_entry.mount_point, new_entry.fs_instance.lock().name());
 
         self.entries.push(new_entry);
         
@@ -104,7 +104,7 @@ impl MountTable {
     }
     
     // umount, get_mount_info_by_dir 等其他函数也需要相应调整...
-    pub fn umount(&mut self, path_or_device: &str) -> Result<Arc<dyn VfsOps>, SysErrNo> {
+    pub fn umount(&mut self, path_or_device: &str) -> Result<Arc<Mutex<dyn VfsOps>>, SysErrNo> {
         if let Some(index) = self.entries.iter().position(|entry| {
             entry.mount_point == path_or_device || entry.special_device == path_or_device
         }) {
