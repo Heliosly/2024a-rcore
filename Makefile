@@ -1,12 +1,53 @@
-DOCKER_NAME ?= rcore-tutorial-v3
-.PHONY: docker build_docker
-	
-docker:
-	docker run --rm -it -v ${PWD}:/mnt -w /mnt ${DOCKER_NAME} bash
+GDBSERVER = localhost:1234
+GDB = gdb-multiarch
+GDBt = /home/ustc/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
+all:
 
-build_docker: 
-	docker build -t ${DOCKER_NAME} .
 
-fmt:
-	cd easy-fs; cargo fmt; cd ../easy-fs-fuse cargo fmt; cd ../os ; cargo fmt; cd ../user; cargo fmt; cd ..
+	cp -rT os/cargotemp os/.cargo	
+	$(MAKE) -C os kernel MODE=release
+	cp os/target/riscv64gc-unknown-none-elf/release/os ./kernel-rv
+	touch kernel-la
+run:
+	qemu-system-riscv64 \
+   	  -machine virt \
+	  -kernel kernel-rv \
+	  -m 1024M \
+	  -nographic \
+	  -smp 1 \
+	  -drive file=os/sdcard-rv.img,if=none,format=raw,id=x0 \
+	  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+	  -no-reboot \
+	  -device virtio-net-device,netdev=net \
+	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+	  -netdev user,id=net \
+	  -rtc base=utc
+gdbserver:
+	qemu-system-riscv64 \
+   	  -machine virt \
+	  -kernel kernel-rv \
+	  -m 1024M \
+	  -nographic \
+	  -smp 1 \
+	  -bios default \
+	  -drive file=os/sdcard-rv.img,if=none,format=raw,id=x0 \
+	  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+	  -no-reboot \
+	  -device virtio-net-device,netdev=net \
+	  -netdev user,id=net \
+	  -drive file=disk-rv.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1\
+	  -rtc base=utc \
+	  -s -S
+all-debug:
 
+
+	cp -rT os/cargotemp os/.cargo	
+	$(MAKE) -C os kernel
+	cp os/target/riscv64gc-unknown-none-elf/debug/os ./kernel-rv
+	touch kernel-la
+
+gdb:
+	$(GDB) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64"
+gdb2:
+	$(GDBt) $(KERNEL) -ex "target remote $(GDBSERVER)" -ex "set arch riscv:rv64" 
+.PHONY: all run gdbserver gdb

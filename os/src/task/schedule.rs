@@ -3,8 +3,10 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicIsize, Ordering};
 
 use super::processor::KERNEL_SCHEDULER;
-use super::TaskControlBlock;
+use super::task::TaskControlBlock;
 
+pub type TaskRef  = Arc<Task>;
+pub type Task = CFSTask<TaskControlBlock>;
 /// task for CFS
 pub struct CFSTask<T> {
     inner: T,
@@ -28,6 +30,13 @@ const NICE2WEIGHT_NEG: [isize; NICE_RANGE_NEG + 1] = [
     1024, 1277, 1586, 1991, 2501, 3121, 3906, 4904, 6100, 7620, 9548, 11916, 14949, 18705, 23254,
     29154, 36291, 46273, 56483, 71755, 88761,
 ];
+impl<T> Deref for CFSTask<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 impl<T> CFSTask<T> {
     /// new with default values
@@ -91,12 +100,7 @@ impl<T> CFSTask<T> {
     }
 }
 
-impl<T> Deref for CFSTask<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
+
 
 /// A simple [Completely Fair Scheduler][1] (CFS).
 ///
@@ -191,64 +195,26 @@ impl<T> CFScheduler<T> {
     }
 }
 
-fn task2_cfs_task(task: Arc<TaskControlBlock>) -> Arc<CFSTask<Arc<TaskControlBlock>>> {
-    let cfs_task = CFSTask::new(task);
-    Arc::new(cfs_task)
-}
-fn cfs_task2_task(cfs_task: Arc<CFSTask<Arc<TaskControlBlock>>>) -> Arc<TaskControlBlock> {
-    cfs_task.inner().clone()
-}
-pub fn add_task(task: Arc<TaskControlBlock>) {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    let task = task2_cfs_task(task);
-    sched.add_task(task);
-}
-#[allow(dead_code)]
-pub fn remove_task(task: Arc<TaskControlBlock>) -> Option<Arc<TaskControlBlock>> {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    let task = task2_cfs_task(task);
-    sched.remove_task(&task).map(cfs_task2_task)
+pub fn put_prev_task(prev: SchedItem<TaskControlBlock>) {
+    KERNEL_SCHEDULER.lock().put_prev_task(prev, false);
 }
 
-pub fn pick_next_task() -> Option<Arc<TaskControlBlock>> {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    sched.pick_next_task().map(cfs_task2_task)
+pub fn add_task(task: SchedItem<TaskControlBlock>) {
+    KERNEL_SCHEDULER.lock().add_task(task);
 }
 
-pub fn put_prev_task(prev: Arc<TaskControlBlock>, preempt: bool) {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    let prev_task = task2_cfs_task(prev);
-    sched.put_prev_task(prev_task, preempt);
+pub fn remove_task(task: &SchedItem<TaskControlBlock>) -> Option<SchedItem<TaskControlBlock>> {
+    KERNEL_SCHEDULER.lock().remove_task(task)
 }
 
-pub fn task_tick(current: Arc<TaskControlBlock>) -> bool {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    let current_task = task2_cfs_task(current);
-    sched.task_tick(&current_task)
+pub fn pick_next_task() -> Option<SchedItem<TaskControlBlock>> {
+    KERNEL_SCHEDULER.lock().pick_next_task()
 }
 
-
-pub fn set_priority(task: Arc<TaskControlBlock>, prio: isize) -> bool {
-    let a = KERNEL_SCHEDULER.try_get().unwrap();
-    let scheduler_arc = Arc::clone(a);
-
-    let mut sched = scheduler_arc.lock();
-    let task = task2_cfs_task(task);
-    sched.set_priority(&task, prio)
+pub fn task_tick(current: &SchedItem<TaskControlBlock>) -> bool {
+    KERNEL_SCHEDULER.lock().task_tick(current)
 }
 
+pub fn set_priority(task: &SchedItem<TaskControlBlock>, prio: isize) -> bool {
+    KERNEL_SCHEDULER.lock().set_priority(task, prio)
+}

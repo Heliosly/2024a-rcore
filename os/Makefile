@@ -1,25 +1,13 @@
-# Building
-ARCH ?= riscv64
 
-ifeq ($(ARCH), riscv64)
-	TARGET := riscv64gc-unknown-none-elf
-	BOOTLOADER := ../bootloader/rustsbi-qemu.bin
-	QEMU := qemu-system-riscv64
-	OBJDUMP := rust-objdump --arch-name=riscv64
-	OBJCOPY := rust-objcopy --binary-architecture=riscv64
-else ifeq ($(ARCH), loongarch64)
-	TARGET := loongarch64-unknown-none-elf
-	BOOTLOADER := ../bootloader/rustsbi-qemu.bin
-	QEMU := qemu-system-loongarch64
-	OBJDUMP := rust-objdump --arch-name=loongarch64
-	OBJCOPY := rust-objcopy --binary-architecture=loongarch64
-endif
-
-MODE := release
+TARGET := loongarch64-unknown-linux-gnu
+MODE ?= debug
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
-FS_IMG := ../user/target/$(TARGET)/$(MODE)/fs.img
+FS_IMG := ./sdcard-la.img
+
+#FS_IMG := ./fs.img
+
 APPS := ../user/src/bin/*
 OFFLINE :=
 
@@ -32,12 +20,17 @@ BOOTLOADER := ../bootloader/$(SBI)-$(BOARD).bin
 KERNEL_ENTRY_PA := 0x80200000
 
 # Binutils
-OBJDUMP := rust-objdump --arch-name=riscv64
-OBJCOPY := rust-objcopy --binary-architecture=riscv64
+OBJDUMP := rust-objdump --arch-name=loongarch64
+OBJCOPY := rust-objcopy --binary-architecture=loongarch64
 
 # GDB Dashboard 支持
-GDB_PATH := /root/qemu/gdb-14.2/build-riscv64/bin/riscv64-unknown-elf-gdb
-gdb := $(GDB_PATH) 
+# ifeq ($(shell which riscv64-unknown-elf-gdb),)
+# GDB_PATH := gdb
+# else
+# GDB_PATH := riscv64-unknown-elf-gdb
+# endif
+GDB_PATH:=~/gdb-16.3/build/gdb/gdb
+gdb := $(GDB_PATH)
 
 # Building mode argument
 ifeq ($(MODE), release)
@@ -48,33 +41,24 @@ endif
 CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | sed -E 's/ch([0-9])/\1/')
 TEST ?= 6
 BASE ?= 1
-
 # Disassembly
 DISASM ?= -x
 
-build: env $(KERNEL_BIN) fs-img
+build: env $(KERNEL_BIN) 
 
 env:
-ifeq ($(OFFLINE),)
-	(rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add $(TARGET)
-	cargo install cargo-binutils
-	rustup component add rust-src
-	rustup component add llvm-tools-preview
+ifeq ($(OFFLINE),1)
+    (rustup target list | grep "loongarch64-unknown-linux-gnu (installed)") || rustup target add $(TARGET)
+    cargo install cargo-binutils
+    rustup component add rust-src
+    rustup component add llvm-tools-preview
 endif
 
 $(KERNEL_BIN): kernel
 	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
-
-fs-img: $(APPS)
-	@make -C ../user build TEST=$(TEST) CHAPTER=$(CHAPTER) BASE=$(BASE)
-	@rm -f $(FS_IMG)
-	@cd ../easy-fs-fuse && cargo run --release -- -s ../user/build/app/ -t ../user/target/riscv64gc-unknown-none-elf/release/
-
 kernel:
-	@make -C ../user build TEST=$(TEST) CHAPTER=$(CHAPTER) BASE=$(BASE)
 	@echo Platform: $(BOARD)
 	@cargo build $(MODE_ARG)
-
 clean:
 	@cargo clean
 
@@ -87,37 +71,46 @@ disasm-vim: kernel
 	@rm $(DISASM_TMP)
 
 run: run-inner
-
+BUS := pci
 run-inner: build
-ifeq ($(ARCH), riscv64)
-	@$(QEMU) \
-		-machine virt \
-		-nographic \
-		-m 128M \
-		-bios $(BOOTLOADER) \
-		-device loader,file=$(KERNEL_BIN),addr=$(KERNEL_ENTRY_PA) \
-		-drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
-else ifeq ($(ARCH), loongarch64)
-	@$(QEMU) \
-		-machine virt \
-		-nographic \
-		-m 128M \
-		-kernel $(KERNEL_BIN)
-endif
+	@qemu-system-loongarch64 \
+        -cpu la464-loongarch-cpu \
+		-kernel $(KERNEL_ELF) \
+         -m 1G \
+        -nographic \
+        -smp 1 \
+      -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
+      -D qemu.log -d in_asm,int,pcall,cpu_reset,guest_errors
+
 
 gdb: build
 	@tmux new-session -d \
-		"qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S" && \
-		tmux split-window -h \"$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'\" && \
+		"qemu-system-loongarch64 -machine virt -nographic -m 1024M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -s -S" && \
+		tmux split-window -h \"$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch loongarch64' -ex 'target remote localhost:1234'\" && \
 		tmux swap-pane -U && \
 		tmux -2 attach-session -d
 
 gdbserver: build
-	@qemu-system-riscv64 -machine virt -nographic -m 128M -bios $(BOOTLOADER) -device loader,file=$(KERNEL_ELF),addr=$(KERNEL_ENTRY_PA) -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -s -S
+	@qemu-system-loongarch64 \
+        -machine virt \
+        -cpu la464-loongarch-cpu \
+        -kernel $(KERNEL_ELF) \
+        -m 1024M \
+        -nographic \
+        -smp 1 \
+        -drive file=sdcard-la.img,if=none,format=raw,id=x0 \
+        -device virtio-blk-pci,drive=x0 \
+        -drive file=../disk.img,if=none,format=raw,id=x1 \
+        -device virtio-blk-pci,drive=x1 \
+        -device virtio-net-pci,netdev=net0 \
+        -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
+        -rtc base=utc \
+        -no-reboot \
+		-s -S
+		
 
 gdbclient:
-	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
+	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch Loongarch64' -ex 'target remote localhost:1234'
+
 
 .PHONY: build env kernel clean disasm disasm-vim run-inner fs-img gdbserver gdbclient

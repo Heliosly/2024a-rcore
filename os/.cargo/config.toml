@@ -1,9 +1,20 @@
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "loongarch64-unknown-none"
 
-[target.riscv64gc-unknown-none-elf]
-rustflags = [
-    "-Clink-arg=-Tsrc/linker.ld", "-Cforce-frame-pointers=yes"
-]
-[target.riscv64-unknown-linux-musl]
-linker = "/home/ustc/buildroot/output/host/bin/riscv64-linux-musl-cc"
+[term]
+verbose = true
+
+[net]
+offline = false
+
+[source.crates-io]
+registry = "https://github.com/rust-lang/crates.io-index"
+replace-with = 'ustc'
+[source.ustc]
+registry = "git://mirrors.ustc.edu.cn/crates.io-index"
+
+[profile.dev]
+panic = "abort" #关闭默认的panic栈回溯功能，裸机环境没有这个功能，直接abort
+
+[profile.release]
+panic = "abort" #关闭默认的panic栈回溯功能，裸机环境没有这个功能，直接abort

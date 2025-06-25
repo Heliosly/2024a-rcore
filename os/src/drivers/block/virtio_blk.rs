@@ -1,87 +1,145 @@
-use super::BlockDevice;
-use crate::config;
-use crate::mm::{
-    frame_alloc, frame_dealloc, kernel_token, FrameTracker, PageTable, PhysAddr, PhysPageNum,
-    StepByOne, VirtAddr,KernelAddr
-};
-use crate::sync::UPSafeCell;
-use alloc::vec::Vec;
-use lazy_static::*;
-use virtio_drivers::{Hal, VirtIOBlk, VirtIOHeader};
+use core::{panic, ptr::NonNull};
 
-/// The base address of control registers in Virtio_Block device
-#[allow(unused)]
-const VIRTIO0: usize = 0x10001000+config::KERNEL_DIRECT_OFFSET;
-/// VirtIOBlock device driver strcuture for virtio_blk device
-pub struct VirtIOBlock(UPSafeCell<VirtIOBlk<'static, VirtioHal>>);
+use crate::{mm::{frame_alloc, frame_dealloc, kernel_token, FrameTracker, KernelAddr, PageTable, PhysAddr, PhysPageNum, StepByOne, VirtAddr 
+}, sync::UPSafeCell};
+
+use alloc::{sync::Arc, vec::Vec};
+use virtio_drivers::{
+    transport:: Transport,
+    BufferDirection, Hal, PhysAddr as DMAPhysAddr
+};
+use super::SafeMmioTransport as MmioTransport;
+use log::trace;
+use lazy_static::lazy_static;
+
 
 lazy_static! {
-    static ref QUEUE_FRAMES: UPSafeCell<Vec<FrameTracker>> = unsafe { UPSafeCell::new(Vec::new()) };
-}
-
-impl BlockDevice for VirtIOBlock {
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) {
-        self.0
-            .exclusive_access()
-            .read_block(block_id, buf)
-            .expect("Error when reading VirtIOBlk");
-    }
-    fn write_block(&self, block_id: usize, buf: &[u8]) {
-        self.0
-            .exclusive_access()
-            .write_block(block_id, buf)
-            .expect("Error when writing VirtIOBlk");
-    }
-}
-
-impl VirtIOBlock {
-    #[allow(unused)]
-    /// Create a new VirtIOBlock driver with VIRTIO0 base_addr for virtio_blk device
-    pub fn new() -> Self {
-        trace!("VIRTIO_BLK: init:{:#x}",VIRTIO0);
-        unsafe {
-            Self(UPSafeCell::new(
-                VirtIOBlk::<VirtioHal>::new(&mut *(VIRTIO0 as *mut VirtIOHeader)).unwrap(),
-            ))
-        }
-    }
+    static ref QUEUE_FRAMES: UPSafeCell<Vec<Arc<FrameTracker>>> = unsafe { UPSafeCell::new(Vec::new()) };
 }
 
 pub struct VirtioHal;
 
-impl Hal for VirtioHal {
-    fn dma_alloc(pages: usize) -> usize {
-        let mut ppn_base = PhysPageNum(0);
+unsafe impl Hal for VirtioHal {
+    /// 分配 `pages` 页 DMA 内存，返回 (物理地址, 内核可访问的虚拟指针)
+    fn dma_alloc(pages: usize, _direction: BufferDirection) -> (DMAPhysAddr, NonNull<u8>) {
+         // 1) 分配真正的、连续的物理页
+         info!("dma_alloc");
+         let mut ppn_base = PhysPageNum(0);
         for i in 0..pages {
             let frame = frame_alloc().unwrap();
             if i == 0 {
-                ppn_base = frame.ppn;
+                ppn_base = frame.ppn();
             }
-            assert_eq!(frame.ppn.0, ppn_base.0 + i);
+            assert_eq!(frame.ppn().0, ppn_base.0 + i);
             QUEUE_FRAMES.exclusive_access().push(frame);
         }
-        let pa: PhysAddr = ppn_base.into();
-        pa.0
+    
+   
+   
+    let paddr = PhysAddr::from(ppn_base);
+    // 3) 计算虚拟地址，假设 direct-map
+    let vaddr_usize = KernelAddr::from(paddr).0;
+    let vaddr = NonNull::new(vaddr_usize as *mut u8).unwrap();
+    // 4) 记录 frames，等 dealloc 时释放
+    (paddr.0, vaddr)
     }
 
-    fn dma_dealloc(pa: usize, pages: usize) -> i32 {
-        let pa = PhysAddr::from(pa);
-        let mut ppn_base: PhysPageNum = pa.into();
+    /// 释放之前分配的 DMA 内存
+    unsafe fn dma_dealloc(paddr: DMAPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+        let mut ppn: PhysPageNum = paddr.into();
         for _ in 0..pages {
-            frame_dealloc(ppn_base);
-            ppn_base.step();
+            frame_dealloc(ppn);
+            ppn.step();
         }
+        trace!("dma_dealloc: phys={:#x}, pages={}", paddr, pages);
+        
         0
     }
 
-    fn phys_to_virt(addr: usize) -> usize {
-        KernelAddr::from(PhysAddr::from(addr)).0
+    /// 将 MMIO 物理地址映射到内核虚地址
+    unsafe fn mmio_phys_to_virt(paddr: DMAPhysAddr, _size: usize) -> NonNull<u8> {
+        let vaddr_usize = KernelAddr::from(paddr).0;
+        NonNull::new(vaddr_usize as *mut u8).expect("virtio_hal: mmio_phys_to_virt null")
     }
 
-    fn virt_to_phys(vaddr: usize) -> usize {
-        PageTable::from_token(kernel_token())
-            .translate_va(VirtAddr::from(vaddr))
-            .unwrap()
-            .0
+    /// 在某些平台下，可能需要把 buffer 标记为可被设备访问
+    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> DMAPhysAddr {
+        let vptr = buffer.as_ptr() as *const u8 as usize;
+
+        let paddr_usize = PageTable::from_token(kernel_token())
+            .translate_va(VirtAddr::from(vptr))
+            .expect("virtio_hal: share translate failed")
+            .0;
+        PhysAddr::from(paddr_usize).0
+    }
+
+    /// 取消 share（如无缓存，可以空实现）
+    unsafe fn unshare(_paddr: DMAPhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
+        // nothing to do
+    }
+}
+
+impl Transport for MmioTransport{
+    fn device_type(&self) -> virtio_drivers::transport::DeviceType {
+        self.0.device_type()
+    }
+
+    fn read_device_features(&mut self) -> u64 {
+        self.0.read_device_features()
+    }
+
+    fn write_driver_features(&mut self, driver_features: u64) {
+        self.0.write_driver_features(driver_features)
+    }
+
+    fn max_queue_size(&mut self, queue: u16) -> u32 {
+        self.0.max_queue_size(queue)
+    }
+
+    fn notify(&mut self, queue: u16) {
+        self.0.notify(queue)
+    }
+
+    fn get_status(&self) -> virtio_drivers::transport::DeviceStatus {
+        self.0.get_status()
+    }
+
+    fn set_status(&mut self, status: virtio_drivers::transport::DeviceStatus) {
+        self.0.set_status(status)
+    }
+
+    fn set_guest_page_size(&mut self, guest_page_size: u32) {
+        self.0.set_guest_page_size(guest_page_size)
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        self.0.requires_legacy_layout()
+    }
+
+    fn queue_set(
+        &mut self,
+        queue: u16,
+        size: u32,
+        descriptors: DMAPhysAddr,
+        driver_area: DMAPhysAddr,
+        device_area: DMAPhysAddr,
+    ) {
+        self.0.queue_set(queue, size, descriptors, driver_area, device_area)
+    }
+
+    fn queue_unset(&mut self, queue: u16) {
+        self.0.queue_unset(queue)
+    }
+
+    fn queue_used(&mut self, queue: u16) -> bool {
+        self.0.queue_used(queue)
+    }
+
+    fn ack_interrupt(&mut self) -> bool {
+        self.0.ack_interrupt()
+    }
+
+    fn config_space<T: 'static>(&self) -> virtio_drivers::Result<NonNull<T>> {
+        self.0.config_space()
     }
 }

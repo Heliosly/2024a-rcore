@@ -180,7 +180,12 @@ kernel_trap:
 user_trap:
     SAVE_REGS                          # sp 已是 TrapFrame 指针，sscratch 保存了原 sp
     # 假设以下偏移按字节展开
-
+    ld    t1, 2*8(sp)       
+    ld    t0, 3*8(sp)      
+    sd    gp, 2*8(sp)      
+    sd    tp, 3*8(sp)      
+    mv    gp, t1         
+    mv    tp, t0        
     li      a0, 1
     sd      a0, 85*8(sp)                # TrapFrame[37]=1，表示任务优先处理 Trap
     mv      a0, sp                     # 参数1：TrapFrame 指针
@@ -219,15 +224,15 @@ user_return1:
     # 恢复浮点寄存器
    
 
-    # 交换 gp <-> x3 (TrapContext.x[3])TODO
-   # ld      t0, 3*8(sp)
-  #  sd      gp, 3*8(sp)
-   # mv      gp, t0
+    # 交换 gp <-> x3 (TrapContext.x[2])
+    ld      t0, 2*8(sp)
+    sd      gp, 2*8(sp)
+    mv      gp, t0
 
-    # 交换 tp <-> x4 (TrapContext.x[4])
-   # ld      t0, 4*8(sp)
-    #sd      tp, 4*8(sp)
-   # mv      tp, t0
+    # 交换 tp <-> x4 (TrapContext.x[3])
+    ld      t0, 3*8(sp)
+    sd      tp, 3*8(sp)
+    mv      tp, t0
 
     # 存一份 ctx 到 sscratch，便于 trap handler 使用
     csrw    sscratch, a0
@@ -237,7 +242,6 @@ user_return1:
     ld      t1, 31*8(sp)
     csrw    sepc,    t0
     csrw    sstatus, t1
-
     # 恢复通用寄存器
     
     POP_GENERAL_REGS

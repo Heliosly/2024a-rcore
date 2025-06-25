@@ -7,25 +7,81 @@
 //! Every task or process has a memory_set to control its virtual memory.
 
 mod address;
-mod frame_allocator;
+pub(crate) mod frame_allocator;
 pub mod heap_allocator;
 mod memory_set;
-mod page_table;
+mod area;
+pub mod page_table;
+use core::arch::asm;
+pub mod arch;
+use alloc::sync::Arc;
+use lazy_init::LazyInit;
 
+pub use page_table::put_data;
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum,KernelAddr,VPNRange};
 pub use frame_allocator::{frame_alloc, frame_dealloc, FrameTracker};
-pub use memory_set::remap_test;
-pub use memory_set::{kernel_token, MapPermission, MemorySet, KERNEL_SPACE,MapAreaType};
-use page_table::PTEFlags;
+pub use memory_set::MemorySet;
+pub use area::{MapPermission, MapAreaType,VmAreaTree,MapArea,MapType,MmapFile,MmapFlags};
+
+pub use arch::{PageTableEntry, PTEFlags};
 pub use page_table::{
-    translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
-    PageTableEntry, UserBuffer, UserBufferIterator,
+    translated_byte_buffer, get_target_ref, translated_refmut, translated_str, PageTable,
+    UserBuffer, UserBufferIterator,fill_str,TranslateError
 };
+
+pub const MPOL_DEFAULT: usize = 0;
+pub const MPOL_PREFERRED: usize = 1;
+pub const MPOL_BIND: usize = 2;
+pub const MPOL_INTERLEAVE: usize = 3;
+
+use crate::sync::Mutex;
+ /// The kernel's initial memory mapping(kernel address space)
+ pub static  KERNEL_SPACE: LazyInit<Arc<Mutex<MemorySet>>> = LazyInit::new();
+ pub static KERNEL_PAGE_TABLE_TOKEN: LazyInit<usize> = LazyInit::new();
+ pub static KERNEL_PAGE_TABLE_PPN: LazyInit<PhysPageNum> = LazyInit::new();
 /// initiate heap allocator, frame allocator and kernel space
 pub fn init() {
    
     heap_allocator::init_heap();
     frame_allocator::init_frame_allocator();
-    KERNEL_SPACE.exclusive_access().activate();
+    let ms=MemorySet::new_kernel();
+    KERNEL_PAGE_TABLE_TOKEN.init_by(ms.page_table.token());
+    
+    KERNEL_PAGE_TABLE_PPN.init_by(ms.page_table.root_ppn());
+    KERNEL_SPACE.init_by(Arc::new(Mutex::new(ms) ));
+    activate_by_token(*KERNEL_PAGE_TABLE_TOKEN);
+
+      
+
+}
+ /// Change page table by writing satp CSR Register use token. 
+ pub fn activate_by_token(satp: usize) {
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        satp::write(satp);
+        asm!("sfence.vma");
+    }
+    #[cfg(target_arch = "loongarch64")]
+    unsafe {
+        use loongArch64::register::{pgdl, pgdh};
+        pgdl::set_base(satp);
+        asm!("invtlb 0x0, $zero, $zero");
+    }
 }
 
+/// the kernel token
+pub fn kernel_token() -> usize {
+    *KERNEL_PAGE_TABLE_TOKEN
+}
+
+
+pub  fn flush_tlb(){
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        asm!("sfence.vma");
+    }
+    #[cfg(target_arch = "loongarch64")]
+    unsafe {
+        asm!("invtlb 0x0, $zero, $zero");
+    }
+}

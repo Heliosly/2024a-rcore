@@ -1,5 +1,8 @@
 #![allow(unused)]
 
+use core::{future::Future, pin::Pin};
+
+use alloc::boxed::Box;
 use num_enum::FromPrimitive;
 
 #[derive(Debug, Clone, Copy, FromPrimitive, PartialEq, Eq)]
@@ -88,7 +91,6 @@ pub enum SysErrNo {
     /// Toomany symbolic links encountereds
     ELOOP = 40,
     /// Operation would block
-    // EWOULDBLOCK = EAGAIN,
     /// No message of desired type
     ENOMSG = 42,
     /// Identifier removed
@@ -420,9 +422,18 @@ impl SysErrNo {
             Self::ERFKILL => "Operation not possible due to RF-kill",
             Self::EHWPOISON => "Memory page has hardware error",
             Self::Default => panic!("unknown error num! please add!"),
+            
         }
     }
 }
 
 pub type SyscallRet = Result<usize, SysErrNo>;
-pub type GeneralRet = Result<(), SysErrNo>;
+pub type TemplateRet<T> = Result<T, SysErrNo>;
+pub type GeneralRet = Result<(),SysErrNo>;
+
+
+pub type ASyncRet<'a,T> = SysFuture<'a,Result<T, SysErrNo>>;
+
+pub type SysFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub type ASyscallRet<'a> = SysFuture<'a, SyscallRet>;

@@ -45,5 +45,4 @@ pub fn init() {
         _ => LevelFilter::Off,
     });
     
-    print!("12");
 }

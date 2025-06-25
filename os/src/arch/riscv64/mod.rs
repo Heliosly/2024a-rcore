@@ -1,70 +1,42 @@
-use super::ArchTrait;
-use riscv::register::{sstatus, satp};
+use core::arch::global_asm;
+use core::arch::asm;
 
-pub mod context;
+global_asm!(include_str!("entry.asm"));
+global_asm!(include_str!("signal.S"));
+
 pub mod trap;
+// pub mod context;
+// pub mod mm;
+// pub mod timer;
 
-pub struct RiscV64Arch;
+use crate::arch::ArchInit;
+use crate::config::KERNEL_DIRECT_OFFSET;
+use super::TrapArch;
+pub struct RiscV64;
 
-impl ArchTrait for RiscV64Arch {
-    #[inline]
-    fn enable_irqs() {
-        unsafe { sstatus::set_sie(); }
+impl ArchInit for RiscV64 {
+    fn arch_init() {
+        trap::RiscV64Trap::init_trap();
     }
     
-    #[inline]
-    fn disable_irqs() {
-        unsafe { sstatus::clear_sie(); }
-    }
-    
-    #[inline]
-    fn local_irq_save_and_disable() -> usize {
-        crate::kernel_guard::local_irq_save_and_disable()
-    }
-    
-    #[inline]
-    fn local_irq_restore(flags: usize) {
-        crate::kernel_guard::local_irq_restore(flags)
-    }
-    
-    #[inline]
-    fn activate_paging(token: usize) {
+    fn set_boot_stack() {
         unsafe {
-            satp::write(token);
-            core::arch::asm!("sfence.vma");
+            asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
         }
     }
     
-    #[inline]
-    fn flush_tlb() {
+    fn jump_to_rust_main() -> ! {
         unsafe {
-            core::arch::asm!("sfence.vma");
+            asm!("la t0, rust_main");
+            asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET);
+            asm!("jalr zero, 0(t0)");
         }
-    }
-    
-    #[inline]
-    fn enable_kernel_irqs() {
-        unsafe { sstatus::set_sie(); }
-    }
-    
-    #[inline]
-    fn disable_kernel_irqs() {
-        unsafe { sstatus::clear_sie(); }
-    }
-    
-    #[inline]
-    fn wait_for_irqs() {
-        unsafe {
-            core::arch::asm!("wfi");
-        }
-    }
-    
-    #[inline]
-    fn set_trap_entry(entry: usize) {
-        unsafe {
-            core::arch::asm!("csrw stvec, {}", in(reg) entry);
-        }
+        unreachable!()
     }
 }
 
-pub use context::*;
+#[no_mangle]
+pub fn setbootsp() -> ! {
+    RiscV64::set_boot_stack();
+    RiscV64::jump_to_rust_main();
+}

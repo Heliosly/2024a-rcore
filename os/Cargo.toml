@@ -3,7 +3,7 @@ name = "os"
 version = "0.1.0"
 authors = ["Yifan Wu <shinbokuow@163.com>"]
 edition = "2021"
-
+build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -11,25 +11,33 @@ bitflags = "1.2.1"
 buddy_system_allocator = "0.6"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 log = "0.4"
+bit_field = "0.10"
+
 xmas-elf = "0.7.0"
-virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers", rev = "4ee80e5" }
-easy-fs = { path = "../easy-fs" }
-cfg-if = { path = "vendor/cfg-if" }
-kernel_guard = { path = "src/kernel_guard" ,features = ["preempt"]}
-lazy_init = { path = "vendor/lazy_init"}
+virtio-drivers = { path = "virtio-drivers" }
+cfg-if ="1.0.0"
+lazy_init = { path = "src/lazy_init"}
 spin = "0.9"
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv = { version = "0.10.1", features = ["inline-asm"] }
-
-# LoongArch 自定义crate
-# [target.'cfg(target_arch = "loongarch64")'.dependencies]
-# loongarch = { path = "../loongarch-crate" }
-
+hashbrown = "0.12.0"
+linux-raw-sys = { version = "0.9.3", default-features = false, features = ["general", "no_std"] }
+num_enum = { version = "0.7.2", default-features = false }
+lwext4_rust = { path = "lwext4_rust" }
+async-trait = "0.1.88"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+libc = "0.2"
+loongArch64 = "0.2.5"
+polyhal = { version = "0.3.2", features = ["trap"]}
+polyhal-boot = { version = "0.3.2" }
+polyhal-trap = { version = "0.3.2" }
+fdt = "0.1.5"
 [profile.release]
-debug = true
+debug = false 
+opt-level = 3 
+strip = true  
 
-opt-level = 0
 [profile.dev]
 debug = true
-opt-level = 0
+opt-level = 3 
+strip = false   
+[env]
+RUST_LOG = "debug,lwext4_rust=off"

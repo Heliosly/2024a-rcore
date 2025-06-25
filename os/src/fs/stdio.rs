@@ -1,61 +1,128 @@
 //!Stdin & Stdout
-use super::File;
+
+use core::task::Waker;
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+use async_trait::async_trait;
+
+use super::stat::StMode;
+use super::{File, Kstat, PollEvents};
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task:: yield_now ;
+use crate::utils::error::{ SysErrNo, TemplateRet} ;
 
 /// stdin file for getting chars from console
 pub struct Stdin;
 
+const LF: usize = 0x0a;
+const CR: usize = 0x0d;
 /// stdout file for putting chars to console
 pub struct Stdout;
-
+#[async_trait]
 impl File for Stdin {
-    fn readable(&self) -> bool {
-        true
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+      Ok(true) 
     }
-    fn writable(&self) -> bool {
-        false
+    fn writable<'a>(&'a self) -> TemplateRet<bool> {
+         Ok(false) 
     }
-    fn read(&self, mut user_buf: UserBuffer) -> usize {
-        assert_eq!(user_buf.len(), 1);
-        // busy loop
+    async fn read<'a>( 
+        & self,                
+        mut user_buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo>{
+     
+
         let mut c: usize;
-        loop {
+        let mut count: usize = 0;
+        let mut buf = Vec::new();
+        while count < user_buf.len() {
             c = console_getchar();
-            if c == 0 {
-                yield_now();
-                continue;
-            } else {
-                break;
+            match c {
+                // `c > 255`是为了兼容OPENSBI，OPENSBI未获取字符时会返回-1
+                0 | 256.. => {
+                    yield_now().await;
+                    continue;
+                }
+                CR => {
+                    buf.push(LF as u8);
+                    count += 1;
+                    break;
+                }
+                LF => {
+                    buf.push(LF as u8);
+                    count += 1;
+                    break;
+                }
+                _ => {
+                    buf.push(c as u8);
+                    count += 1;
+                }
             }
         }
-        let ch = c as u8;
-        unsafe {
-            user_buf.buffers[0].as_mut_ptr().write_volatile(ch);
-        }
-        1
+        user_buf.write(buf.as_slice());
+        Ok(count)
+       
     }
-    fn write(&self, _user_buf: UserBuffer) -> usize {
+    async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo>{
         panic!("Cannot write to stdin!");
     }
-    
-}
-
-impl File for Stdout {
-    fn readable(&self) -> bool {
-        false
-    }
-    fn writable(&self) -> bool {
-        true
-    }
-    fn read(&self, _user_buf: UserBuffer) -> usize {
-        panic!("Cannot read from stdout!");
-    }
-    fn write(&self, user_buf: UserBuffer) -> usize {
-        for buffer in user_buf.buffers.iter() {
-            print!("{}", core::str::from_utf8(*buffer).unwrap());
+   
+    fn poll(&self, events: PollEvents, waker_to_register: &Waker) -> PollEvents {
+        let mut revents = PollEvents::empty();
+        
+        
+        if events.contains(PollEvents::POLLIN) {
+            if self.readable().unwrap(){ 
+                revents.insert(PollEvents::POLLIN);
+            
         }
-        user_buf.len()
+    }
+      
+
+       
+        return revents;
+    }
+
+    fn fstat(&self) -> Kstat {
+        Kstat {
+            st_mode: StMode::FCHR.bits(),
+            st_nlink: 1,
+            ..Kstat::default()
+        }
+    }
+    
+ 
+}
+#[async_trait]
+impl File for Stdout {
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        Ok(false) 
+    }
+    fn writable<'a>(&'a self) -> TemplateRet<bool>{
+        Ok(true) 
+    }
+    async fn read<'a>( 
+        & self,                
+        mut buf: UserBuffer<'a>  
+    ) -> Result<usize, SysErrNo> {
+        panic!("Cannot read from stdout!") 
+    }
+    async fn write<'buf>(&self, buf: UserBuffer<'buf>) -> Result<usize, SysErrNo> {
+        for buffer in buf.buffers.iter() {
+            // Use from_utf8_lossy to safely handle any byte sequence.
+            // Invalid bytes will be replaced with '�'.
+            print!("{}", String::from_utf8_lossy(*buffer));
+        }
+        Ok(buf.len())
+    }
+    fn fstat(&self) -> Kstat {
+        Kstat {
+            st_mode: StMode::FCHR.bits(),
+            st_nlink: 1,
+            ..Kstat::default()
+        }
     }
 }

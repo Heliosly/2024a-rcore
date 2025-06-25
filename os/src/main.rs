@@ -17,104 +17,126 @@
 //!
 //! We then call [`task::run_tasks()`] and for the first time go to
 //! userspace.
-#![deny(missing_docs)]
+#![allow(missing_docs)]
 #![no_std]
 #![no_main]
-#![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
-
-extern crate alloc;
+#![feature(naked_functions)]
+#![feature(linked_list_retain)]
+#![feature(linked_list_cursors)]
+#![cfg_attr(any(target_arch = "loongarch64"), feature(lang_items))]
+#[macro_use]
 extern crate bitflags;
 #[macro_use]
 extern crate log;
 
+extern crate alloc;
+
 #[macro_use]
 mod console;
 
+pub mod arch;
 pub mod config;
-pub mod arch;  // 架构抽象层
 pub mod drivers;
 pub mod fs;
 pub mod lang_items;
 pub mod logging;
 pub mod mm;
-#[cfg(target_arch = "riscv64")]
 pub mod sbi;
 pub mod sync;
 pub mod syscall;
 pub mod task;
 pub mod timer;
-pub mod trap;
-pub mod utils;
+// pub mod executor;
 
-use core::arch::{asm, global_asm};
+pub mod signal;
+pub mod trap;
+///utils;
+
+pub mod utils;
+// use core::arch::{asm, global_asm};
 use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
 use trap::user_task_top;
 
-#[cfg(target_arch = "riscv64")]
-global_asm!(include_str!("entry.asm"));
-
-#[cfg(target_arch = "loongarch64")]
-global_asm!(include_str!("arch/loongarch64/entry.asm"));
+use crate::fs::{open_file, OpenFlags};
+use polyhal_boot::define_entry;
+// global_asm!(include_str!("entry.asm"));
+// global_asm!(include_str!("signal.S"));
 
 /// clear BSS segment
 fn clear_bss() {
     extern "C" {
-        fn sbss();
-        fn ebss();
+        fn _sbss();
+        fn _ebss();
     }
     unsafe {
-        core::slice::from_raw_parts_mut(sbss as usize as *mut u8, ebss as usize - sbss as usize)
+        core::slice::from_raw_parts_mut(_sbss as usize as *mut u8, _ebss as usize -_sbss as usize)
             .fill(0);
     }
+
 }
 
-#[cfg(target_arch = "riscv64")]
+// #[no_mangle]
+// ///立即数高于12位用rust处理
+// pub fn setbootsp() {
+//    unsafe {
+//         asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
+//         asm!("la t0, rust_main");
+//         asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
+//         asm!("jalr zero, 0(t0)");
+       
+//     }
+// }
+/// the rust entry-point of os
 #[no_mangle]
-pub fn setbootsp() {
-    unsafe {
-        asm!("add sp, sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
-        asm!("la t0, rust_main");
-        asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
-        asm!("jalr zero, 0(t0)");
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-#[no_mangle]
-pub fn setbootsp() {
-    unsafe {
-        asm!("addi.d $sp, $sp, {}", in(reg) KERNEL_DIRECT_OFFSET);
-        asm!("la.global $t0, rust_main");
-        asm!("add.d $t0, $t0, {}", in(reg) KERNEL_DIRECT_OFFSET );
-        asm!("jirl $zero, $t0, 0");
-    }
-}
-
-#[no_mangle]
-pub fn rust_main() -> ! {
-    clear_bss();
-    
-    arch_init();
+pub fn rust_main(hart_id:usize) -> ! {
+    println!("[kernel] Hello, !");
     
     logging::init();
+    // polyhal::common::init(&PageAllocImpl);
     mm::init();
-    
+    // mm::heap_allocator::heap_test();
+    // mm::frame_allocator::frame_allocator_test();
     trap::init();
+    trap::enable_irqs();
+    timer::set_next_trigger();
+    task::init(|| Box::pin(user_task_top()));
+
+    fs::init();
+    // fs::list_app();
     
-    timer::init();
-    task::run_tasks();
+    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
+
+    // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
+    //  task::add_initproc("/basic", "/basic/sigtest", "");
+
+    task::add_initproc("/musl   ", "/musl/busybox", "sh");
+
+    //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
+    // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
+
+    //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
+
+    //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
+    //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
+    //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
+    // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();
+    extern  "C" {
+        fn trampoline(tc: usize, has_trap: bool, from_user: bool) -> !;
+    }
+
+    unsafe {
+        trampoline(0, false, false);
+    }
 }
 
-fn arch_init() {
-    #[cfg(target_arch = "riscv64")]
-    {
-    }
-    
-    #[cfg(target_arch = "loongarch64")]
-    {
-        // LoongArch 特定初始化
-        crate::arch::loongarch64::trap::init_trap();
-    }
+#[no_mangle]
+pub static mut __stack_chk_guard: usize = 0xdead_beef_aaad_beef;
+define_entry!(rust_main);
+// 栈溢出检测失败时调用的函数
+#[no_mangle]
+pub extern "C" fn __stack_chk_fail() {
+  panic!("stack overflow detected");
 }

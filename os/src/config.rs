@@ -2,12 +2,25 @@
 
 #[allow(unused)]
 
-/// user app's stack size
-pub const USER_STACK_SIZE: usize = 1024 * 16;
+///最大解析深度
+pub const          MAX_SYMLINK_DEPTH :usize =100;
+
+///
+pub const MNT_TABLE_MAX_ENTRIES: usize = 16;
+///File descriptor set size
+pub const FD_SETSIZE:usize = 1024;
+//  MAX_KERNEL_RW_BUFFER_SIZE
+pub const MAX_KERNEL_RW_BUFFER_SIZE: usize = 4096 * 4; 
+/// Signal information. Corresponds to `struct siginfo_t` in libc.
+pub const SS_DISABLE: u32 = 2;
+/// maximum number of readv/writev iovecs
+pub const UIO_MAXIOV: usize = 1024;
+
+pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16;
+pub const KERNEL_STACK_SIZE: usize = 4096 * 16*10;
 /// kernel heap size
-pub const KERNEL_HEAP_SIZE: usize = 0x100_0000;
+pub const KERNEL_HEAP_SIZE: usize = 134217728;
 ///于allocuserres中于分配页数
 pub const PRE_ALLOC_PAGES: usize = 8;
 /// page size : 4KB
@@ -20,21 +33,16 @@ pub const MAX_SYSCALL_NUM: usize = 500;
 pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
-#[cfg(target_arch = "riscv64")]
 /// the physical memory end
-pub const MEMORY_END: usize = 0x13fffffff +  KERNEL_DIRECT_OFFSET;
-
-#[cfg(target_arch = "loongarch64")]
-/// the physical memory end  
-pub const MEMORY_END: usize = 0x13fffffff +  KERNEL_DIRECT_OFFSET;
+pub const MEMORY_END: usize = 0x40000000 ;
 /// The base address of control registers in Virtio_Block device
-pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
+pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x2000)];
 /// Kerneladress offset
-pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_ffc0_0000_0000;
+pub const KERNEL_DIRECT_OFFSET: usize = 0x9000000080000000;
 /// When directly map: vpn = ppn + kernel direct offset
 pub const KERNEL_PGNUM_OFFSET: usize = KERNEL_DIRECT_OFFSET >> PAGE_SIZE_BITS;
-/// 定义用户堆的大小，  4MB
-pub const USER_HEAP_SIZE: usize = 0x400_0000;
+
+
 /// 定义协程堆栈的大小，  40MB
 pub const TASK_STACK_SIZE: usize=0x400000;
 /// 定义用户空间的总大小，48GB
@@ -56,16 +64,27 @@ pub const MMAP_TOP: usize = USER_TRAP_CONTEXT_TOP
     - PAGE_SIZE * THREAD_MAX_NUM
     - USER_STACK_SIZE * THREAD_MAX_NUM
     - PAGE_SIZE;
+pub const MMAP_PGNUM_TOP:usize = MMAP_TOP>>PAGE_SIZE_BITS;
+/// user app's heap size 4mb
+pub const USER_HEAP_SIZE: usize = 0x40000;
+
+pub const MMAP_BASE:usize = MMAP_TOP-(134217728)*4;
+/// user app's stack size
+pub const USER_STACK_SIZE: usize = 4096 * 16*16*10;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 ///temp data
 pub const IS_ASYNC: usize = 0x5f5f5f5f;
 
-#[cfg(target_arch = "loongarch64")]
-/// LoongArch specific memory layout
-pub const KERNEL_DIRECT_OFFSET: usize = 0xffff_fc00_0000_0000;
-#[cfg(target_arch = "loongarch64")]
-pub const MEMORY_END: usize = 0x13fffffff + KERNEL_DIRECT_OFFSET;
-#[cfg(target_arch = "loongarch64")]
-/// LoongArch MMIO base addresses
-pub const MMIO: &[(usize, usize)] = &[(0x1fe00000, 0x1000)]; // LoongArch typical MMIO
+/// Dynamic linked interpreter address range in user space
+pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
+
+///Max Fd
+pub const MAX_FD_NUM:usize=100;
+
+// Maximum path length
+pub const PATH_MAX: usize = 4096;
+
+// 定义一个内核中转缓冲区的合理大小
+pub const SENDFILE_KERNEL_BUFFER_SIZE: usize = 4*PAGE_SIZE;
+pub const TOTALMEM: usize = 1 * 1024 * 1024 * 1024; // 1 GiB

@@ -1,24 +1,18 @@
-//! The panic handler
-
-
 use core::panic::PanicInfo;
+use log::*;
+use polyhal::instruction::shutdown;
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-
-   
-    // use crate::sbi::shutdown;
-    if let Some(location) = _info.location() {
-        println!(
+fn panic(info: &PanicInfo) -> ! {
+    if let Some(location) = info.location() {
+        error!(
             "[kernel] Panicked at {}:{} {}",
             location.file(),
             location.line(),
-            _info.message()
+            info.message()
         );
     } else {
-        println!("[kernel] Panicked: {}", _info.message());
+        error!("[kernel] Panicked: {}", info.message());
     }
-    loop{
-
-    }
+    shutdown()
 }

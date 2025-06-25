@@ -1,4 +1,4 @@
-//! Implementation of syscalls - LoongArch Linux Compatible
+//! Implementation of syscalls
 //!
 //! The single entry point to all system calls, [`syscall()`], is called
 //! whenever userspace wishes to perform a system call using the `ecall`
@@ -10,110 +10,223 @@
 //! `sys_` then the name of the syscall. You can find functions like this in
 //! submodules, and you should also implement syscalls this way.
 
-/// unlinkat syscall
-const SYSCALL_UNLINKAT: usize = 35;
-/// linkat syscall  
-const SYSCALL_LINKAT: usize = 37;
-/// chdir syscall
-const SYSCALL_CHDIR: usize = 49;
-/// open syscall
-const SYSCALL_OPEN: usize = 56;
-/// close syscall
-const SYSCALL_CLOSE: usize = 57;
-/// getdents64 syscall
-const SYSCALL_GETDENTS64: usize = 61;
-/// read syscall
-const SYSCALL_READ: usize = 63;
-/// write syscall
-const SYSCALL_WRITE: usize = 64;
-/// fstat syscall (newfstatat in LoongArch)
-const SYSCALL_FSTAT: usize = 79;  // 改为 newfstatat
-/// exit syscall
-const SYSCALL_EXIT: usize = 93;
-/// clock_gettime syscall (gettime)
-const SYSCALL_CLOCK_GETTIME: usize = 113;
-/// sched_yield syscall (yield)
-const SYSCALL_SCHED_YIELD: usize = 124;
-/// setpriority syscall
-const SYSCALL_SET_PRIORITY: usize = 141;  // 修正为 141
-/// getpid syscall
-const SYSCALL_GETPID: usize = 172;
-/// brk syscall (sbrk)
-const SYSCALL_BRK: usize = 214;
-/// munmap syscall
-const SYSCALL_MUNMAP: usize = 215;
-/// clone syscall (fork)
-const SYSCALL_CLONE: usize = 220;
-/// execve syscall (exec)
-const SYSCALL_EXECVE: usize = 221;
-/// mmap syscall
-const SYSCALL_MMAP: usize = 222;
-/// wait4 syscall (waitpid)
-const SYSCALL_WAIT4: usize = 260;
-
-/// spawn syscall (rCore specific)
-const SYSCALL_SPAWN: usize = 400;
-/// taskinfo syscall (rCore specific)
-const SYSCALL_TASK_INFO: usize = 410;
-
-// 新增龙芯 Linux 特有的系统调用
-/// getcwd syscall
-const SYSCALL_GETCWD: usize = 17;
-/// ioctl syscall
-const SYSCALL_IOCTL: usize = 29;
-/// fcntl syscall
-const SYSCALL_FCNTL: usize = 25;
-
 mod fs;
 mod process;
-
+mod signal;
+mod other;
+pub mod arch;
+mod net;
+pub mod flags;
+use flags::{IoVec, Utsname};
+use crate::{signal::SigInfo, syscall::net::{sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getsockname, sys_listen, sys_recvfrom, sys_sendmsg, sys_sendto, sys_setsockopt, sys_socket, sys_socketpair}, timer::{Tms, UserTimeSpec}};
 use fs::*;
 use process::*;
+use other::*;
 
-use crate::fs::Stat;
+use arch::*;
+use crate::{fs::{Kstat, PollFd}, signal::{SigAction, SigSet}, timer::TimeVal, utils::error::SyscallRet};
 
+
+use signal::*;
 /// handle syscall exception with `syscall_id` and other arguments
-pub async fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
-    match syscall_id {
-        // 文件系统相关
-        SYSCALL_OPEN => sys_open(args[1] as *const u8, args[2] as u32),
-        SYSCALL_CLOSE => sys_close(args[0]),
-        SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut Stat),
-        SYSCALL_LINKAT => sys_linkat(args[1] as *const u8, args[3] as *const u8),
-        SYSCALL_UNLINKAT => sys_unlinkat(args[1] as *const u8),
-        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
-        SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
-        SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]),
+pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
+  match syscall_id {
+        SYSCALL_OPEN => sys_openat(args[0] as i32,args[1] as *const u8,args[2] as u32,args[3] as u32).await,
+        SYSCALL_CLOSE => sys_close(args[0] as i32).await,
+        SYSCALL_CLOCK_NANOSLEEP=> sys_clock_nanosleep(args[0],args[1],args[2] as *const UserTimeSpec,args[3] as *mut UserTimeSpec).await,
         
-        // 进程管理相关
-        SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_SCHED_YIELD => sys_yield().await,  // 改名但功能相同
-        SYSCALL_GETPID => sys_getpid(),
-        SYSCALL_CLONE => sys_fork(),  // fork 的 LoongArch 实现
-        SYSCALL_EXECVE => sys_exec(args[0] as *const u8),
-        SYSCALL_WAIT4 => sys_waitpid(args[0] as isize, args[1] as *mut i32),
-        SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
-        
-        // 内存管理相关
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2]),
-        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_BRK => sys_sbrk(args[0] as i32),  // brk 的实现
-        
-        // 时间相关
-        SYSCALL_CLOCK_GETTIME => sys_get_time(args[1] as *mut TimeVal, args[0]),
-        
-        SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
+        SYSCALL_FSTAT => sys_fstat(args[0] , args[1] as *mut Kstat).await,
+        SYSCALL_EXIT => sys_exit(args[0] as i32).await,
+        // SYSCALL_FORK => sys_fork(),
+        SYSCALL_TIMES=>sys_time(args[0] as *mut Tms).await,
+        SYSCALL_GETUID=>sys_getuid(),
+        SYSCALL_SETTIDADDRESS=>sys_settidaddress(args[0]),
+        SYSCALL_EXITGROUP => sys_exitgroup(args[0] as i32).await,
+        SYSCALL_WAITPID => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as u32).await,
+        // SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]).await,
+        SYSCALL_GETTIMEOFDAY=>sys_gettimeofday(args[0] as *mut UserTimeSpec, args[1] as usize).await,
         SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
+       
+        SYSCALL_BRK => sys_brk(args[0] ).await,
+        // SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
+        // SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
+        SYSCALL_SIGPROCMASK => sys_sigprocmask(
+            args[0] as i32,
+            args[1] as *const SigSet,
+            args[2] as *mut SigSet,
+        ).await,
+    
+        SYSCALL_RT_SIGACTION => sys_sigaction(
+            args[0],
+            args[1] as *const SigAction,
+            args[2] as *mut SigAction,
+        ).await,
+        SYSCALL_GETPPID => sys_getppid(),
+        SYSCALL_CLONE => sys_clone(
+         args
+        ).await,
+        SYSCALL_EXEC => sys_execve(args[0] as *const u8,
         
-        124 => sys_yield().await,  // 旧的 yield 编号
-        169 => sys_get_time(args[0] as *mut TimeVal, args[1]),
+            args[1] as *const usize,
+            args[2] as *const usize
         
-        _ => {
-            println!("Unsupported syscall_id: {} (args: [{:#x}, {:#x}, {:#x}, {:#x}])", 
-                     syscall_id, args[0], args[1], args[2], args[3]);
-            -1
-        }
+        
+        ).await,
+        SYSCALL_FSTATAT => sys_fstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut Kstat, args[3]).await,
+        SYSCALL_GETPID => sys_getpid(),
+        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as u32,args[3] as u32,args[4]as isize,args[5] ).await,
+        SYSCALL_SIGTIMEDWAIT=>sys_rt_sigtimedwait(
+            args[0] as *const SigSet,
+            args[1] as *mut SigInfo,
+            args[2] as *const UserTimeSpec,
+        ),
+        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]).await,
+        SYSCALL_UNAME => sys_uname(args[0] as  *mut Utsname).await,
+        SYSCALL_IOCTL =>sys_ioctl(args[0], args[1], args[2]),
+        SYSCALL_FCNTL=>sys_fcntl(args[0], args[1], args[2]).await,
+        SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]).await,
+        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]).await,
+        SYSCALL_SIGNALRET =>sys_sigreturn().await,
+        SYSCALL_KILL => sys_kill(args[0], args[1]).await,
+        SYSCALL_TGKILL => sys_tgkill(args[0], args[1],args[2]).await,
+
+        SYSCALL_TKILL => sys_tkill(args[0], args[1]).await,
+
+        SYSCALL_WRITEV=>sys_writev(args[0] , args[1] as *const IoVec, args[2] as i32).await,
+        SYSCALL_READV=>sys_readv(args[0], args[1] as *const IoVec, args[2] as i32).await,
+        SYSCALL_PREAD64=>sys_pread64(args[0] as i32, args[1] as *mut u8, args[2], args[3] ).await,
+        SYSCALL_LSEEK=>sys_lseek(args[0], args[1] as isize, args[2] as u32 ).await, 
+        SYSCALL_PWRITE64=>sys_pwrite64(args[0], args[1] as *const u8, args[2], args[3]).await,
+        SYSCALL_RENAMEAT=>sys_renameat(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8).await,
+        SYSCALL_RENAMEAT2=>sys_renameat2(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8,args[4] as u32).await,
+        SYSCALL_CREAT => sys_creat(args[0] as *const u8, args[1] as u32).await,
+        SYSCALL_RMDIR => sys_rmdir(args[0] as *const u8).await,
+        SYSCALL_GETRANDOM => sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32).await,
+        SYSCALL_GETEUID=> sys_geteuid() ,
+        SYSCALL_GETCWD =>sys_getcwd(args[0] as *mut u8, args[1]).await,
+        // SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
+        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut PollFd, args[1] , args[2] as *const UserTimeSpec, args[3] as *const SigSet).await,
+        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8).await,
+        SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]).await,
+        SYSCALL_SETPGID => Ok(0),
+        SYSCALL_GETPGID => Ok(0),
+        SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] , args[1]).await,
+        SYSCALL_GETTID => sys_gettid(),
+        SYSCALL_FACCESSAT=>sys_faccessat(args[0] as i32,args[1] as *const u8,args[2] as u32,args[3]).await,
+        SYSCALL_GETROBUSTLIST => sys_get_robust_list(args[0], args[1] as *mut usize, args[2] as *mut usize).await,
+        SYSCALL_SETROBUSTLIST => sys_set_robust_list(args[0], args[1]).await,
+        SYSCALL_MKDIRAT => sys_mkdirat(args[0] as i32, args[1] as *const u8, args[2] as u32).await,
+        SYSCALL_DUP2=> sys_dup(args[0] as i32).await,
+        SYSCALL_DUP3=> sys_dup3(args[0] as i32, args[1] as i32, args[2]  as  u32).await,
+        SYSCALL_MOUNT => sys_mount(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as u32,
+            args[4] as *const u8
+        ).await,
+        SYSCALL_UMOUNT2 => sys_umount2(args[0] as *const u8, args[1] as u32).await,
+        SYSCALL_UNLINKAT => sys_unlinkat(args[0] as i32, args[1] as *const u8, args[2] as u32).await,
+        SYSCALL_PRLIMIT64=> sys_prlimit(args[0] , args[1] as u32, args[2] as *const RLimit, args[3] as *mut RLimit).await,
+        SYSCALL_CLOCK_SETTIME=>     Err(crate::utils::error::SysErrNo::ENOSYS),
+        SYSCALL_SYMLINKAT=>sys_symlinkat(args[0] as *const u8,args[2] as i32, args[2] as *const u8).await,
+        SYSCALL_READLINKAT=>sys_readlinkat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8, args[3]).await,
+        SYSCALL_MPROTECT=>sys_mprotect(args[0], args[1],args[2] ).await,
+        SYSCALL_PIPE2=> sys_pipe2(args[0] as *mut i32 , args[1]as u32).await,
+        SYSCALL_SENDFILE=>sys_sendfile(args[0]  as i32,args[1] as i32 , args[2] as *mut isize , args[3]).await,
+        SYSCALL_STATFS=>sys_statfs(args[0] as *const u8, args[1] as *mut crate::fs::Statfs).await,
+        SYSCALL_LOG =>sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
+        SYSCALL_INFO =>sys_sysinfo(args[0] as *const u8 ).await,
+        SYSCALL_UTIMENSAT=>sys_utimensat(args[0] as i32, args[1]  as *const u8, args[2] as *const UserTimeSpec, args[3]).await,
+        SYSCALL_NANOSLEEP=>sys_nanosleep(args[0] as *const UserTimeSpec, args[1] as *mut UserTimeSpec).await,
+        SYSCALL_FUTEX =>sys_futex(args[0] as  *mut u32,args[1] as  i32,args[2] as u32,args[3],args[4] as *mut u32,args[5] as u32).await,
+        SYSCALL_SOCKET => sys_socket(args[0] as u32, args[1] as u32, args[2] as u32).await,
+        SYSCALL_SOCKETPAIR => sys_socketpair(
+            args[0] as u32,
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as *mut u32,
+        ).await,
+        SYSCALL_BIND => sys_bind(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_LISTEN => sys_listen(args[0], args[1] as u32),
+        SYSCALL_ACCEPT => sys_accept(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_CONNECT => sys_connect(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_GETSOCKNAME => sys_getsockname(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_GETPEERNAME => sys_getpeername(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_SENDTO => sys_sendto(
+            args[0],
+            args[1] as *const u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *const u8,
+            args[5] as u32,
+        ),
+        SYSCALL_RECVFROM => sys_recvfrom(
+            args[0],
+            args[1] as *mut u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *const u8,
+            args[5] as u32,
+        ).await,
+        SYSCALL_SETSOCKOPT => sys_setsockopt(
+            args[0],
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as *const u8,
+            args[4] as u32,
+        ),
+        SYSCALL_SENDMSG => sys_sendmsg(args[0], args[1] as *const u8, args[2] as u32),
+        SYSCALL_ACCEPT4 => sys_accept4(
+            args[0] as usize,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+        ),
+        SYSCALL_MREMAP=>sys_mremap(args[0] as *mut u8, args[1], args[2], args[3] as u32, args[4] as  *mut u8).await,
+        
+        SYSCALL_SETSID=>sys_setsid(),
+        SYSCALL_SCHED_YIELD=>sys_sched_yield().await,
+        SYSCALL_SETUID=>sys_setuid(args[0] as u32),
+        SYSCALL_GETGID=>sys_getgid(),
+        SYSCALL_GETEGID=>sys_getegid(),
+        SYSCALL_MEMBARRIER=>sys_membarrier(),
+        SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32 , args[1] as usize, args[2] as *mut usize).await,
+        SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0]  as i32, args[1] as usize, args[2] as *const usize).await,
+        SYSCALL_MADVISE => sys_madvise(args[0] , args[1], args[2] as u32).await,
+        SYSCALL_SET_MEMPOLICY => sys_set_mempolicy(
+            args[0] ,
+            args[1] as *const usize,
+            args[2] ,
+        ).await,
+        SYSCALL_GET_MEMPOLICY => sys_get_mempolicy(
+            args[0] as *mut i32,
+            args[1] as *mut usize,
+            args[2] ,
+            args[3]  ,
+            args[4] as i32
+        ).await,
+        SYSCALL_SCHED_SETSCHEDULER => sys_sched_setscheduler(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const SchedParam
+        ).await,
+        SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
+        SYSCALL_SCHED_GETPARAM => sys_sched_getparam(args[0] as i32, args[1] as *mut SchedParam).await,
+        SYSCALL_SCHED_SETPARAM => sys_sched_setparam(args[0] as i32, args[1] as *const SchedParam),
+        SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as u32, args[1] as *mut UserTimeSpec).await,
+        SYSCALL_FTRUNCATE=> sys_ftruncate(args[0] as i32, args[1] as u64).await,
+        SYSCALL_TRUNCATE=> sys_truncate(args[0] as *const u8, args[1] as u64).await,
+        SYSCALL_MLOCK => sys_mlock(args[0] , args[1]).await,
+        SYSCALL_MUNLOCK => sys_munlock(args[0] , args[1]).await,
+        SYSCALL_MLOCKALL => sys_mlockall(args[0] as u32).await,
+        SYSCALL_MUNLOCKALL => sys_munlockall().await,
+
+        _ =>{
+             panic!("Unsupported syscall_id: {}", syscall_id);
+            }
     }
+    
+
+
 }
