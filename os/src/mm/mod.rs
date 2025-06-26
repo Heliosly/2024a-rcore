@@ -47,7 +47,7 @@ pub fn init() {
         info!("memory area: {:#x} - {:#x}", start, start + size);
         frame_allocator::add_memory_region(PhysAddr::from(start),PhysAddr::from( start + size));
     });
-    frame_allocator::init_frame_allocator();
+    // frame_allocator::init_frame_allocator();
     let ms=MemorySet::new_kernel();
     KERNEL_PAGE_TABLE_TOKEN.init_by(ms.page_table.token());
     

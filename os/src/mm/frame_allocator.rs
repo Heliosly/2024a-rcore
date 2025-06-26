@@ -32,6 +32,8 @@ impl FrameTracker {
     pub fn new(ppn: PhysPageNum) -> Self {
         let bytes_array = ppn.get_bytes_array();
         for i in bytes_array {
+
+        println!("i:{:#x}",i as *const _ as usize);
             *i = 0;
         }
         Self { ppn }
@@ -221,9 +223,9 @@ pub fn init_frame_allocator() {
     extern "C" {
         fn ekernel();
     }
-    let ekernel_paddr = PhysAddr::from(ekernel as usize);
-    // 这里用一个示例来添加内存区域，你需要根据你的平台来修改
-    add_memory_region(ekernel_paddr, PhysAddr(crate::config::MEMORY_END));
+    // let ekernel_paddr = PhysAddr::from(ekernel as usize);
+    // // 这里用一个示例来添加内存区域，你需要根据你的平台来修改
+    // add_memory_region(ekernel_paddr, PhysAddr(crate::config::MEMORY_END));
 }
 
 /// 添加一块可供分配的物理内存区域 (来自 ByteOS 的接口)
