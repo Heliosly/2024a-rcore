@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build GDB Server",
+            "type": "shell",
+            "command": "make gdbserver",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Build GDB Cilence",
+            "type": "shell",
+            "command": "make gdbcilence"
+        }
+    ]
+}

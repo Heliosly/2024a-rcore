@@ -1,10 +1,10 @@
 
-TARGET := loongarch64-unknown-linux-gnu
+TARGET := loongarch64-unknown-none
 MODE ?= debug
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
-FS_IMG := ./sdcard-la.img
+FS_IMG := ./sdcard-rv.img
 
 #FS_IMG := ./fs.img
 
@@ -29,7 +29,8 @@ OBJCOPY := rust-objcopy --binary-architecture=loongarch64
 # else
 # GDB_PATH := riscv64-unknown-elf-gdb
 # endif
-GDB_PATH:=~/gdb-16.3/build/gdb/gdb
+GDB_PATH:=/home/ustc/gdb-loongarch/bin/loongarch64-linux-gnu-gdb
+
 gdb := $(GDB_PATH)
 
 # Building mode argument
@@ -71,16 +72,21 @@ disasm-vim: kernel
 	@rm $(DISASM_TMP)
 
 run: run-inner
-BUS := pci
+
 run-inner: build
-	@qemu-system-loongarch64 \
-        -cpu la464-loongarch-cpu \
-		-kernel $(KERNEL_ELF) \
-         -m 1G \
-        -nographic \
-        -smp 1 \
-      -drive file=$(FS_IMG),if=none,format=raw,id=x0 \
-      -D qemu.log -d in_asm,int,pcall,cpu_reset,guest_errors
+	  @qemu-system-loongarch64 \
+    -kernel  $(KERNEL_ELF) \
+    -m 1G \
+    -nographic \
+    -smp 1 \
+    -drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
+    -device virtio-blk-pci,drive=x0 \
+    -no-reboot \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0 \
+    -rtc base=utc \
+    -drive file=../disk.img,if=none,format=raw,id=x1 \
+    -device virtio-blk-pci,drive=x1
 
 
 gdb: build
@@ -92,21 +98,19 @@ gdb: build
 
 gdbserver: build
 	@qemu-system-loongarch64 \
-        -machine virt \
-        -cpu la464-loongarch-cpu \
-        -kernel $(KERNEL_ELF) \
-        -m 1024M \
-        -nographic \
-        -smp 1 \
-        -drive file=sdcard-la.img,if=none,format=raw,id=x0 \
-        -device virtio-blk-pci,drive=x0 \
-        -drive file=../disk.img,if=none,format=raw,id=x1 \
-        -device virtio-blk-pci,drive=x1 \
-        -device virtio-net-pci,netdev=net0 \
-        -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
-        -rtc base=utc \
-        -no-reboot \
-		-s -S
+   -kernel  $(KERNEL_ELF) \
+    -m 1G \
+    -nographic \
+    -smp 1 \
+    -drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
+    -device virtio-blk-pci,drive=x0 \
+    -no-reboot \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0 \
+    -rtc base=utc \
+    -drive file=../disk.img,if=none,format=raw,id=x1 \
+    -device virtio-blk-pci,drive=x1 \
+	-s -S
 		
 
 gdbclient:

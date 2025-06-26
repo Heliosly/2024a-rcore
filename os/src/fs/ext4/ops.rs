@@ -5,7 +5,8 @@ use core::cell::RefCell;
 use core::sync::atomic::AtomicBool;
 use crate::alloc::string::String;
 use crate::config::MAX_SYMLINK_DEPTH;
-use crate::drivers::block::disk::Disk;
+
+use crate::drivers::Ext4Disk;
 use crate::fs::inode::InodeType;
 use crate::fs::stat::Kstat;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
@@ -32,27 +33,27 @@ use virtio_drivers::Hal;
 pub const BLOCK_SIZE: usize = 512;
 
 #[allow(dead_code)]
-pub struct Ext4FileSystem<H: Hal, T: Transport> {
-   pub inner: Ext4BlockWrapper<Disk<H, T>>,
+pub struct Ext4FileSystem {
+   pub inner: Ext4BlockWrapper<Ext4Disk>,
     root: Arc<dyn VfsNodeOps>,
     name:String,
 }
 
-unsafe impl<H: Hal, T: Transport> Sync for Ext4FileSystem<H, T> {}
-unsafe impl<H: Hal, T: Transport> Send for Ext4FileSystem<H, T> {}
+unsafe impl Sync for Ext4FileSystem {}
+unsafe impl Send for Ext4FileSystem {}
 
-impl<H: Hal, T: Transport> Ext4FileSystem<H, T> {
-    pub fn new(disk: Disk<H, T>,name:String,root:&str  ) -> Self {
+impl Ext4FileSystem {
+    pub fn new(disk: Ext4Disk,name:String,root:&str  ) -> Self {
         info!(
-            "Got Disk size:{}, position:{}",
-            disk.size(),
+            "Got Disk position:{}",
+            
             disk.position()
         );
         let mut root_path = root.to_string();
         if !root_path.ends_with('/') {
             root_path.push('/');
         }
-        let inner = Ext4BlockWrapper::<Disk<H, T>>::new(disk,name.clone(),&root_path)
+        let inner = Ext4BlockWrapper::<Ext4Disk>::new(disk,name.clone(),&root_path)
             .expect("failed to initialize EXT4 filesystem");
         let root = Arc::new(FileWrapper::new(&root, InodeTypes::EXT4_DE_DIR));
         
@@ -63,7 +64,7 @@ impl<H: Hal, T: Transport> Ext4FileSystem<H, T> {
 
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
-impl<H: Hal, T: Transport> VfsOps for Ext4FileSystem<H, T> {
+impl VfsOps for Ext4FileSystem {
     fn mount(&mut self, path: &str, mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
         Ok(0)
     }

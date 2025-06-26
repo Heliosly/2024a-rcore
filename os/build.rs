@@ -11,7 +11,7 @@ fn gen_linker_script() -> Result<()> {
     let (output_arch, kernel_base) = if arch.contains("riscv64") {
         ("riscv", "0xffffffc080200000")
     } else if arch.contains("loongarch64") {
-        ("loongarch64", "0x9000000080200000")
+        ("loongarch64", "0x9000000080000000")
     } else {
         (arch.as_str(), "0")
     };

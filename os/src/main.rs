@@ -25,6 +25,7 @@
 #![feature(linked_list_retain)]
 #![feature(linked_list_cursors)]
 #![cfg_attr(any(target_arch = "loongarch64"), feature(lang_items))]
+#![feature(used_with_arg)]
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
@@ -57,9 +58,10 @@ pub mod utils;
 // use core::arch::{asm, global_asm};
 use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
+use polyhal::PhysAddr;
 use trap::user_task_top;
 
-use crate::fs::{open_file, OpenFlags};
+use crate::{config::PAGE_SIZE, fs::{open_file, OpenFlags}, mm::{frame_allocator::{frame_alloc_persist, frame_dealloc_persist}, frame_dealloc}};
 use polyhal_boot::define_entry;
 // global_asm!(include_str!("entry.asm"));
 // global_asm!(include_str!("signal.S"));
@@ -76,6 +78,23 @@ fn clear_bss() {
     }
 
 }
+pub struct PageAllocImpl;
+
+impl polyhal::common::PageAlloc for PageAllocImpl {
+    #[inline]
+    fn alloc(&self) -> PhysAddr {
+        unsafe {PhysAddr::new( frame_alloc_persist().expect("can't alloc frame")) }
+    }
+
+    #[inline]
+    fn dealloc(&self, paddr: PhysAddr) {
+        unsafe {
+            frame_dealloc_persist(paddr.raw());
+            paddr.clear_len(PAGE_SIZE);
+        }
+    }
+}
+
 
 // #[no_mangle]
 // ///立即数高于12位用rust处理
@@ -89,15 +108,18 @@ fn clear_bss() {
 //     }
 // }
 /// the rust entry-point of os
-#[no_mangle]
-pub fn rust_main(hart_id:usize) -> ! {
+/// 
+pub fn main(hart_id:usize) -> ! {
     println!("[kernel] Hello, !");
-    
-    logging::init();
-    // polyhal::common::init(&PageAllocImpl);
+    polyhal::irq::IRQ::int_disable();
+
+    // logging::init();
+    polyhal::common::init(&PageAllocImpl);
+
     mm::init();
-    // mm::heap_allocator::heap_test();
-    // mm::frame_allocator::frame_allocator_test();
+    mm::remap_test();
+    mm::heap_allocator::heap_test();
+    mm::frame_allocator::frame_allocator_test();
     trap::init();
     trap::enable_irqs();
     timer::set_next_trigger();
@@ -134,7 +156,7 @@ pub fn rust_main(hart_id:usize) -> ! {
 
 #[no_mangle]
 pub static mut __stack_chk_guard: usize = 0xdead_beef_aaad_beef;
-define_entry!(rust_main);
+define_entry!(main);
 // 栈溢出检测失败时调用的函数
 #[no_mangle]
 pub extern "C" fn __stack_chk_fail() {

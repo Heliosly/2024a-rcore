@@ -394,7 +394,7 @@ impl MapArea {
     }
     pub fn map_given_frames(&mut self, page_table: &mut PageTable, frames: Vec<Arc<FrameTracker>>) {
         for (vpn, frame) in self.vpn_range.clone().into_iter().zip(frames.into_iter()) {
-            let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
+            let pte_flags = PTEFlags::from(self.map_perm);
             page_table.map(vpn, frame.ppn, pte_flags);
             self.data_frames.insert(vpn, frame);
         }
@@ -425,7 +425,7 @@ impl MapArea {
                 ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
             }
         }
-        let pte_flags = PTEFlags::from_bits(self.map_perm.bits as usize).unwrap();
+        let pte_flags = PTEFlags::from(self.map_perm);
         page_table.map(vpn, ppn, pte_flags);
         Ok(())
     }

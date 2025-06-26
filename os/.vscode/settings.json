@@ -1,5 +1,7 @@
 {
-    "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
+    // "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
+
+     "rust-analyzer.cargo.target": "loongarch64-unknown-none",
     "cmake.sourceDirectory": "/home/ustc/desktop1/myos1/2024a-rcore/os/lwext4_rust/c/lwext4",
   }
   

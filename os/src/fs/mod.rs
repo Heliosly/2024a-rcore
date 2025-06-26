@@ -16,6 +16,7 @@ use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
+use devices::get_blk_devices;
 
 use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{ error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
@@ -670,11 +671,25 @@ pub async  fn create_init_files() -> GeneralRet {
 
 
 pub fn init(){
-    drivers::system_init_with_multi_disk();
     
+    devices::prepare_drivers();
+
+    if let Ok(fdt) = polyhal::mem::get_fdt() {
+        for node in fdt.all_nodes() {
+            devices::try_to_add_device(&node);
+        }
+    }
+        // get devices and init
+        devices::regist_devices_irq();
+
+    if !get_blk_devices().is_empty()  {
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
     create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
     VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    }
+    else{
+        panic!();
+    }
     let fut=create_init_files();
     let mut pinned = Box::pin(fut);
     let waker = custom_noop_waker();

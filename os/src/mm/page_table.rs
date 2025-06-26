@@ -140,53 +140,121 @@ impl PageTable {
             frames: vec![frame],
         }
     }
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "riscv64")] {
+
     /// Temporarily used to get arguments from user space.
-    pub fn from_token(satp: usize) -> Self {
+           pub fn from_token(satp: usize) -> Self {
         Self {
             root_ppn: PhysPageNum::from(satp & ((1usize << 44) - 1)),
             frames: Vec::new(),
         }
     }
-    /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
-    fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-        let idxs = vpn.indexes();
-        let mut ppn = self.root_ppn;
-        let mut result: Option<&mut PageTableEntry> = None;
-        for (i, idx) in idxs.iter().enumerate() {
-            let pte = &mut ppn.get_pte_array()[*idx];
-            if i == 2 {
-                result = Some(pte);
-                break;
-            }
-            if !pte.is_valid() {
-                let frame = frame_alloc().unwrap();
-                *pte = PageTableEntry::new(frame.ppn(), PTEFlags::V);
-                self.frames.push(frame);
-            }
-            ppn = pte.ppn();
-        }
-        result
+    
+        } else if #[cfg(target_arch = "loongarch64")] {
+
+    /// Temporarily used to get arguments from user space.
+            pub fn from_token(pgd: usize) -> Self {
+                Self {
+                    root_ppn: PhysPageNum::from(pgd & ((1usize << 34) - 1)),
+                    frames: Vec::new(),
+                }
+            } 
+    
+        } 
     }
-    /// Find PageTableEntry by VirtPageNum
-    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-        let idxs = vpn.indexes();
-        let mut ppn = self.root_ppn;
-        let mut result: Option<&mut PageTableEntry> = None;
-        for (i, idx) in idxs.iter().enumerate() {
-            let pte = &mut ppn.get_pte_array()[*idx];
-            if !pte.is_valid() {
-                info!("pte is invalid:vpn:{:x}",vpn.0);
-                return None;
-            }
-            if i == 2 {
-                result = Some(pte);
-                break;
-            }
-           
-            ppn = pte.ppn();
+     
+   
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "loongarch64")] {
+            // loongarch64 架构相关代码
+                /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
+                fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+                    let idxs = vpn.indexes();
+                    let mut ppn = self.root_ppn;
+                    let mut result: Option<&mut PageTableEntry> = None;
+                    for i in 0..3 {
+                        let pte = &mut ppn.get_pte_array()[idxs[i]];
+                        if i == 2 {
+                            //找到叶子节点，叶子节点的页表项是否合法由调用者来处理
+                            result = Some(pte);
+                            break;
+                        }
+                        if pte.is_zero() {
+                            let frame = frame_alloc().unwrap();
+                            // 页目录项只保存地址
+                            *pte = PageTableEntry {
+                                bits: frame.ppn.0 << config::PAGE_SIZE_BITS,
+                            };
+                            self.frames.push(frame);
+                        }
+                        ppn = pte.directory_ppn();
+                    }
+                    result
+                }
+                pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+                    let idxs = vpn.indexes();
+                    let mut ppn = self.root_ppn;
+                    let mut result: Option<&mut PageTableEntry> = None;
+                    for i in 0..3 {
+                        let pte = &mut ppn.get_pte_array()[idxs[i]];
+                        if pte.is_zero() {
+                            return None;
+                        }
+                        if i == 2 {
+                            result = Some(pte);
+                            break;
+                        }
+                        ppn = pte.directory_ppn();
+                    }
+                    result
+                }
+
+        } else if #[cfg(target_arch = "riscv64")] {
+            // riscv64 架构相关代码
+   /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
+   fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    let idxs = vpn.indexes();
+    let mut ppn = self.root_ppn;
+    let mut result: Option<&mut PageTableEntry> = None;
+    for (i, idx) in idxs.iter().enumerate() {
+        let pte = &mut ppn.get_pte_array()[*idx];
+        if i == 2 {
+            result = Some(pte);
+            break;
         }
-        result
+        if !pte.is_valid() {
+            let frame = frame_alloc().unwrap();
+            *pte = PageTableEntry::new(frame.ppn(), PTEFlags::V);
+            self.frames.push(frame);
+        }
+        ppn = pte.ppn();
     }
+    result
+}
+/// Find PageTableEntry by VirtPageNum
+pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    let idxs = vpn.indexes();
+    let mut ppn = self.root_ppn;
+    let mut result: Option<&mut PageTableEntry> = None;
+    for (i, idx) in idxs.iter().enumerate() {
+        let pte = &mut ppn.get_pte_array()[*idx];
+        if !pte.is_valid() {
+            info!("pte is invalid:vpn:{:x}",vpn.0);
+            return None;
+        }
+        if i == 2 {
+            result = Some(pte);
+            break;
+        }
+       
+        ppn = pte.ppn();
+    }
+    result
+} 
+        }
+    }
+   
     
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
@@ -260,7 +328,16 @@ impl PageTable {
         
     
     pub fn token(&self) -> usize {
+        cfg_if::cfg_if! {
+    if #[cfg(target_arch = "riscv64")] {
+      
         8usize << 60 | self.root_ppn.0
+
+
+    } else if #[cfg(target_arch = "loongarch64")] {
+        self.root_ppn.0
+    } 
+}
     }
 }
 

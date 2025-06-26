@@ -364,7 +364,8 @@ let _ = memory_set.push(
       
         info!("mapping memory-mapped registers");
         
-        for pair in MMIO {
+         #[cfg(target_arch = "riscv64")]
+         for pair in MMIO {
   info!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
             let _ = memory_set.push(
                 MapArea::new(
@@ -679,7 +680,8 @@ pub async fn from_existed_user1(user_space: &mut Self) -> Self {
         unsafe {
             // LoongArch64 的页表基址寄存器是 PGDL 和 PGDH
             use loongArch64::register::pgdl;
-            let satp = self.page_table.token();
+            let mut satp = self.page_table.token();
+            satp=satp<<PAGE_SIZE_BITS;
             pgdl::set_base(satp);
             asm!("invtlb 0x0, $zero, $zero"); // 刷新所有 TLB 项
         }

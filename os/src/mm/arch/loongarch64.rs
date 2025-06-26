@@ -1,3 +1,4 @@
+use core::arch::asm;
 use core::fmt;
 use bit_field::BitField;
 use crate::mm::{PhysPageNum, MapPermission};

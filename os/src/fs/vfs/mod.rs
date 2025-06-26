@@ -14,7 +14,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use log::{info, warn};
 
-use crate::drivers::find_block_device;
+use crate::drivers::{ parse_virtio_device_name, Ext4DiskWrapper};
 use crate::fs::ext4::ops::Ext4FileSystem;
 // 假设你有一个 Ext4VfsOps 的实现
 use crate::fs::mount::{MountEntry, MNT_TABLE};
@@ -39,9 +39,9 @@ impl VfsManager {
         let fs_instance: Arc<dyn VfsOps> = match fstype {
             "ext4" => {
                 // a. 找到并初始化块设备
-                let disk = find_block_device(special_device)?; 
+                let block_id = parse_virtio_device_name(special_device).unwrap();
                 
-
+                let disk = Ext4DiskWrapper::new(block_id);
                 // b. 创建 Ext4VfsOps 实例
                 
                 let  mut ext4_fs = Ext4FileSystem::new(disk,special_device.into(),mount_point);

@@ -33,7 +33,7 @@ pub const MPOL_DEFAULT: usize = 0;
 pub const MPOL_PREFERRED: usize = 1;
 pub const MPOL_BIND: usize = 2;
 pub const MPOL_INTERLEAVE: usize = 3;
-
+pub use memory_set::remap_test;
 use crate::sync::Mutex;
  /// The kernel's initial memory mapping(kernel address space)
  pub static  KERNEL_SPACE: LazyInit<Arc<Mutex<MemorySet>>> = LazyInit::new();
@@ -43,6 +43,10 @@ use crate::sync::Mutex;
 pub fn init() {
    
     heap_allocator::init_heap();
+ polyhal::mem::get_mem_areas().cloned().for_each(|(start, size)| {
+        info!("memory area: {:#x} - {:#x}", start, start + size);
+        frame_allocator::add_memory_region(PhysAddr::from(start),PhysAddr::from( start + size));
+    });
     frame_allocator::init_frame_allocator();
     let ms=MemorySet::new_kernel();
     KERNEL_PAGE_TABLE_TOKEN.init_by(ms.page_table.token());
@@ -63,8 +67,11 @@ pub fn init() {
     }
     #[cfg(target_arch = "loongarch64")]
     unsafe {
-        use loongArch64::register::{pgdl, pgdh};
-        pgdl::set_base(satp);
+        use loongArch64::register::{pgdl};
+
+        use crate::config::PAGE_SIZE_BITS;
+
+        pgdl::set_base(satp<<PAGE_SIZE_BITS);
         asm!("invtlb 0x0, $zero, $zero");
     }
 }
@@ -82,6 +89,6 @@ pub  fn flush_tlb(){
     }
     #[cfg(target_arch = "loongarch64")]
     unsafe {
-        asm!("invtlb 0x0, $zero, $zero");
+        asm!("dbar 0; invtlb 0x00, $r0, $r0");
     }
 }

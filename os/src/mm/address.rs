@@ -87,6 +87,7 @@ impl From<PhysAddr> for KernelAddr {
 
 impl From<KernelAddr> for PhysAddr {
     fn from(ka: KernelAddr) -> Self {
+        
         Self(ka.0 - (KERNEL_DIRECT_OFFSET))
     }
 }
@@ -100,15 +101,21 @@ impl From<KernelAddr> for VirtAddr {
 impl From<usize> for PhysAddr {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << PA_WIDTH_SV39) - 1))
-        let tmp = (v as isize >> PA_WIDTH_SV39) as isize;
+
+        #[cfg(target_arch = "riscv64")]
+        {let tmp = (v as isize >> PA_WIDTH_SV39) as isize;
+
         assert!(tmp == 0 || tmp == -1);
+        }
         Self(v)
     }
 }
 impl From<usize> for PhysPageNum {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << PPN_WIDTH_SV39) - 1))
+        #[cfg(target_arch = "riscv64")]
         let tmp = (v as isize >> PPN_WIDTH_SV39) as isize;
+        #[cfg(target_arch = "riscv64")]
         assert!(tmp == 0 || tmp == -1);
         Self(v)
     }
@@ -117,7 +124,9 @@ impl From<usize> for PhysPageNum {
 impl From<usize> for VirtAddr {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << VA_WIDTH_SV39) - 1))
+        #[cfg(target_arch = "riscv64")]
         let tmp = (v as isize >> VA_WIDTH_SV39) as isize;
+        #[cfg(target_arch = "riscv64")]
         assert!(tmp == 0 || tmp == -1, "invalid va: {:#x}", v);
         Self(v)
     }
@@ -125,7 +134,10 @@ impl From<usize> for VirtAddr {
 impl From<usize> for VirtPageNum {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << VPN_WIDTH_SV39) - 1))
+        #[cfg(target_arch = "riscv64")]
         let tmp = v >> (VPN_WIDTH_SV39 - 1);
+
+        #[cfg(target_arch = "riscv64")]
         assert!(tmp == 0 || tmp == (1 << (52 - VPN_WIDTH_SV39 + 1)) - 1);
         Self(v)
     }
@@ -306,6 +318,12 @@ impl PhysPageNum {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa);
         kernel_va.get_mut()
+    }
+  /// Get the mutable reference of physical address
+    pub fn get_mut_ptr<T>(&self) -> * mut T {
+        let pa: PhysAddr = (*self).into();
+        let kernel_va = KernelAddr::from(pa);
+        kernel_va.get_mut_ptr()
     }
 }
 

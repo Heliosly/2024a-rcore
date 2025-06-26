@@ -1,44 +1,97 @@
 //! block device driver
 
 
-pub mod block;
-pub use block::system_init_with_multi_disk;
 
-use crate::{drivers::block::{disk::Disk, manage::{CHal, CTransport, BLOCK_MANAGER}}, utils::error::{SysErrNo, TemplateRet}};
+// mod virtio;
+use devices::get_blk_device;
+use lwext4_rust::KernelDevOp;
 
-/// 根据设备名（如 "/dev/vda"）查找一个块设备。
-pub fn find_block_device(name: &str) -> TemplateRet<Disk<CHal,CTransport >> {
-    // 1. 解析设备名，获取索引
-    let index = match parse_virtio_device_name(name) {
-        Some(i) => i,
-        None => {
-            warn!("Failed to parse block device name: '{}'", name);
-            return Err(SysErrNo::ENODEV); // No such device
+use crate::{ utils::error::{SysErrNo, TemplateRet}};
+
+const BLOCK_SIZE: usize = 0x200;
+pub type Ext4Disk=Ext4DiskWrapper;
+pub struct Ext4DiskWrapper {
+    block_id: usize,
+    offset: usize,
+    blk_id: usize,
+}
+
+impl Ext4DiskWrapper {
+    /// Create a new disk.
+    pub const fn new(blk_id: usize) -> Self {
+        Self {
+            block_id: 0,
+            offset: 0,
+            blk_id,
         }
-    };
+    }
 
-    // 2. 从全局 BLOCK_MANAGER 中获取设备
-    let mut manager = BLOCK_MANAGER.lock();
-    
-    // 注意：get_disk_mut 返回的是 &mut Disk。但通常我们希望 VFS 持有的是
-    // 一个可以共享的、内部可变的引用，比如 Arc<Mutex<Disk>>。
-    // 这需要在 BlockDeviceManager 中做一些调整。我们先假设可以直接获取。
-    // 我们将在下面讨论如何改进 BlockDeviceManager。
-    
-    // 暂时假设我们能获取一个可用的 Disk 引用并返回
-    // 实际实现会更复杂，见下面的讨论。
-    if let Some(disk_ref) = manager.take_disk(index) { // 假设有这个方法
-        Ok(disk_ref)
-    } else {
-        warn!("Block device with index {} not found for name '{}'", index, name);
- 
-        Err(SysErrNo::ENODEV)
+    /// Get the position of the cursor.
+    #[inline]
+    pub fn position(&self) -> u64 {
+        (self.block_id * BLOCK_SIZE + self.offset) as u64
+    }
+
+    /// Set the position of the cursor.
+    #[inline]
+    pub fn set_position(&mut self, pos: u64) {
+        self.block_id = pos as usize / BLOCK_SIZE;
+        self.offset = pos as usize % BLOCK_SIZE;
     }
 }
 
+impl KernelDevOp for Ext4DiskWrapper {
+    type DevType = Self;
+
+    fn write(dev: &mut Self::DevType, buf: &[u8]) -> Result<usize, i32> {
+        assert!(dev.offset % BLOCK_SIZE == 0);
+        get_blk_device(0)
+            .expect("can't find block device")
+            .write_blocks(dev.block_id, buf);
+        dev.block_id += buf.len() / BLOCK_SIZE;
+        Ok(buf.len())
+    }
+
+    fn read(dev: &mut Self::DevType, buf: &mut [u8]) -> Result<usize, i32> {
+        assert!(dev.offset % BLOCK_SIZE == 0);
+        get_blk_device(0)
+            .expect("can't find block device")
+            .read_blocks(dev.block_id, buf);
+        dev.block_id += buf.len() / BLOCK_SIZE;
+        Ok(buf.len())
+    }
+
+    fn seek(dev: &mut Self::DevType, off: i64, whence: i32) -> Result<i64, i32> {
+        let size = get_blk_device(dev.blk_id)
+            .expect("can't seek to device")
+            .capacity();
+        let new_pos = match whence as u32 {
+            lwext4_rust::bindings::SEEK_SET => Some(off),
+            lwext4_rust::bindings::SEEK_CUR => {
+                dev.position().checked_add_signed(off).map(|v| v as i64)
+            }
+            lwext4_rust::bindings::SEEK_END => size.checked_add_signed(off as _).map(|v| v as i64),
+            _ => Some(off),
+        }
+        .ok_or(-1)?;
+
+        if new_pos as u64 > (size as _) {
+            log::warn!("Seek beyond the end of the block device");
+        }
+        dev.set_position(new_pos as u64);
+        Ok(new_pos)
+    }
+
+    fn flush(_dev: &mut Self::DevType) -> Result<usize, i32> {
+        todo!()
+    }
+}
+
+
+
 /// 解析 virtio 设备名，如 "/dev/vda", "/dev/vdb" 等，返回其索引。
 /// "/dev/vda" -> 0, "/dev/vdb" -> 1, ...
-fn parse_virtio_device_name(name: &str) -> Option<usize> {
+pub fn parse_virtio_device_name(name: &str) -> Option<usize> {
     const PREFIX: &str = "/dev/vd";
     if !name.starts_with(PREFIX) {
         return None;
