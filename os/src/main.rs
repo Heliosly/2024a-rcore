@@ -111,36 +111,11 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
 /// 
 #[no_mangle]
 pub fn main(hart_id:usize) -> ! {
-    // 使用最原始的SBI输出来调试
-    polyhal::debug_console::DebugConsole::putchar(b'S');
-    polyhal::debug_console::DebugConsole::putchar(b'T');
-    polyhal::debug_console::DebugConsole::putchar(b'A');
-    polyhal::debug_console::DebugConsole::putchar(b'R');
-    polyhal::debug_console::DebugConsole::putchar(b'T');
-    polyhal::debug_console::DebugConsole::putchar(b'\n');
-    
-    // 清零BSS段
-    clear_bss();
-    
-    polyhal::debug_console::DebugConsole::putchar(b'B');
-    polyhal::debug_console::DebugConsole::putchar(b'S');
-    polyhal::debug_console::DebugConsole::putchar(b'S');
-    polyhal::debug_console::DebugConsole::putchar(b'\n');
-    
     println!("[kernel] Hello, world!");
-    println!("[kernel] Hart ID: {}", hart_id);
-    
-    println!("[kernel] Disabling interrupts...");
     polyhal::irq::IRQ::int_disable();
-
-    println!("[kernel] Initializing polyhal...");
     // logging::init();
     polyhal::common::init(&PageAllocImpl);
-
-    println!("[kernel] Initializing trap handling...");
     trap::init();
-    
-    println!("[kernel] Initializing memory management...");
     mm::init();
     mm::remap_test();
     mm::heap_allocator::heap_test();
