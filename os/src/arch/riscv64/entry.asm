@@ -5,7 +5,7 @@ _start:
     # alloc kernel stack for each hart
     # set sp(each hart has one kstack)
     mv tp,a0
-    slli t0, a0, 8  # t0 = hart_id << 16(4096 * 8)
+    slli t0, a0, 8  # t0 = hart_id << 8 (256 bytes per stack)
     la sp, boot_stack_top
     sub sp, sp, t0  # sp = stack top - hart_id * stack_size
 

@@ -35,6 +35,10 @@ pub const MPOL_BIND: usize = 2;
 pub const MPOL_INTERLEAVE: usize = 3;
 pub use memory_set::remap_test;
 use crate::sync::Mutex;
+
+#[cfg(target_arch = "riscv64")]
+use riscv::register::satp;
+
  /// The kernel's initial memory mapping(kernel address space)
  pub static  KERNEL_SPACE: LazyInit<Arc<Mutex<MemorySet>>> = LazyInit::new();
  pub static KERNEL_PAGE_TABLE_TOKEN: LazyInit<usize> = LazyInit::new();

@@ -27,7 +27,7 @@ impl ArchInit for RiscV64 {
     
     fn jump_to_rust_main() -> ! {
         unsafe {
-            asm!("la t0, rust_main");
+            asm!("la t0, main");
             asm!("add t0, t0, {}", in(reg) KERNEL_DIRECT_OFFSET);
             asm!("jalr zero, 0(t0)");
         }

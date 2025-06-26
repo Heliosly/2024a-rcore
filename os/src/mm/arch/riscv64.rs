@@ -1,3 +1,6 @@
+use crate::mm::MapPermission;
+use crate::mm::{PhysPageNum, PhysAddr};
+
 bitflags::bitflags! {
     /// Page-table entry flags.
     pub struct PTEFlags: usize {

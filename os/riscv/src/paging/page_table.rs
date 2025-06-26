@@ -1,20 +1,30 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
+#[cfg(target_arch = "loongarch64")]
+mod loongarch64_imports {
+    pub use super::super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
+    pub use super::super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+    pub use super::super::arch::{PageTableEntry, PTEFlags};
+    pub use alloc::string::String;
+    pub use alloc::sync::Arc;
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+    pub use crate::config::{self, PAGE_SIZE};
+    pub use crate::timer::get_time_ticks;
+    pub use crate::utils::error::{SysErrNo, TemplateRet};
+}
 
-use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+#[cfg(target_arch = "loongarch64")]
+use loongarch64_imports::*;
 
-use super::arch::{PageTableEntry, PTEFlags};
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec;
-use alloc::vec::Vec;
-use crate::config::{self, PAGE_SIZE};
-use crate::timer::get_time_ticks;
-use crate::utils::error::{ SysErrNo, TemplateRet};
+#[cfg(target_arch = "riscv64")]
 use addr::*;
+#[cfg(target_arch = "riscv64")]
 use core::convert::TryInto;
+#[cfg(target_arch = "riscv64")]
 use core::fmt::{Debug, Error, Formatter};
+#[cfg(target_arch = "riscv64")]
 use core::marker::PhantomData;
+#[cfg(target_arch = "riscv64")]
 use core::ops::{Index, IndexMut};
 
 pub type Entries32 = [PageTableEntryX32; RV32_ENTRY_COUNT];

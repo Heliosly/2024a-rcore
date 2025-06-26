@@ -1,6 +1,7 @@
 //! Implementation of [`TrapContext`]
 use core::arch::asm;
 
+#[cfg(target_arch = "loongarch64")]
 use loongArch64::register::prmd::{set_pplv, Prmd};
 
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]

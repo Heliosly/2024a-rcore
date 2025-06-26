@@ -55,16 +55,16 @@ pub mod trap;
 ///utils;
 
 pub mod utils;
-// use core::arch::{asm, global_asm};
+#[cfg(target_arch = "riscv64")]
+use core::arch::{asm, global_asm};
 use alloc::boxed::Box;
 use config::KERNEL_DIRECT_OFFSET;
 use polyhal::PhysAddr;
 use trap::user_task_top;
 
 use crate::{config::PAGE_SIZE, fs::{open_file, OpenFlags}, mm::{frame_allocator::{frame_alloc_persist, frame_dealloc_persist}, frame_dealloc}};
+#[cfg(target_arch = "loongarch64")]
 use polyhal_boot::define_entry;
-// global_asm!(include_str!("entry.asm"));
-// global_asm!(include_str!("signal.S"));
 
 /// clear BSS segment
 fn clear_bss() {
@@ -109,14 +109,38 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
 // }
 /// the rust entry-point of os
 /// 
+#[no_mangle]
 pub fn main(hart_id:usize) -> ! {
-    println!("[kernel] Hello, !");
+    // 使用最原始的SBI输出来调试
+    polyhal::debug_console::DebugConsole::putchar(b'S');
+    polyhal::debug_console::DebugConsole::putchar(b'T');
+    polyhal::debug_console::DebugConsole::putchar(b'A');
+    polyhal::debug_console::DebugConsole::putchar(b'R');
+    polyhal::debug_console::DebugConsole::putchar(b'T');
+    polyhal::debug_console::DebugConsole::putchar(b'\n');
+    
+    // 清零BSS段
+    clear_bss();
+    
+    polyhal::debug_console::DebugConsole::putchar(b'B');
+    polyhal::debug_console::DebugConsole::putchar(b'S');
+    polyhal::debug_console::DebugConsole::putchar(b'S');
+    polyhal::debug_console::DebugConsole::putchar(b'\n');
+    
+    println!("[kernel] Hello, world!");
+    println!("[kernel] Hart ID: {}", hart_id);
+    
+    println!("[kernel] Disabling interrupts...");
     polyhal::irq::IRQ::int_disable();
 
+    println!("[kernel] Initializing polyhal...");
     // logging::init();
     polyhal::common::init(&PageAllocImpl);
 
+    println!("[kernel] Initializing trap handling...");
     trap::init();
+    
+    println!("[kernel] Initializing memory management...");
     mm::init();
     mm::remap_test();
     mm::heap_allocator::heap_test();
@@ -156,6 +180,7 @@ pub fn main(hart_id:usize) -> ! {
 
 #[no_mangle]
 pub static mut __stack_chk_guard: usize = 0xdead_beef_aaad_beef;
+#[cfg(target_arch = "loongarch64")]
 define_entry!(main);
 // 栈溢出检测失败时调用的函数
 #[no_mangle]
