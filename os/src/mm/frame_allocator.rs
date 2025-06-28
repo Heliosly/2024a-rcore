@@ -12,13 +12,9 @@ use core::fmt::{self, Debug, Formatter};
 use bit_field::{BitArray, BitField};
 use lazy_static::lazy_static;
 use log::{error, info};
-use spin::Mutex; // 假设您的 Mutex 在这里
-use crate::mm::{PhysAddr}; // 假设您的 PhysAddr 和 pa! 宏在这里
-
-// --- 1. FrameTracker 定义（保持您的版本） ---
-//    我们保留您的 FrameTracker，因为它与您的系统其他部分（如 Drop 逻辑）紧密耦合。
-
-#[derive(Clone)]
+use spin::Mutex; 
+use crate::mm::{PhysAddr};
+ #[derive(Clone)]
 pub struct FrameTracker {
     pub ppn: PhysPageNum,
 }
@@ -53,6 +49,12 @@ impl Debug for FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
+        // if self.ppn.0==0x81901{
+            
+        //     println!("\ndrop pid:{}\n",current_task().unwrap().pid.0);
+        //     bpoint();
+
+        // }
         frame_dealloc(self.ppn);
     }
 }

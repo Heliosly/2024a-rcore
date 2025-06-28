@@ -24,6 +24,18 @@ use crate::utils::error::{GeneralRet, SysErrNo};
 pub struct VfsManager;
 
 impl VfsManager {
+    pub fn sync(){
+       
+        let mut mnt_table = MNT_TABLE.lock();
+        EXT4FS.lock().sync().unwrap_or_else(|e| {
+            warn!("Failed to sync EXT4 filesystem: {:?}", e);
+        });
+        for entry in mnt_table.entries.iter_mut() {
+            (entry.fs_instance).lock().sync().unwrap_or_else(|e| {
+                warn!("Failed to sync filesystem at {}: {:?}", entry.mount_point, e);
+            });
+        }
+    }
     /// 挂载一个新的文件系统。这是 VFS 层的核心 mount 实现。
     pub fn mount(
         special_device: &str,
@@ -36,7 +48,7 @@ impl VfsManager {
 
         // --- 步骤 1: 驱动层挂载 ---
         // 根据 fstype 创建和初始化文件系统驱动实例
-        let fs_instance: Arc<dyn VfsOps> = match fstype {
+        let fs_instance: Arc<spin::Mutex<dyn VfsOps>> = match fstype {
             "ext4" => {
                 // a. 找到并初始化块设备
                 let block_id = parse_virtio_device_name(special_device).unwrap();
@@ -45,7 +57,7 @@ impl VfsManager {
                 // b. 创建 Ext4VfsOps 实例
                 
                 let  mut ext4_fs = Ext4FileSystem::new(disk,special_device.into(),mount_point);
-                let res=Arc::new(ext4_fs);
+                let res=Arc::new(spin::Mutex::new(ext4_fs));
                 if special_device=="/dev/vda"{
                    EXT4FS.init_by(res.clone());
                 }
@@ -86,39 +98,7 @@ impl VfsManager {
         MNT_TABLE.lock().umount(path_or_device).map(|_|())
     }
 
-    /// 解析一个绝对路径，找到应该处理它的文件系统和其在该文件系统内的相对路径
-    pub fn resolve_mnt_path(abs_path: &str) -> (Arc<dyn VfsOps>, String) {
-        let mnt_table = MNT_TABLE.lock();
-
-        // 查找最长匹配的挂载点
-        // 一个简单的实现是遍历所有条目，找到最长的前缀匹配
-        let mut best_match: Option<(&MountEntry, usize)> = None;
-
-        for entry in &mnt_table.entries {
-            if abs_path.starts_with(&entry.mount_point) {
-                let mount_len = entry.mount_point.len();
-                if best_match.is_none() || mount_len > best_match.unwrap().1 {
-                    best_match = Some((entry, mount_len));
-                }
-            }
-        }
-
-        if let Some((entry, mount_len)) = best_match {
-            // 计算相对路径
-            let mut path_in_fs = &abs_path[mount_len..];
-            let path_in_fs = if !path_in_fs.starts_with('/') {
-                format!("/{}", path_in_fs)
-            } else {
-                path_in_fs.to_string()
-            };
-            
-            return (entry.fs_instance.clone(), path_in_fs.to_string());
-        }
-
-        // 如果没有找到任何挂载点（这不应该发生，因为至少有根'/'）
-        println!("SysFile Not any Mountpoint");
-        unreachable!()
-    }
+ 
 
     
 }

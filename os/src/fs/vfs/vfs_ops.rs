@@ -2,10 +2,13 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use lwext4_rust::{bindings::ext4_direntry, InodeTypes};
 
-use crate::{fs::{stat::Kstat, OpenFlags, Statfs}, utils::error::{SysErrNo, SyscallRet}};
+use crate::{fs::{stat::Kstat, OpenFlags, Statfs}, utils::error::{GeneralRet, SysErrNo, SyscallRet}};
 
 /// Filesystem operations.
 pub trait VfsOps: Send + Sync {
+    fn sync(&mut self)-> GeneralRet {
+         unimplemented!()
+    }
     /// Do something when the filesystem is mounted.
     fn mount(&mut self, _path: &str, _mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
         Ok(0)
@@ -39,7 +42,9 @@ pub trait VfsOps: Send + Sync {
 
 /// Node (file/directory) operations.
 pub trait VfsNodeOps: Send + Sync {
-   
+    fn sync(&self) {
+        unimplemented!()
+    }
     fn path(&self) ->String{
         unimplemented!()
     }

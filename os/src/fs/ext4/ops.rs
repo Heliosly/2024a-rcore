@@ -11,7 +11,7 @@ use crate::fs::inode::InodeType;
 use crate::fs::stat::Kstat;
 use crate::fs::vfs::vfs_ops::{VfsNodeOps, VfsOps};
 use crate::fs::{as_inode_type, fix_path, OpenFlags, Statfs};
-use crate::utils::error::{SysErrNo, SyscallRet};
+use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet};
 use crate::utils::string::get_parent_path_and_filename;
 
 use alloc::ffi::CString;
@@ -65,6 +65,10 @@ impl Ext4FileSystem {
 
 /// The [`VfsOps`] trait provides operations on a filesystem.
 impl VfsOps for Ext4FileSystem {
+    fn sync(&mut self)->GeneralRet{
+        self.inner.sync();
+        Ok(())
+    }
     fn mount(&mut self, path: &str, mount_point: Arc<dyn VfsNodeOps>) -> Result<usize, i32> {
         Ok(0)
     }
@@ -635,7 +639,9 @@ fn fmode_set(&self, mode: u32) -> SyscallRet {
 fn path (&self)->String{
     self.file.borrow().get_path().to_string_lossy().to_string()
 }
-
+fn sync(&self) {
+    self.file.borrow_mut().file_cache_flush();
+}
 }
 
 impl Drop for FileWrapper {

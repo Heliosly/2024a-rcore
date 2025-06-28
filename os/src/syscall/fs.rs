@@ -1095,7 +1095,7 @@ pub async fn sys_ppoll(
     tmo_user_ptr: *const UserTimeSpec, // 指向用户空间的 timespec
     sigmask_user_ptr: *const SigSet,   // 指向用户空间的 sigset_t
 ) -> SyscallRet {
-    log::trace!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
+    log::info!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
                 fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr );
 
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
@@ -1109,7 +1109,6 @@ pub async fn sys_ppoll(
             //     Ok(old_mask) => old_sigmask_to_restore = Some(old_mask),
             //     Err(e) => return Err(e), // 复制或设置掩码失败
             // }
-            // 简化：假设我们有一个函数可以原子地交换掩码
             // old_sigmask_to_restore = Some(swap_current_thread_sigmask_from_user(token, sigmask_user_ptr)?);
             // 这里需要更底层的实现。我们将使用一个 RAII Guard 来确保恢复。
             // 或者在 defer 块中恢复。
@@ -1202,6 +1201,7 @@ pub async fn sys_ppoll(
         }
     };
 
+    info!("[sys_ppoll] user_pollfds_kernel_copy: {:?}", user_pollfds_kernel_copy);
     // 5. 构建 parsed_requests (与 sys_poll 相同)
     let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
     let fd_table_guard = pcb_arc.fd_table.lock().await;
@@ -1695,7 +1695,7 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
         let result = VfsManager::mount(&special, &dir, &fstype, flags, data_opt);
     
         // 将 VfsManager 的返回结果 (GeneralRet, 即 Result<(), SysErrNo>) 转换为系统调用返回值
-        result.map(|_| 0) // 成功时，将 Ok(()) 映射为 0
+        Ok(0) // 成功时，将 Ok(()) 映射为 0
     }
 
 /// umount 系统调用实现
@@ -2172,7 +2172,10 @@ pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet 
             ),
         )
     } {
-        Ok(()) => Ok(0), // 成功
+        Ok(_) => {
+            log::info!("[sys_pipe2] Successfully created pipe with fds: read={}, write={}", fd_read, fd_write);
+            Ok(0)
+        }
         Err(_translate_err) => {
             // 写回失败，这是一个严重的问题。
             // 理论上应该尝试关闭已分配的 fd_read 和 fd_write。
@@ -2607,14 +2610,21 @@ pub async fn sys_munlockall() -> SyscallRet {
     // 4. 成功
     Ok(0)
 }
-/// 仿 Linux 的 statx 系统调用
-pub fn sys_statx(
-    _dirfd: usize,           // 一般我们不会支持复杂的路径解析，直接忽略
-    pathname: *const u8,     // 文件路径（用户地址）
-    _flags: usize,           // 一般忽略
-    _mask: usize,            // 一般忽略
-    statx_buf: usize,   // 返回结果缓冲区（用户地址）
-) -> SyscallRet {
-   Err(SysErrNo::ENOSYS)
+pub fn sys_sync() -> SyscallRet {
+    trace!("[sys_sync] Syncing all filesystems (no-op).");
     
+    VfsManager::sync();
+    Ok(0)
+}   
+pub async  fn sys_fsync(fd: usize) -> SyscallRet {
+    trace!("[sys_fsync] fd: {}", fd);
+    let task = current_process();
+    let  file = task.get_file(fd).await;
+    if  file.is_err() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let file = file.unwrap().file()?;
+    file.inner.lock().inode.sync();
+    Ok(0)
 }

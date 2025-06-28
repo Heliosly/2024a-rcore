@@ -83,6 +83,7 @@ pub enum SigMaskHow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, IntoPrimitive, TryFromPrimitive)]
 #[repr(usize)]
 pub enum Signal {
+    SIGNONE=0,
     // POSIX.1-1990 Signals
     SIGHUP = 1,
     SIGINT = 2,
@@ -154,7 +155,7 @@ SIGRTAX = 64,
 
 impl Signal {
     pub fn from_usize(signum: usize) -> Option<Self> {
-        if signum == 0 || signum >= NSIG {
+        if  signum >= NSIG {
             // 0 不是有效信号
             return None;
         }

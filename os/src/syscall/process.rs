@@ -3,20 +3,20 @@
 
 
 
-use core::{future::Future, pin::Pin};
+use core::{error, future::Future, pin::Pin};
 
 use alloc::{
-   boxed::Box, collections::linked_list::LinkedList, format, string::{String, ToString}, sync::Arc, vec::Vec
+   boxed::Box, collections::{btree_map::BTreeMap, linked_list::LinkedList}, format, string::{String, ToString}, sync::Arc, vec::Vec
 };
 use linux_raw_sys::general::{AT_FDCWD};
 use spin::Lazy;
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
-        flush_all, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
-    }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
+    config::{FD_SETSIZE, MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file, select::{FdSet, PSelectFuture}, File, FileDescriptor, OpenFlags, NONE_MODE}, mm::{
+        flush_all,  frame_allocator::remaining_frames, get_target_ref, page_table::{copy_to_user_bytes}, put_data, translated_byte_buffer, translated_refmut, translated_str, FrameTracker, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, UserBuffer, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
+    }, signal::{SigMaskHow, SigSet, Signal, NSIG}, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::{flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, process}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock,  RobustList, TaskStatus, PID2PC, TID2TC
-    }, timer::{ current_time,  get_usertime, TimeVal, UserTimeSpec}, utils::{
+    }, timer::{ current_time, get_time_ns, get_time_us, get_usertime, usertime2_timeval, TimeVal, UserTimeSpec}, utils::{
          error::{SysErrNo, SyscallRet}, page_round_up, string::get_abs_path
     }
 };
@@ -153,6 +153,9 @@ pub async fn sys_clone(args: [usize; 6]) -> SyscallRet {
     }
 
     let res=proc.clone_task(flags, user_stack, ptid, tls, ctid).await;
+    // println!("in clone self:");
+    // current_process().memory_set.lock().await.areatree.debug_print();
+
     yield_now().await;
     res
 }
@@ -266,7 +269,8 @@ pub  async  fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *co
     process.set_exe(abs_path).await;
     process.exec(&elf_data, &argv_vec, &mut env).await?;
     
-    process.memory_set.lock().await.activate();
+    // println!("in execve:");
+    // process.memory_set.lock().await.areatree.debug_print();
     // if !va_is_valid(0x10017a, process.memory_set.lock().await.token()){
     //     println!("[sys_execve] va_is_valid failed, process memory token:{}", process.memory_set.lock().await.token());
     // }
@@ -805,6 +809,7 @@ pub async fn sys_mmap(
     let mut ms = proc.memory_set.lock().await;
 
     let fd_table = proc.fd_table.lock().await;
+    let mmap_flag= MmapFlags::empty();
     // ——————————————————————————————————————————
     // 7. 如果是文件映射，要检查文件权限和 off_file
 
@@ -815,6 +820,17 @@ pub async fn sys_mmap(
         if map_perm.contains(MapPermission::W) && !file.writable()? {
             return Err(SysErrNo::EACCES);
         }
+
+        // if let Some(dev_shm) = file.as_any().downcast_ref::<crate::fs::dev::DevShm>() {
+        //     // 如果转换成功，说明 file 底层的类型就是 DevShm
+        //     // dev_shm 是一个 &DevShm 类型的引用，但我们这里其实只需要判断成功与否
+        //     // 接下来我们就可以调用 file.mmap，因为我们知道它是 DevShm 的 mmap
+            
+        //     drop(fd_table); // 释放锁
+            
+        //     // 调用 mmap 方法，它会通过 vtable（虚函数表）正确地分派到 DevShm::mmap
+        //     return dev_shm.mmap(addr, len, map_perm , flags , off).await;
+        // }
         // 7.3 offset 超出文件长度？
         if off > file.fstat().st_size as usize {
             return Err(SysErrNo::EINVAL);
@@ -1044,7 +1060,7 @@ pub async fn sys_getcwd(buf_user_ptr: *mut u8, size: usize) -> SyscallRet {
             // log::warn!("sys_getcwd: copy_to_user_bytes failed: {:?}", translate_error);
             match translate_error {
                 TranslateError::TranslationFailed(_) | TranslateError::PermissionDenied(_) => Err(SysErrNo::EFAULT),
-                TranslateError::UnexpectedEofOrFault => Err(SysErrNo::EIO),
+                TranslateError::UnexpectedEofOrFault => Err(SysErrNo::ECONNABORTED),
                 _ => Err(SysErrNo::EFAULT),
             }
         }
@@ -1782,3 +1798,274 @@ pub async  fn sys_set_mempolicy(mode: usize, nodemask_ptr: *const usize, maxnode
 
     Ok(0) 
 }
+
+
+
+
+/// getrusage(2) 的 `who` 参数
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RusageWho {
+    /// Return resource usage statistics for the calling process.
+    Self_ = 0,
+    /// Return resource usage statistics for all children of the
+    /// calling process that have terminated and been waited for.
+    Children = -1,
+    /// Return resource usage statistics for the calling thread.
+    Thread = 1,
+}
+
+impl RusageWho {
+    // 辅助函数，用于从 i32 转换
+    pub fn from(val: i32) -> Option<Self> {
+        match val {
+            0 => Some(Self::Self_),
+            -1 => Some(Self::Children),
+            1 => Some(Self::Thread),
+            _ => None,
+        }
+    }
+}
+
+/// 资源使用情况结构体, a.k.a. struct rusage
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Rusage {
+    /// user CPU time used
+    pub ru_utime: TimeVal,
+    /// system CPU time used
+    pub ru_stime: TimeVal,
+    // 为了简化，我们先只实现时间和页错误
+    // 很多字段在简单的内核中很难跟踪，可以先填充为0
+    pub ru_maxrss: isize,   /* maximum resident set size */
+    pub ru_ixrss: isize,    /* integral shared memory size */
+    pub ru_idrss: isize,    /* integral unshared data size */
+    pub ru_isrss: isize,    /* integral unshared stack size */
+    pub ru_minflt: isize,   /* page reclaims (soft page faults) */
+    pub ru_majflt: isize,   /* page faults (hard page faults) */
+    pub ru_nswap: isize,    /* swaps */
+    pub ru_inblock: isize,  /* block input operations */
+    pub ru_oublock: isize,  /* block output operations */
+    pub ru_msgsnd: isize,   /* IPC messages sent */
+    pub ru_msgrcv: isize,   /* IPC messages received */
+    pub ru_nsignals: isize, /* signals received */
+    pub ru_nvcsw: isize,    /* voluntary context switches */
+    pub ru_nivcsw: isize,   /* involuntary context switches */
+}
+/// # Arguments
+/// * `who` - i32
+/// * `usage_ptr` - *mut Rusage
+pub async fn sys_getrusage(who: i32, usage_ptr: *mut Rusage) -> SyscallRet {
+    // 1. 解析 `who` 参数
+    trace!("[sys_getrusage] who: {}, usage_ptr: {:p}", who, usage_ptr);
+    let rusage_target = match RusageWho::from(who) {
+        Some(target) => target,
+        None => return Err(SysErrNo::EINVAL), // 无效的 `who` 参数
+    };
+
+    // 2. 获取当前进程的锁
+    let pcb = current_process();
+
+    
+    let token =pcb.memory_set.lock().await.token();
+    pcb.manual_alloc_type_for_lazy(usage_ptr).await?;
+    let task = current_task();
+    let tms = unsafe { *task.tms.get() };
+    // 3. 根据 `who` 填充 Rusage 结构体
+    let rusage_data = match rusage_target {
+        RusageWho::Self_ | RusageWho::Thread => {
+            Rusage {
+                ru_utime:TimeVal { sec:tms.utime as usize, usec: 0},
+                ru_stime:TimeVal { sec:tms.stime as usize, usec: 0},
+                // 其他字段暂时填充为0
+                ..Default::default()
+            }
+        }
+        RusageWho::Children => {
+            Rusage {
+                ru_utime:TimeVal { sec:tms.utime as usize, usec: 0},
+                ru_stime:TimeVal { sec:tms.stime as usize, usec: 0},
+                // 子进程的其他统计信息通常也需要累加，这里简化
+                ..Default::default()
+            }
+        }
+    };
+     *translated_refmut(token, usage_ptr)?= rusage_data;
+
+   
+
+
+    Ok(0) // 成功返回 0
+}
+/// 内核内部函数，用于操作当前任务的信号掩码。
+/// 它接收内核态的 SigSet 引用，并返回旧的掩码。
+/// 这个函数是异步的，因为它需要锁定任务的 signal_state。
+pub async fn do_sigprocmask(how: SigMaskHow, set: Option<SigSet>) -> Result<SigSet, SysErrNo> {
+    let current_task_arc = current_task(); 
+    let mut signal_state = current_task_arc.signal_state.lock().await;
+    
+    // 1. 保存旧的掩码，用于返回
+    let old_mask = signal_state.sigmask;
+
+    // 2. 如果提供了新的 set，就根据 how 来修改掩码
+    if let Some(new_set) = set {
+        match how {
+            SigMaskHow::SIG_BLOCK => {
+                signal_state.sigmask.union_with(&new_set);
+            }
+            SigMaskHow::SIG_UNBLOCK => {
+                // 不能解除 SIGKILL 或 SIGSTOP 的阻塞 
+                // 但 SigSet 的操作通常不关心具体信号的特殊性，这是更高层逻辑
+                let mut temp_set = new_set;
+                // Linux 不允许 SIGKILL 和 SIGSTOP 被阻塞，所以从 set 中移除它们
+                temp_set.remove(Signal::SIGKILL);
+                temp_set.remove(Signal::SIGSTOP);
+                // 然后从当前掩码中移除这些（解除阻塞）
+                // A = A & (~B) => A.intersect_with( !B )
+                // SigSet 需要实现 bitwise NOT 或者一个 remove_all_from_set 方法
+                // 简单做法：迭代 set 中的每一位，如果在 sigmask 中，则 remove
+                // (更正：SIG_UNBLOCK 是移除 set 中的位，所以是 sigmask &= ~set)
+                // sigmask = sigmask AND (NOT set)
+                // 我们需要一个 SigSet::complement() 或 SigSet::difference_with()
+                // 简化：直接迭代要解除阻塞的信号
+                for i in 1..NSIG {
+                    if let Some(s) = Signal::from_usize(i) {
+                        if new_set.contains(s) {
+                            signal_state.sigmask.remove(s);
+                        }
+                    }
+                }
+            }
+            SigMaskHow::SIG_SETMASK => {
+                let mut new_mask = new_set;
+                // 不能阻塞 SIGKILL 或 SIGSTOP
+                new_mask.remove(Signal::SIGKILL);
+                new_mask.remove(Signal::SIGSTOP);
+                signal_state.sigmask = new_mask;
+            }
+        }
+    }
+
+    // 3. 返回旧的掩码
+    Ok(old_mask)
+}
+/// pselect6 系统调用
+/// Note: sigmask_size 参数 (通常是第6个) 在现代 glibc 包装中被忽略，
+/// 我们也在这里忽略它，直接使用第7个参数作为 sigmask。
+pub async fn sys_pselect6(
+    nfds: i32,
+    readfds_ptr: *mut FdSet,
+    writefds_ptr: *mut FdSet,
+    exceptfds_ptr: *mut FdSet,
+    timeout_ptr: *const UserTimeSpec,
+    sigmask_ptr: *const SigSet,
+) -> SyscallRet {
+    trace!("[sys_pselect6] nfds: {}, readfds: {:p}, writefds: {:p}, exceptfds: {:p}, timeout: {:p}, sigmask: {:p}",
+        nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, timeout_ptr, sigmask_ptr);
+    if nfds < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let nfds_usize = nfds as usize;
+    if nfds_usize > FD_SETSIZE {
+        // Linux 对此返回 EINVAL
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let process = current_process();
+    let token = process.get_user_token().await;
+
+    let readfds   = if readfds_ptr.is_null() {
+        None
+    } else {
+
+    process.manual_alloc_type_for_lazy(readfds_ptr).await?;
+        Some(get_target_ref(token, readfds_ptr)?)
+    };
+    
+    let writefds  = if writefds_ptr.is_null() {
+        None
+    } else {
+
+    process.manual_alloc_type_for_lazy(writefds_ptr).await?;
+        Some(get_target_ref(token, writefds_ptr)?)
+    };
+    
+    let exceptfds = if exceptfds_ptr.is_null() {
+        None
+    } else {
+
+    process.manual_alloc_type_for_lazy(exceptfds_ptr).await?;
+        Some(get_target_ref(token, exceptfds_ptr)?)
+    };
+    
+    let timeout   = if timeout_ptr.is_null() {
+        None
+    } else {
+
+    process.manual_alloc_type_for_lazy(timeout_ptr).await?;
+        Some(get_target_ref(token, timeout_ptr)?)
+    };
+    
+    // --- 信号掩码处理 ---
+    let mut original_sigmask: Option<SigSet> = None;
+    if !sigmask_ptr.is_null() {
+        // 从用户空间拷贝新的掩码
+        let new_mask = *get_target_ref(token, sigmask_ptr)?
+            ; // pselect 要求 sigmask 非 NULL 时必须有效
+
+        // 调用内核内部函数，原子地替换信号掩码，并保存旧的
+        // 这里我们总是使用 SetMask
+        original_sigmask = Some(do_sigprocmask(SigMaskHow::SIG_SETMASK, Some(new_mask)).await?);
+    }
+    
+
+        // 1. 收集所有需要检查的 FD
+        let mut fds_to_check: Vec<(usize, FileDescriptor)> = Vec::new();
+        for fd in 0..nfds_usize {
+            let mut check_this_fd = false;
+            if let Some(ref set) = readfds   { if set.is_set(fd) { check_this_fd = true; } }
+            if let Some(ref set) = writefds  { if set.is_set(fd) { check_this_fd = true; } }
+            if let Some(ref set) = exceptfds { if set.is_set(fd) { check_this_fd = true; } }
+            
+            if check_this_fd {
+                match process.get_file(fd).await {
+                    Ok(file) => fds_to_check.push((fd, file)),
+                    Err(e) => {
+                        error!("pselect6: inviild FD {}: {:?}", fd, e);
+                        return Err(e)}, // 无效的 FD
+                }
+            }
+        }
+
+        // 2. 计算超时 deadline
+        let deadline = timeout.map(|spec| {
+            let now = get_usertime();
+            // 计算绝对截止时间
+            now + *spec 
+
+        });
+        
+
+        // 3. 创建并 await future
+        let future = PSelectFuture::new(
+            fds_to_check,
+            readfds_ptr,
+            writefds_ptr,
+            exceptfds_ptr,
+            token,
+            deadline, // 直接传递计算好的 Option<TimeVal>
+        );
+    let result = future.await;
+
+    // --- 恢复信号掩码 ---
+    if let Some(old_mask) = original_sigmask {
+        // 这里的 await? 可能会覆盖掉 pselect_logic 的错误，需要小心
+        // 但如果信号处理失败，这本身就是一个严重的内核问题
+        let _ = do_sigprocmask(SigMaskHow::SIG_SETMASK, Some(old_mask)).await;
+    }
+
+    // --- 返回最终结果 ---
+     return result;
+}
+
+

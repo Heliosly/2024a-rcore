@@ -6,7 +6,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use core::mem;
 
-// 假设的依赖
 use crate::task::{current_process, ProcessControlBlock};
 use crate::fs::{FileDescriptor, PollEvents, PollFd}; // PollFdUser 是用户空间版本
 use crate::mm::page_table::{copy_from_user_array, copy_to_user_bytes_exact}; // 假设有 copy_to_user_bytes_exact
@@ -112,6 +111,7 @@ impl Future for PollFuture {
             if request.original_user_fd < 0 {
                 calculated_revents = PollEvents::empty();
             } else if let Some(fd_val) = &request.file_descriptor {
+                info!("Polling fd_val: {:?}, requested_events: {:?}", fd_val, request.requested_events);
                 calculated_revents = fd_val.poll(request.requested_events, cx.waker());
             } else {
                 calculated_revents.insert(PollEvents::POLLNVAL);
@@ -151,14 +151,14 @@ impl Future for PollFuture {
                     } else {
                         // 不是实际时间超时
 
-                            trace!("Poll pending Not timeout");
+                            info!("Poll pending Not timeout");
                         return Poll::Pending;
                     }
                 }
                 Poll::Pending => {
                     //让权
 
-                            trace!("Poll pending yield now");
+                            info!("Poll pending yield now");
                     return Poll::Pending;
                 }
             }
@@ -170,7 +170,7 @@ impl Future for PollFuture {
                  }
             }
 
-                   trace!("Poll pending yield now  infinity timeout");
+                   info!("Poll pending yield now  infinity timeout");
             return Poll::Pending;
         }
     }

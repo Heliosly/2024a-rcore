@@ -8,10 +8,11 @@ SECTIONS
 {
     . = BASE_ADDRESS;
     _skernel = .;
-
+     skernel = .;
     /* 代码段 */
-    stext = .;
-    .text : AT(BASE_ADDRESS) {
+      .text ALIGN(4K): {
+        *(.multiboot .multiboot.*)
+         stext = .;
         *(.text.entry)
         . = ALIGN(4);
         *(.text.trap_entries)
@@ -41,8 +42,11 @@ SECTIONS
     erodata = .;
     
     /* 可写数据段 */
-    sdata = .;
-    .data : {
+    .data ALIGN(4K):  {
+
+        sdata = .;
+        . = ALIGN(4K);
+        *(.data.boot_page_table)
         *(.data .data.*)
         *(.sdata .sdata.*)
     }
@@ -77,15 +81,16 @@ SECTIONS
     . = ALIGN(4K);
     edata = .;
     
-    /* BSS段 */
     sbss_with_stack = .;
-    .bss : {
-        *(.bss.stack)
+        .bss ALIGN(4K): {
+        _load_end = .;
+        *(.bss.bstack .bss.bstack.*)
         _sbss = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
+        _ebss = .;
     }
-    
+
     . = ALIGN(4K);
     _ebss = .;
     _ekernel = .;

@@ -1,10 +1,7 @@
 
-use core::cell::UnsafeCell;
 
 use alloc::{
-    sync::Arc,
-    vec,
-    vec::Vec,
+    fmt, sync::Arc, vec::{self, Vec}
 };
 
 use crate::utils::error::{TemplateRet, SysErrNo, SyscallRet};
@@ -20,6 +17,18 @@ pub enum FileClass {
     Abs(Arc<dyn File>),
 }
 
+impl fmt::Debug for FileClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FileClass::File(inode) => f.debug_tuple("File")
+                .field(&format_args!("OsInode@{:p}", inode.as_ref()))
+                .finish(),
+            FileClass::Abs(file) => f.debug_tuple("Abs")
+                .field(&format_args!("File@{:p}", file.as_ref()))
+                .finish(),
+        }
+    }
+}
 impl FileClass {
     pub fn file(&self) -> Result<Arc<OsInode>, SysErrNo> {
         match self {
@@ -48,7 +57,7 @@ impl FileClass {
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct FileDescriptor {
     pub flags: OpenFlags,
     pub file: FileClass,

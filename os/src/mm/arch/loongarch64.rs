@@ -157,7 +157,18 @@ impl PageTableEntry {
     pub fn is_cow(&self) -> bool {
         self.flags().contains(PTEFlags::COW)
     }
+    pub fn un_cow(&mut self) {
+        let mut flags = self.flags();
 
+        if flags.contains(PTEFlags::W_BACKUP) {
+            flags.insert(PTEFlags::W);
+        }
+
+        flags.remove(PTEFlags::COW);
+        flags.remove(PTEFlags::W_BACKUP);
+
+        self.set_flags(flags);
+    }
     pub fn clear_cow(&mut self) {
         let mut flags = self.flags();
         

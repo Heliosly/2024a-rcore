@@ -361,7 +361,6 @@ impl PhysPageNum {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
         
-
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut u8, 4096) }
      
       

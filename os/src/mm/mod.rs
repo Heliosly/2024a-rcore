@@ -5,7 +5,7 @@
 //! map area and memory set, is implemented here.
 //!
 //! Every task or process has a memory_set to control its virtual memory.
-
+pub mod shm;
 mod address;
 mod area;
 pub(crate) mod frame_allocator;
@@ -76,17 +76,18 @@ unsafe fn clear_dwm() {
 pub fn activate_by_token(satp: usize) {
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        satp::write(satp);
+        riscv::register::satp::write(satp);
         asm!("sfence.vma");
     }
     #[cfg(target_arch = "loongarch64")]
     // println!("activate satp:{:#x}",satp);
-   
+   {
         use loongArch64::register::pgdl;
 
         use crate::config::PAGE_SIZE_BITS;
-        pgdl::set_base(satp << PAGE_SIZE_BITS);
+        loongArch64::register::pgdl::set_base(satp << PAGE_SIZE_BITS);
         // pgdh::set_base(satp<<PAGE_SIZE_BITS);
+   }
         flush_all();
         
 }

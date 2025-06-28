@@ -1,16 +1,3 @@
-//! Implementation of [`PageTableEntry`] and [`PageTable`].
-
-use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
-
-use super::arch::{PageTableEntry, PTEFlags};
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec;
-use alloc::vec::Vec;
-use crate::config::{self, PAGE_SIZE};
-use crate::timer::get_time_ticks;
-use crate::utils::error::{ SysErrNo, TemplateRet};
 use addr::*;
 use core::convert::TryInto;
 use core::fmt::{Debug, Error, Formatter};

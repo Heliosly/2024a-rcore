@@ -37,8 +37,7 @@ use alloc::{format, vec};
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use alloc::string::{String, ToString};
 use lazy_init::LazyInit;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-use riscv::addr::VirtAddr;
+
 use core::future::Future;
 pub use core::mem::ManuallyDrop;
 use core::task::{Context, Poll};
@@ -132,7 +131,7 @@ pub async fn exit_proc(exit_code: i32) {
     }
 
     // --- 第 3 步：回收进程级资源 ---
-    process.memory_set.lock().await.recycle_data_pages();
+    process.memory_set.lock().await.recycle_data_pages().await.unwrap();
     process.fd_table.lock().await.table.clear();
 
     // --- 第 4 步：从全局数据结构中移除所有线程 ---

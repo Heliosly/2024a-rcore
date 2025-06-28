@@ -13,10 +13,10 @@ use crate::sbi::shutdown;
 use crate::sync::futex::init_futex_system;
 use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::sleeplist::init_sleeper_queue;
-use crate::task::{put_prev_task };
+use crate::task::{current_process, put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
-use crate::utils::bpoint;
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::future::Future;
 use core::panic;
@@ -36,9 +36,9 @@ pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 's
 pub fn run_task2(mut curr: CurrentTask) {
     let waker = curr.waker();
     let cx = &mut Context::from_waker(&waker);
-    let satp=unsafe { *curr.page_table_token.get() };
-    activate_by_token(satp);
- 
+    activate_by_token(unsafe { *curr.page_table_token.get() });
+
+    //delete active(conflict)
 
     // 拿到 future 的所有权，而不是引用！
 
@@ -52,7 +52,7 @@ pub fn run_task2(mut curr: CurrentTask) {
             curr.wake_all_waiters();
             // println!("count {}",Arc::strong_count(curr.as_task_ref()));
             if curr.is_init {
-                bpoint();
+                //TODO(HELIOSLY)这里有异常可能有内存泄漏的风险，应该小于等于2
                 assert!(
                     Arc::strong_count(curr.as_task_ref()) <= 3,
                     "count {}",
@@ -91,7 +91,6 @@ pub fn run_task2(mut curr: CurrentTask) {
                             //                                 tf
                             //                             );
                             enable_irqs();
-    // println!("debug:{:#?}",tf);
                     trace!("[user_return]  result:{:#x} sepc:{:#x}", tf.regs.a0,tf.sepc);
                             user_return(tf);
                         }
@@ -143,6 +142,7 @@ pub fn init(utrap_handler: fn() -> Pin<Box<dyn Future<Output = i32> + 'static>>)
 
     println!("current kernel stack bottom:{:#x}", current_stack_bottom());
     // kstack::alloc_current_stack();
+    
     UTRAP_HANDLER.init_by(utrap_handler);
     let scheduler = CFScheduler::new();
     KERNEL_SCHEDULER.init_by(Arc::new(Spin::new(scheduler)));

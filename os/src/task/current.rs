@@ -418,7 +418,6 @@ pub fn current_task_id_may_uninit() -> usize {
 //         );
 //         ret
 //     }
-
 //     #[inline]
 //     /// Set the value of the per-CPU data on the current CPU.
 //     ///
@@ -453,7 +452,6 @@ pub fn current_task_id_may_uninit() -> usize {
 // /// guarantee the correctness even the current task is preempted.
 // #[inline]
 // pub fn current_process_ptr<T>() -> *const T {
-
 //     unsafe {
 //         // on RISC-V, reading `CURRENT_process_PTR` requires multiple instruction, so we disable local IRQs.
 //         let flags = local_irq_save_and_disable();
@@ -461,7 +459,6 @@ pub fn current_task_id_may_uninit() -> usize {
 //         local_irq_restore(flags);
 //         ans as _
 //     }
-
 // }
 // /// Sets the pointer to the current task with preemption-safety.
 // ///

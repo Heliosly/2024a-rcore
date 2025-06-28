@@ -6,7 +6,6 @@ use core::{
 
 use alloc::{boxed::Box, collections::vec_deque::VecDeque, vec::Vec};
 
-
 #[derive(Debug)]
 pub struct YieldFuture {
     _has_polled: bool,

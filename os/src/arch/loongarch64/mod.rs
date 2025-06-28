@@ -12,6 +12,10 @@ pub mod trap;
 use crate::arch::ArchInit;
 use crate::config::KERNEL_DIRECT_OFFSET;
 use crate::arch::TrapArch;
+use crate::timer::current_time;
+use crate::timer::get_usertime;
+use crate::timer::TimeVal;
+use crate::timer::UserTimeSpec;
 
 pub struct LoongArch64;
 #[no_mangle]
@@ -63,4 +67,64 @@ pub unsafe extern "C" fn tlb_fill() {
             ertn
         ",
     );
+}
+use loongArch64::register;
+use loongArch64::register::estat;
+use loongArch64::register::tcfg; 
+
+pub struct Scause(estat::Estat);
+pub use  loongArch64::register::estat::Trap;
+impl Scause {
+    pub fn cause(&self) ->estat::Trap {
+        self.0.cause()
+    }
+}
+
+pub fn scause() -> Scause {
+    Scause(estat::read())  
+}
+
+pub mod scause {
+    use super::Scause;
+    pub fn read() -> Scause {
+        super::scause()
+    }
+}
+
+pub mod sepc {
+    pub fn read() -> usize {
+        
+            loongArch64::register::era::read().raw()
+        
+    }
+}
+
+pub mod stval {
+    use loongArch64::register::badv;
+
+    pub fn read() -> usize {
+       badv::read().raw()
+    }
+}
+
+pub fn enable_irqs() {
+      loongArch64::register::crmd::set_ie(true);
+}
+pub fn disable_irqs() {
+   
+      loongArch64::register::crmd::set_ie(false);
+
+}
+
+pub fn set_next_trigger(next:UserTimeSpec) {
+    let curr = get_usertime();
+    if next < curr {
+        return;
+    }
+    let interval = next - curr;
+    tcfg::set_init_val(
+        (interval.tv_sec * crate::config::CLOCK_FREQ
+            + interval.tv_nsec  * crate::config::CLOCK_FREQ / 1_000_000_000) as _,
+    );
+    tcfg::set_en(true);
 }

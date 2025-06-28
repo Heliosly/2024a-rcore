@@ -24,7 +24,6 @@
 #![feature(naked_functions)]
 #![feature(linked_list_retain)]
 #![feature(linked_list_cursors)]
-#![cfg_attr(any(target_arch = "loongarch64"), feature(lang_items))]
 #![feature(used_with_arg)]
 #[macro_use]
 extern crate bitflags;
@@ -36,7 +35,6 @@ extern crate alloc;
 #[macro_use]
 mod console;
 pub mod devices;
-pub mod arch;
 pub mod config;
 pub mod drivers;
 pub mod fs;
@@ -48,6 +46,7 @@ pub mod sync;
 pub mod syscall;
 pub mod task;
 pub mod timer;
+pub mod arch;
 // pub mod executor;
 
 pub mod signal;
@@ -64,8 +63,6 @@ use trap::user_task_top;
 use crate::{config::PAGE_SIZE, fs::{open_file, OpenFlags}, mm::{frame_allocator::{frame_alloc_persist, frame_dealloc_persist}, frame_dealloc}};
 use polyhal_boot::define_entry;
 // global_asm!(include_str!("entry.asm"));
-// global_asm!(include_str!("signal.S"));
-
 /// clear BSS segment
 fn clear_bss() {
     extern "C" {

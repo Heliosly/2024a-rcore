@@ -5,11 +5,11 @@ use super::{
     current_process, current_token, pid_alloc, yield_now, CloneFlags, PidHandle, ProcessRef,
     TaskStatus,
 };
-use crate::config::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
+use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::inode::NONE_MODE;
 use crate::fs::{find_inode, open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    flush_all, get_target_ref, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
+    activate_by_token, flush_all, get_target_ref, put_data, translated_refmut, MapArea, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum, KERNEL_PAGE_TABLE_TOKEN
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
@@ -20,7 +20,7 @@ use crate::task::processor::UTRAP_HANDLER;
 use crate::task::schedule::CFSTask;
 use crate::task::waker::waker_from_task;
 use crate::task::{add_task, current_task, exit_robust_list_cleanup, Task, PID2PC, TID2TC};
-use crate::timer::{TimeData, Tms};
+use crate::timer::{KernelTimer, TimeData, Tms, UserTimeSpec};
 use crate::trap::{TrapContext, TrapStatus};
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use crate::utils::string::{get_parent_path_and_filename, normalize_absolute_path};
@@ -47,6 +47,8 @@ unsafe impl Send for ProcessControlBlock {}
 ///
 /// Directly save the contents that will not change during running
 pub struct ProcessControlBlock {
+
+    pub timers: [Mutex<KernelTimer>; 3],
     /// The  trapcontext
     // Immutable
     /// Process identifier
@@ -308,17 +310,8 @@ impl ProcessControlBlock {
 
         self.set_user_stack_top(ustack_top);
 
-        // let memory_set: spin::MutexGuard<'_, MemorySet> = self.memory_set.lock().await;
-        // assert!(memory_set
-        //     .translate(VirtAddr::from(ustack_top).floor())
-        //     .unwrap()
-        //     .is_valid());
 
-        // println!(
-        //     "[alloc_user_stack]user_stack_top:{:#x},bottom:{:#x}",
-        //     ustack_top,
-        //     ustack_bottom
-        // );
+        flush_all();
     }
 
     /// fork
@@ -327,16 +320,37 @@ impl ProcessControlBlock {
     ///
     /// * `another`: 另一个 `ProcessControlBlock` 的引用。
     pub async fn clone_user_res(&self, another: &ProcessControlBlock) {
-        self.alloc_user_res().await;
-        let self_vpn=VirtAddr::from(self.user_stack_top() - USER_STACK_SIZE).floor();
-        let another_vpn=VirtAddr::from(another.user_stack_top() - USER_STACK_SIZE).floor();
+        let hint_vpn = VirtAddr::from(USER_STACK_TOP).ceil();
+        let npages = (USER_STACK_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+        let base_vpn = self
+            .memory_set
+            .lock()
+            .await
+            .areatree
+            .find_gap_from(hint_vpn, npages)
+            .unwrap();
+        let top_vpn = VirtPageNum::from(base_vpn.0 + npages);
 
-        self.memory_set.lock().await.copy_area_data(
-
-            &*(another.memory_set.lock().await),
-                       another_vpn,
-                      self_vpn,
-        );
+        let start_va = VirtAddr::from(base_vpn);
+        let end_va = VirtAddr::from(top_vpn);
+        let new_area =MapArea::new(start_va, end_va,
+           crate::mm::MapType::Framed ,      
+            MapPermission::R | MapPermission::W | MapPermission::U,
+            MapAreaType::Stack) ;
+        self.set_user_stack_top(end_va.0);
+    
+        let old_memory=another.memory_set.lock().await;
+        let old_area=old_memory.areatree.get(&VirtPageNum::from(
+            (another.user_stack_top() - USER_STACK_SIZE)>>PAGE_SIZE_BITS
+    
+    )).unwrap();
+        self.memory_set.lock().await.push_with_given_frames(new_area, &old_area.data_frames,true);
+        // 对每对 (vpn, frame) 做映射并记录
+        for (vpn, _) in old_area.data_frames.iter(){
+        let   pte= old_memory.page_table.find_pte(*vpn).unwrap();
+          pte.set_cow();
+      }
+        
     }
 
     /// 替换内存空间。
@@ -449,6 +463,8 @@ impl ProcessControlBlock {
         // memory_set with elf program headers/trampoline/trap context/user stack
         // disable_irqs();
         let (memory_set, user_sp, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
+        memory_set.activate();
+        flush_all();
         // enable_irqs();
         trace!("appenter:{:#x}", entry_point);
         let token = memory_set.token();
@@ -468,6 +484,8 @@ impl ProcessControlBlock {
         )));
 
         let process_control_block = Self {
+
+            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
             pid: pid_handle,
             user_stack_top: AtomicUsize::new(USER_STACK_TOP),
             is_init: AtomicBool::new(true),
@@ -605,7 +623,9 @@ impl ProcessControlBlock {
         let (memory_set, user_heap_base, entry_point, mut auxv,is_dl) = MemorySet::from_elf(elf_data);
 
         // **** access current TCB exclusively
-
+        memory_set.activate();
+        flush_all();
+        self.memory_set.lock().await.recycle_data_pages().await?;
         self.replace_memory_set(memory_set).await;
         self.alloc_user_res().await;
 
@@ -705,9 +725,7 @@ impl ProcessControlBlock {
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
-        // trap_cx.regs.a1 = argv.len();
-        // trap_cx.regs.a2 = argv_base;
-        // trap_cx.regs.a3 = envp_base;
+
         
         
         // if is_dl{
@@ -733,7 +751,7 @@ impl ProcessControlBlock {
     ) -> SyscallRet {
         // ---- hold parent PCB lock
         // alloc a pid and a kernel stack in kernel space
-
+        
         // copy user space(include trap context)
         // 子线程或者进程的memory_set和 clone_token
         let (memory_set, clone_token) = if flags.contains(CloneFlags::CLONE_THREAD) {
@@ -749,6 +767,7 @@ impl ProcessControlBlock {
             let token = ms.lock().await.token();
             (Some(ms), token)
         };
+    
         let parent = if flags.contains(CloneFlags::CLONE_PARENT) {
             self.parent()
         } else {
@@ -816,7 +835,8 @@ impl ProcessControlBlock {
                     &*current_process().signal_shared_state.lock().await,
                 )))
             };
-
+           let memory_set= memory_set.unwrap();
+        //    memory_set.lock().await.areatree.debug_print();
             let process_control_block = Arc::new(ProcessControlBlock {
                 pid: pid.unwrap(),
                 main_task: Mutex::new(tcb.clone()),
@@ -824,7 +844,7 @@ impl ProcessControlBlock {
                 cwd: Mutex::new(self.cwd.lock().await.clone()),
                 is_init: AtomicBool::new(false),
                 base_size: AtomicUsize::new(self.base_size()),
-                memory_set: memory_set.unwrap(),
+                memory_set: memory_set,
                 parent: AtomicUsize::new(parent),
                 children: Mutex::new(Vec::new()),
                 exit_code: AtomicI32::new(0),
@@ -844,14 +864,16 @@ impl ProcessControlBlock {
                     let mut map = BTreeMap::new();
                     map.insert(tcb.id(), waker_from_task(Arc::into_raw(tcb.clone())));
                     map
-                })
+                }),
+
+            timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
 
             });
 
             tcb.set_lead();
             if user_stack == 0 {
                 if !flags.contains(CloneFlags::CLONE_VM) {
-                    // process_control_block.clone_user_res(self).await;
+                    process_control_block.clone_user_res(self).await;
                 }
             }
             info!(
@@ -1009,7 +1031,7 @@ impl ProcessControlBlock {
             match open_file(&normalized_path_to_find, find_flags,NONE_MODE) {
                 Ok(found_vfs_node) => {
                     // 5. 从找到的 VfsNodeOps 获取其最终的绝对路径
-                    return Ok(found_vfs_node.file().unwrap().get_path()); // 返回 Result<String, SysErrNo>
+                    return Ok(found_vfs_node.any().get_path()); // 返回 Result<String, SysErrNo>
                 }
                 Err(SysErrNo::ENOENT) => {
                     
@@ -1085,6 +1107,7 @@ pub struct TaskControlBlock {
     fut: UnsafeCell<Pin<Box<dyn Future<Output = i32> + 'static>>>,
     trap_cx: UnsafeCell<Option<Box<TrapContext>>>,
 
+    pub tms:UnsafeCell<TimeData>,
     // executor: SpinNoIrq<Arc<Executor>>,
     pub wait_wakers: UnsafeCell<VecDeque<Waker>>,
     // pub scheduler: SpinNoIrq<Arc<SpinNoIrq<Scheduler>>>,
@@ -1120,7 +1143,6 @@ pub struct TaskControlBlock {
     pub child_tid_ptr: Option<AtomicUsize>,
     pub need_clear_child_tid: AtomicBool,
     pub robust_list: Mutex<RobustList>,
-    pub tms:UnsafeCell<TimeData>,
     pub uid:AtomicUsize,
     noma_policy:AtomicUsize,
     // pub cpu_set: AtomicU64,

@@ -25,13 +25,14 @@ lwext4_rust = { path = "lwext4_rust" }
 async-trait = "0.1.88"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
-loongArch64 = "0.2.5"
 polyhal = { version = "0.4.0"}
 polyhal-boot = { version = "0.4.0" }
 fdt = "0.1.5"
 fdt-parser = { version = "0.4.12" }
 linkme = { version = "0.3.22", features = ["used_linker"] }
 
+loongArch64 = "0.2.5"
+riscv ={path = "riscv"}
 [profile.release]
 debug = false 
 opt-level = 3
@@ -39,7 +40,7 @@ strip = true
 
 [profile.dev]
 debug = true
-opt-level = 0
+opt-level = 2  
 strip = false   
 [env]
 RUST_LOG = "debug,lwext4_rust=off"

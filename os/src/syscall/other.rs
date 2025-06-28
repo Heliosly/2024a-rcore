@@ -2,7 +2,7 @@ use linux_raw_sys::general::{CLOCK_MONOTONIC, CLOCK_REALTIME, MAX_CLOCKS};
 use alloc::{string::String, vec};
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 use riscv::register::time;
-use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count, PID2PC}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
+use crate::{config::{MAX_KERNEL_RW_BUFFER_SIZE, TOTALMEM}, fs::{open_file, OpenFlags, NONE_MODE}, mm::{fill_str, get_target_ref, page_table::get_data, put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer}, syscall::flags::{Sysinfo, Utsname}, task::{current_process, current_task, current_token, sleeplist::sleep_until, task_count, PID2PC}, timer::{self, current_time, get_time_ms, get_usertime, usertime2_timeval, TimeVal, Tms, UserTimeSpec}, utils::error::{SysErrNo,  SyscallRet}};
 
 pub async  fn sys_sysinfo(info: *const u8) -> SyscallRet {
 
@@ -553,5 +553,86 @@ pub async fn sys_clock_getres(clockid: u32, res_ptr: *mut UserTimeSpec) -> Sysca
    *translated_refmut(token, res_ptr)? = resolution;
 
     // 成功
+    Ok(0)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ITimerVal {
+    pub it_interval: TimeVal, // 周期性定时器的间隔
+    pub it_value: TimeVal,    // 下一次触发的剩余时间
+}
+pub const ITIMER_REAL: i32 = 0;
+pub const ITIMER_VIRTUAL: i32 = 1;
+pub const ITIMER_PROF: i32 = 2;
+/// 获取一个间隔定时器的值
+pub async fn sys_getitimer(which: i32, value_ptr: *mut ITimerVal) -> SyscallRet {
+    if !(ITIMER_REAL..=ITIMER_PROF).contains(&which) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let pcb = current_process();
+    let token = pcb.get_user_token().await;
+    pcb.manual_alloc_type_for_lazy(value_ptr).await?;
+    // 锁定对应的定时器
+    let kernel_timer = pcb.timers[which as usize].lock().await;
+
+    // 将内核格式（纳秒）转换为用户空间格式（ITimerVal）
+    let user_itimerval = ITimerVal {
+        it_interval: TimeVal::from_ns(kernel_timer.interval),
+        it_value: TimeVal::from_ns(kernel_timer.value),
+    };
+
+    // 拷贝到用户空间
+    *translated_refmut(token,value_ptr)?=user_itimerval;
+   Ok(0)
+}
+
+/// 设置一个间隔定时器的值
+pub async fn sys_setitimer(
+    which: i32,
+    new_value_ptr: *const ITimerVal,
+    old_value_ptr: *mut ITimerVal,
+) -> SyscallRet {
+    if !(ITIMER_REAL..=ITIMER_PROF).contains(&which) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let process = current_process();
+    let which_idx = which as usize;
+   let token = process.get_user_token().await;
+    process.manual_alloc_type_for_lazy(new_value_ptr).await?;
+    // 1. 如果需要，先获取并返回旧值
+    if !old_value_ptr.is_null() {
+
+    process.manual_alloc_type_for_lazy(old_value_ptr).await?;
+        let old_kernel_timer = process.timers[which_idx].lock().await;
+        let old_user_itimerval = ITimerVal {
+            it_interval: TimeVal::from_ns(old_kernel_timer.interval),
+            it_value: TimeVal::from_ns(old_kernel_timer.value),
+        };
+        *translated_refmut(token,old_value_ptr)?= old_user_itimerval;
+    }
+
+    // 2. 从用户空间获取新值
+    let  new_user_itimerval =   *get_target_ref(token, new_value_ptr)?;
+      
+
+    // 3. 更新内核中的定时器
+    let mut kernel_timer = process.timers[which_idx].lock().await;
+    kernel_timer.value = u64::from(new_user_itimerval.it_value);
+    kernel_timer.interval = u64::from(new_user_itimerval.it_interval);
+
+    // **** 关键：如果设置的是 ITIMER_REAL，需要与全局定时器后端交互 ****
+    // 我们暂时只更新 TCB 中的值，后端逻辑在第 3 步实现
+    // 例如，如果是一个新的真实定时器，需要将它添加到全局的定时器队列中
+    if which == ITIMER_REAL {
+        crate::timer::set_real_timer(process.get_pid(), kernel_timer.value).await;
+    }
+
+   Ok(0)
+}
+pub fn sys_umaske()->SyscallRet{
+    warn!("[umask]");
     Ok(0)
 }

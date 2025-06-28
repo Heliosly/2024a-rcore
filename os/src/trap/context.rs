@@ -9,11 +9,9 @@ use riscv::register::{
     sstatus::{self, Sstatus, SPP},
 };
 
-use crate::{
-    signal::{SigSet, SignalStack},
-    task::{current_stack_top, current_task, TaskStatus},
-    utils::page_round_up,
-};
+use crate::task::current_stack_top;
+
+
 
 /// 用于表示内核处理是否处理完成，若处理完，则表示可以进入下一个阶段
 #[repr(usize)]
@@ -168,10 +166,11 @@ impl TrapContext {
             scause: 0,
             stval: 0,
         }
+    } 
+    pub fn set_tls(&mut self,arg:usize){
+        self.regs.tp=arg;
     }
-    pub fn set_tls(&mut self, arg: usize) {
-        self.regs.tp = arg;
-    }
+   
     pub fn set_arg1(&mut self, arg: usize) {
         self.regs.a1 = arg;
     }

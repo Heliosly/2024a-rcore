@@ -35,6 +35,11 @@ SECTIONS
         *(.sdata .sdata.*)
         _edata = .;
     }
+    .tdata : ALIGN(0x10) {
+        _stdata = .;
+        *(.tdata .tdata.*)
+        _etdata = .;
+    }
 
     .bss ALIGN(4K): {
         _load_end = .;

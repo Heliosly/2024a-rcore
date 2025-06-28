@@ -23,6 +23,9 @@ const CR: usize = 0x0d;
 pub struct Stdout;
 #[async_trait]
 impl File for Stdin {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
       Ok(true) 
     }
@@ -98,6 +101,9 @@ impl File for Stdin {
 }
 #[async_trait]
 impl File for Stdout {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(false) 
     }

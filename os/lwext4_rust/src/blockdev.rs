@@ -160,7 +160,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         blk_id: u64,
         blk_cnt: u32,
     ) -> ::core::ffi::c_int {
-        debug!("READ Ext4 block id: {}, count: {},bdev:{:#p}", blk_id, blk_cnt,bdev);
+        // debug!("READ Ext4 block id: {}, count: {}", blk_id, blk_cnt);
         let devt = unsafe { &mut *((*(*bdev).bdif).p_user as *mut K::DevType) };
 
         let seek_off = K::seek(
@@ -483,6 +483,17 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         }
         info!("********************\n");
     }
+    pub fn sync(&mut self) -> Result<usize, i32> {
+        unsafe {
+            let r = ext4_block_cache_flush(&mut *self.value);
+            if r != EOK as i32 {
+                error!("ext4_block_cache_flush: rc = {:?}\n", r);
+                return Err(r);
+            }
+            Ok(0)
+        }
+    }
+
 }
 
 impl<K: KernelDevOp> Drop for Ext4BlockWrapper<K> {

@@ -13,8 +13,8 @@ pub mod ops;
 
 
 
-pub static EXT4FS: LazyInit<Arc<dyn VfsOps>> =LazyInit::new();
+pub static EXT4FS: LazyInit<Arc<Mutex<dyn VfsOps>>> =LazyInit::new();
 
 pub fn fs_stat() -> TemplateRet< Statfs> {
-    EXT4FS.statfs().map_err(|e|SysErrNo::from(e) )
+    EXT4FS.lock().statfs().map_err(|e|SysErrNo::from(e) )
 }

@@ -3,10 +3,15 @@ cfg_if::cfg_if! {
         mod riscv64;
         pub use riscv64::*;
         pub use riscv64::trap::RiscV64Trap as CurrentTrap;
+        pub type Exception = riscv::register::scause::Exception;
+
+        pub type Interrupt = riscv::register::scause::Interrupt;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch64;
         pub use loongarch64::*;
-        pub use loongarch64::trap::LoongArch64Trap as CurrentTrap;
+        pub use loongarch64::trap::LoongArch64Trap as CurrentTrap;     
+        pub type Exception = loongArch64::register::estat::Exception;
+        pub type Interrupt = loongArch64::register::estat::Interrupt;
     } else {
         compile_error!("Unsupported target architecture");
     }

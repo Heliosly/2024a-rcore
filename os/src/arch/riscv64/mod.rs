@@ -8,9 +8,11 @@ pub mod trap;
 // pub mod context;
 // pub mod mm;
 // pub mod timer;
-
 use crate::arch::ArchInit;
+use crate::config::CLOCK_FREQ;
 use crate::config::KERNEL_DIRECT_OFFSET;
+use crate::sbi;
+use crate::timer::UserTimeSpec;
 use super::TrapArch;
 pub struct RiscV64;
 
@@ -39,4 +41,63 @@ impl ArchInit for RiscV64 {
 pub fn setbootsp() -> ! {
     RiscV64::set_boot_stack();
     RiscV64::jump_to_rust_main();
+}
+
+
+use riscv::register;
+
+pub use  riscv::register::scause::Trap;
+pub struct Scause(register::scause::Scause);
+
+impl Scause {
+    pub fn cause(&self) ->Trap {
+        self.0.cause()
+    }
+}
+
+pub fn scause() -> Scause {
+    Scause(register::scause::read())  
+}
+
+pub mod scause {
+    use super::Scause;
+    pub fn read() -> Scause {
+        super::scause()
+    }
+}
+
+pub mod sepc {
+    pub fn read() -> usize {
+        
+            riscv::register::sepc::read()
+        
+    }
+}
+
+pub mod stval {
+    use riscv::register::stval;
+
+    pub fn read() -> usize {
+       stval::read()
+    }
+}
+
+pub fn enable_irqs() {
+      
+        unsafe { register::sie::set_stimer() };
+
+}
+pub fn disable_irqs() {
+   
+   unsafe { register::sie::clear_stimer() };
+
+}
+
+
+
+pub fn set_next_trigger(next: UserTimeSpec) {
+     sbi::set_timer
+        (
+        next.tv_sec * CLOCK_FREQ + next.tv_nsec * CLOCK_FREQ / 1_000_000_000,
+    );
 }

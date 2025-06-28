@@ -11,6 +11,7 @@ use spin::Mutex;
 
 use super::vfs::vfs_ops::VfsNodeOps;
 use super::File;
+use crate::fs::PollEvents;
 use crate::mm::UserBuffer;
 use crate::utils::error::{ GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
@@ -63,6 +64,7 @@ pub struct OSInodeInner {
 }
 
 impl OsInode {
+  
     pub fn new(readable: bool, writable: bool, inode: Arc<dyn VfsNodeOps>) -> Self {
         OsInode {
             readable,
@@ -191,6 +193,29 @@ impl InodeType {
 #[async_trait]
 /// 为 `crate::traits::File` 实现 read/write/clear
 impl File for OsInode {
+    fn poll(&self, events: PollEvents, waker_to_register: &core::task::Waker) -> PollEvents{
+        let mut revents = PollEvents::empty();
+
+        // 检查可读性 (POLLIN)
+        if events.contains(PollEvents::POLLIN) {
+          
+            if self.readable {
+                revents |= PollEvents::POLLIN;
+            }
+        }
+
+        // 检查可写性 (POLLOUT)
+        if events.contains(PollEvents::POLLOUT) {
+ 
+            if self.writable {
+                revents |= PollEvents::POLLOUT;
+            }
+        }
+
+    
+
+        revents
+    }
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
@@ -272,5 +297,8 @@ impl File for OsInode {
         self.inner.lock().inode.fstat()
     }
 
+    fn get_path(&self)->String{
+        self.get_path()
+    }
     }
 
