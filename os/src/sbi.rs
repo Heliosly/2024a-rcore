@@ -49,6 +49,10 @@ mod riscv_sbi {
 mod loongarch_platform {
     use core::arch::asm;
 
+    use polyhal::VirtAddr;
+
+    use crate::config::KERNEL_DIRECT_OFFSET;
+
     pub fn set_timer(timer: usize) {
         unsafe {
             // LoongArch64 定时器设置
@@ -74,11 +78,14 @@ mod loongarch_platform {
         }
     }
 
+    #[inline]
     pub fn shutdown() -> ! {
-        unsafe {
-            // QEMU LoongArch64 关机实现
-            qemu_loongarch64_shutdown();
-        }
+        let ged_addr =VirtAddr::from (0x100E001C +KERNEL_DIRECT_OFFSET);
+        log::info!("Shutting down...");
+        unsafe { ged_addr.get_mut_ptr::<u8>().write_volatile(0x34) };
+        unsafe { loongArch64::asm::idle() };
+        log::warn!("It should shutdown!");
+        unreachable!()
     }
 
     // QEMU LoongArch64 特定的关机实现

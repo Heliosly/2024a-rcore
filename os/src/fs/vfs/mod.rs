@@ -40,7 +40,7 @@ impl VfsManager {
             "ext4" => {
                 // a. 找到并初始化块设备
                 let block_id = parse_virtio_device_name(special_device).unwrap();
-                
+                println!("init block_id:{}",block_id);
                 let disk = Ext4DiskWrapper::new(block_id);
                 // b. 创建 Ext4VfsOps 实例
                 

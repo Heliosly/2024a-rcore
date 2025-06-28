@@ -13,7 +13,7 @@ use spin::Lazy;
 
 use crate::{
     config::{MAX_SYSCALL_NUM, MEMORY_END, MMAP_BASE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS}, fs::{open_file,  OpenFlags, NONE_MODE}, mm::{
-        flush_tlb, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
+        flush_all, frame_allocator::remaining_frames, get_target_ref, page_table::copy_to_user_bytes, put_data, translated_byte_buffer, translated_refmut, translated_str, MapArea, MapAreaType, MapPermission, MapType, MmapFile, MmapFlags, TranslateError, VirtAddr, VirtPageNum, MPOL_BIND, MPOL_DEFAULT, MPOL_PREFERRED
     }, sync::futex::{ FutexKey, FutexWaitInternalFuture, GLOBAL_FUTEX_SYSTEM}, syscall::flags::{  MmapProt, MremapFlags, WaitFlags, FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ, FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE, FUTEX_OP_OR, FUTEX_OP_SET, FUTEX_OP_XOR, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP}, task::{
         current_process, current_task, current_task_id, current_token, exit_current, exit_proc, future::{JoinFuture, WaitAnyFuture}, set_priority, yield_now, CloneFlags, ProcessControlBlock,  RobustList, TaskStatus, PID2PC, TID2TC
     }, timer::{ current_time,  get_usertime, TimeVal, UserTimeSpec}, utils::{
@@ -805,7 +805,6 @@ pub async fn sys_mmap(
     let mut ms = proc.memory_set.lock().await;
 
     let fd_table = proc.fd_table.lock().await;
-    let mmap_flag= MmapFlags::empty();
     // ——————————————————————————————————————————
     // 7. 如果是文件映射，要检查文件权限和 off_file
 
@@ -907,7 +906,7 @@ pub async fn sys_mmap(
     // ——————————————————————————————————————————
     // 11. 插入到 MemorySet 的 areatree / VMA 列表
     ms.areatree.push(area);
-    flush_tlb();
+    flush_all();
 
     // 12. 返回映射基址
     Ok(base.0)

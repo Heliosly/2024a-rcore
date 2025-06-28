@@ -25,7 +25,48 @@ pub enum TrapStatus {
     Blocked = 1,
     Unknown,
 }
+#[cfg(target_arch="loongarch64")]
+/// General registers of LoongArch64.
+#[allow(missing_docs)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GeneralRegisters {
+    pub ra: usize,       // 1 返回地址
+    pub tp: usize,       // 2 线程指针 (TLS)
+    pub sp: usize,       // 3 栈指针
+    pub a0: usize,       // 4 函数返回值 / 参数 0
+    pub a1: usize,       // 5 参数 1
+    pub a2: usize,       // 6 参数 2
+    pub a3: usize,       // 7 参数 3
+    pub a4: usize,       // 8 参数 4
+    pub a5: usize,       // 9 参数 5
+    pub a6: usize,       // 10 参数 6
+    pub a7: usize,       // 11 系统调用号
+    pub t0: usize,       // 12 临时寄存器
+    pub t1: usize,       // 13 临时寄存器
+    pub t2: usize,       // 14 临时寄存器
+    pub t3: usize,       // 15 临时寄存器
+    pub t4: usize,       // 16 临时寄存器
+    pub t5: usize,       // 17 临时寄存器
+    pub t6: usize,       // 18 临时寄存器
+    pub t7: usize,       // 19 临时寄存器
+    pub t8: usize,       // 20 临时寄存器
+    pub gp: usize,       // r21
+    pub fp: usize,       // 22 帧指针 / s0
+    pub s0: usize,       // 23 被调用者保存
+    pub s1: usize,       // 24 被调用者保存
+    pub s2: usize,       // 25 被调用者保存
+    pub s3: usize,       // 26 被调用者保存
+    pub s4: usize,       // 27 被调用者保存
+    pub s5: usize,       // 28 被调用者保存
+    pub s6: usize,       // 29 被调用者保存
+    pub s7: usize,       // 30 被调用者保存
+    pub s8: usize,      // 31 被调用者保存
+}
 
+
+
+#[cfg(target_arch="riscv64")]
 /// General registers of RISC-V.
 #[allow(missing_docs)]
 #[repr(C)]

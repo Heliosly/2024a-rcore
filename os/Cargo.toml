@@ -14,7 +14,7 @@ log = "0.4"
 bit_field = "0.10"
 
 xmas-elf = "0.7.0"
-virtio-drivers = { path = "../patched-crates/virtio-drivers" }
+virtio-drivers = "0.8.0"
 cfg-if ="1.0.0"
 lazy_init = { path = "src/lazy_init"}
 spin = "0.9"
@@ -26,12 +26,11 @@ async-trait = "0.1.88"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 libc = "0.2"
 loongArch64 = "0.2.5"
-polyhal = { version = "0.4.0", features = ["logger" ,"trap"] }
+polyhal = { version = "0.4.0"}
 polyhal-boot = { version = "0.4.0" }
-polyhal-trap = { version = "0.4.0" }
 fdt = "0.1.5"
-devices = {path = "src/crate/devices"}
-
+fdt-parser = { version = "0.4.12" }
+linkme = { version = "0.3.22", features = ["used_linker"] }
 
 [profile.release]
 debug = false 
@@ -40,7 +39,7 @@ strip = true
 
 [profile.dev]
 debug = true
-opt-level = 0 
+opt-level = 0
 strip = false   
 [env]
 RUST_LOG = "debug,lwext4_rust=off"

@@ -2,10 +2,10 @@
 
 
 
-// mod virtio;
-use devices::get_blk_device;
+mod virtio;
+use crate::devices::get_blk_device;
 use lwext4_rust::KernelDevOp;
-
+// pub use virtio::loongson::IRQ_HANDLERS
 use crate::{ utils::error::{SysErrNo, TemplateRet}};
 
 const BLOCK_SIZE: usize = 0x200;
@@ -45,7 +45,7 @@ impl KernelDevOp for Ext4DiskWrapper {
 
     fn write(dev: &mut Self::DevType, buf: &[u8]) -> Result<usize, i32> {
         assert!(dev.offset % BLOCK_SIZE == 0);
-        get_blk_device(0)
+        get_blk_device(dev.blk_id)
             .expect("can't find block device")
             .write_blocks(dev.block_id, buf);
         dev.block_id += buf.len() / BLOCK_SIZE;
@@ -54,7 +54,7 @@ impl KernelDevOp for Ext4DiskWrapper {
 
     fn read(dev: &mut Self::DevType, buf: &mut [u8]) -> Result<usize, i32> {
         assert!(dev.offset % BLOCK_SIZE == 0);
-        get_blk_device(0)
+        get_blk_device(dev.blk_id)
             .expect("can't find block device")
             .read_blocks(dev.block_id, buf);
         dev.block_id += buf.len() / BLOCK_SIZE;

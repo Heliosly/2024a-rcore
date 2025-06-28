@@ -79,15 +79,31 @@ run-inner: build
     -m 1G \
     -nographic \
     -smp 1 \
-    -drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
+    -drive file=sdcard-la.img,if=none,format=raw,id=x0 \
     -device virtio-blk-pci,drive=x0 \
     -no-reboot \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0 \
     -rtc base=utc \
-    -drive file=../disk.img,if=none,format=raw,id=x1 \
-    -device virtio-blk-pci,drive=x1
+    -drive file=../disk-la.img,if=none,format=raw,id=x1 \
+    -device virtio-blk-pci,drive=x1  
 
+gdbserver: build
+	@qemu-system-loongarch64 \
+   -kernel  $(KERNEL_ELF) \
+    -m 1G \
+    -nographic \
+    -smp 1 \
+    -drive file=sdcard-la.img,if=none,format=raw,id=x0 \
+    -device virtio-blk-pci,drive=x0 \
+    -no-reboot \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0 \
+    -rtc base=utc \
+    -drive file=../disk-la.img,if=none,format=raw,id=x1 \
+    -device virtio-blk-pci,drive=x1 \
+	-s -S
+		
 
 gdb: build
 	@tmux new-session -d \
@@ -96,22 +112,7 @@ gdb: build
 		tmux swap-pane -U && \
 		tmux -2 attach-session -d
 
-gdbserver: build
-	@qemu-system-loongarch64 \
-   -kernel  $(KERNEL_ELF) \
-    -m 1G \
-    -nographic \
-    -smp 1 \
-    -drive file=sdcard-rv.img,if=none,format=raw,id=x0 \
-    -device virtio-blk-pci,drive=x0 \
-    -no-reboot \
-    -device virtio-net-pci,netdev=net0 \
-    -netdev user,id=net0 \
-    -rtc base=utc \
-    -drive file=../disk.img,if=none,format=raw,id=x1 \
-    -device virtio-blk-pci,drive=x1 \
-	-s -S
-		
+
 
 gdbclient:
 	@$(gdb) -ex 'file $(KERNEL_ELF)' -ex 'set arch Loongarch64' -ex 'target remote localhost:1234'

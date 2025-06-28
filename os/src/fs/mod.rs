@@ -16,7 +16,7 @@ use core::{any::Any, future::Future, panic, task::{Context, Poll, Waker}};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use dev::{find_device, open_device_file, register_device};
-use devices::get_blk_devices;
+use crate::devices::get_blk_devices;
 
 use crate::{ drivers, fs::vfs::VfsManager, mm::UserBuffer, task::custom_noop_waker, timer::get_time_ms, utils::{ error::{ASyncRet, ASyscallRet, GeneralRet, SysErrNo, SyscallRet, TemplateRet}, string::{get_parent_path_and_filename, normalize_absolute_path}}};
 use alloc::{format, string::{String, ToString}, sync::Arc, vec};
@@ -377,22 +377,33 @@ pub fn print_inner() {
     println!("{:#?}", FD2NODE.read().keys());
 }
 
-pub fn map_dynamic_link_file( path: &str) -> &str {
+pub fn map_dynamic_link_file(path: &str) -> &str {
+    // 如果路径以 /lib64/ 开头，先替换为 /lib/
+    let mut new_path = if path.starts_with("/lib64/") {
+        let replaced = path.replacen("/lib64/", "/lib/", 1);
+        log::warn!("[map_dynamic] replace path: {} -> {}", path, replaced);
+        replaced
+    } else {
+        path.to_string()
+    };
 
-            log::warn!("[map_dynamic] path={}",path);
-    if !path.starts_with('/') { panic!("worth path") };
-    if !DYNAMIC_PATH.contains(path) {
-       
+    log::warn!("[map_dynamic] path={}", new_path);
+
+    if !new_path.starts_with('/') {
+        panic!("worth path");
+    }
+
+    if !DYNAMIC_PATH.contains(new_path.as_str()) {
         for prefix in DYNAMIC_PREFIX.iter() {
-            let full_path = format!("{}{}", prefix, path);
+            let full_path = format!("{}{}", prefix, new_path);
             log::info!("[map_dynamic] full_path={}", full_path);
             if DYNAMIC_PATH.contains(full_path.as_str()) {
                 return full_path.leak();
             }
         }
     }
-    
-    path
+
+    new_path.leak()
 }
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> =
     Lazy::new(|| vec![ "/glibc", "/musl","/usr"]);
@@ -419,6 +430,11 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
           "/glibc/lib/tls_align_dso.so", 
           "/glibc/lib/tls_init_dso.so",
           "/usr/lib/ld-musl-riscv64-sf.so.1",
+
+          "/usr/lib/ld-musl-loongarch-sf.so.1",
+           "/glibc/lib/ld-linux-loongarch-lp64.so.1",
+    
+         "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
 
     ]
     .into_iter()
@@ -672,16 +688,17 @@ pub async  fn create_init_files() -> GeneralRet {
 
 pub fn init(){
     
-    devices::prepare_drivers();
+    crate::devices::prepare_drivers();
 
     if let Ok(fdt) = polyhal::mem::get_fdt() {
         for node in fdt.all_nodes() {
-            devices::try_to_add_device(&node);
+            crate::devices::try_to_add_device(&node);
         }
     }
         // get devices and init
-        devices::regist_devices_irq();
+        crate::devices::regist_devices_irq();
 
+    
     if !get_blk_devices().is_empty()  {
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
     create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();

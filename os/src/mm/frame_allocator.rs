@@ -4,6 +4,7 @@ use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
 use crate::mm::PhysPageNum;
 use crate::sync::UPSafeCell;
 use crate::task::current_task_may_uninit;
+use crate::utils::bpoint;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -30,10 +31,14 @@ impl FrameTracker {
     // 从 PhysPageNum 创建一个新的 FrameTracker
     // 这个方法现在更重要了
     pub fn new(ppn: PhysPageNum) -> Self {
+        if ppn.0 ==0{
+        bpoint();
+        debug!("{:?}",FRAME_ALLOCATOR.lock())
+        }
         let bytes_array = ppn.get_bytes_array();
         for i in bytes_array {
-
-        println!("i:{:#x}",i as *const _ as usize);
+          
+        // println!("i:{:#x}",i as *const _ as usize);
             *i = 0;
         }
         Self { ppn }
@@ -42,7 +47,7 @@ impl FrameTracker {
 
 impl Debug for FrameTracker {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("FrameTracker:PPN={:#x}", self.ppn.0))
+        f.write_fmt(format_args!("FrameTracker:PPN={:#x}", self.ppn.raw()))
     }
 }
 
@@ -91,7 +96,7 @@ impl FrameRegionMap {
                     if !self.bits[i].get_bit(bit_index) {
                         self.bits[i].set_bit(bit_index, true);
                         let page_offset = i * (usize::BITS as usize) + bit_index;
-                        return Some(PhysPageNum(self.start_ppn + page_offset));
+                        return Some(PhysPageNum::from(self.start_ppn + page_offset));
                     }
                 }
             }
@@ -134,11 +139,11 @@ impl FrameRegionMap {
 
     /// 释放一个已经使用的页
     fn dealloc(&mut self, ppn: PhysPageNum) {
-        let bit_index = ppn.0 - self.start_ppn;
+        let bit_index = ppn.raw() - self.start_ppn;
         if self.bits.get_bit(bit_index) {
             self.bits.set_bit(bit_index, false);
         } else {
-            panic!("Deallocating a frame that was not allocated: PPN {:#x}", ppn.0);
+            panic!("Deallocating a frame that was not allocated: PPN {:#x}", ppn.raw());
         }
     }
     
@@ -181,12 +186,12 @@ impl FrameAllocator {
 
     pub fn dealloc(&mut self, ppn: PhysPageNum) {
         for region in &mut self.regions {
-            if ppn.0 >= region.start_ppn && ppn.0 < region.end_ppn {
+            if ppn.raw() >= region.start_ppn && ppn.raw() < region.end_ppn {
                 region.dealloc(ppn);
                 return;
             }
         }
-        panic!("Deallocating a frame in an unknown memory region: PPN {:#x}", ppn.0);
+        panic!("Deallocating a frame in an unknown memory region: PPN {:#x}", ppn.raw());
     }
     
     pub fn alloc_contiguous(&mut self, count: usize, policy: usize) -> Option<Vec<FrameTracker>> {

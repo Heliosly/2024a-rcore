@@ -4,6 +4,9 @@
 
 use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+#[cfg(target_arch = "loongarch64")]
+use crate::config::{KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
+use crate::mm::arch::{PAGE_LEVEL, PTE_NUM_IN_PAGE};
 use crate::mm::{PageTableEntry, PTEFlags};
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -59,34 +62,41 @@ pub type PagingResult<T = ()> = Result<T, PagingError>;
 
 /// Assume that it won't oom when creating/mapping.
 impl PageTable {
+    fn alloc_frame(&mut self)->PhysPageNum{
+        let frame  =frame_alloc().unwrap();
+        let ppn = frame.ppn;
+
+        self.frames.push(frame);
+     ppn
+    }
     /// 更新一个连续虚拟内存区域的映射标志。
     /// 在使用 [`PageTable64::map_region`] 之前，该区域必须已经被映射，否则会返回一个错误。
     pub fn update_region(
         &mut self,
-        mut vaddr: VirtAddr,
+        mut vpn: VirtAddr,
         size: usize,
         flags: MapPermission,
     ) -> PagingResult {
-        let end = vaddr + size;
-        while vaddr < end {
-            let page_size = self.update(vaddr, None, Some(flags))?;
-            vaddr.0 += page_size as usize;
+        let end = vpn + size;
+        while vpn < end {
+            let page_size = self.update(vpn, None, Some(flags))?;
+            vpn.0 += page_size as usize;
         }
         Ok(())
     }
 
-    /// 更新从 `vaddr` 开始的映射的目标或标志。如果相应的参数是 `None`，则不会更新。
+    /// 更新从 `vpn` 开始的映射的目标或标志。如果相应的参数是 `None`，则不会更新。
     ///
     /// 返回映射的页面大小。
     ///
     /// 如果映射不存在，则返回 [`Err(PagingError::NotMapped)`](PagingError::NotMapped)。
     pub fn update(
         &mut self,
-        vaddr: VirtAddr,
+        vpn: VirtAddr,
         paddr: Option<PhysAddr>,
         flags: Option<MapPermission>,
     ) -> PagingResult<PageSize> {
-        let vpn= vaddr.floor();
+        let vpn= vpn.floor();
        let pte= match  self.find_pte(vpn){
             Some(f) => f,
             None => return Err(PagingError::NotMapped),
@@ -154,9 +164,9 @@ impl PageTable {
         } else if #[cfg(target_arch = "loongarch64")] {
 
     /// Temporarily used to get arguments from user space.
-            pub fn from_token(pgd: usize) -> Self {
+            pub fn from_token(pgn: usize) -> Self {
                 Self {
-                    root_ppn: PhysPageNum::from(pgd & ((1usize << 34) - 1)),
+                    root_ppn: PhysPageNum::from(pgn & ((1usize << 36) - 1)),
                     frames: Vec::new(),
                 }
             } 
@@ -164,98 +174,83 @@ impl PageTable {
         } 
     }
      
-   
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "loongarch64")] {
+    #[inline]
+    pub fn get_pte_list(paddr: PhysAddr) -> &'static mut [PageTableEntry] {
+        paddr.slice_mut_with_len::<PageTableEntry>(PTE_NUM_IN_PAGE)
+    } 
+ 
             // loongarch64 架构相关代码
                 /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
                 fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-                    let idxs = vpn.indexes();
-                    let mut ppn = self.root_ppn;
-                    let mut result: Option<&mut PageTableEntry> = None;
-                    for i in 0..3 {
-                        let pte = &mut ppn.get_pte_array()[idxs[i]];
-                        if i == 2 {
-                            //找到叶子节点，叶子节点的页表项是否合法由调用者来处理
-                            result = Some(pte);
-                            break;
+                    let mut pte_list = Self::get_pte_list(self.root_ppn.into());
+                    if PAGE_LEVEL == 4 {
+                        let pte = &mut pte_list[vpn.pn_index(3)];
+                        if !pte.is_valid() {
+                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
                         }
-                        if pte.is_zero() {
-                            let frame = frame_alloc().unwrap();
-                            // 页目录项只保存地址
-                            *pte = PageTableEntry {
-                                bits: frame.ppn.0 << config::PAGE_SIZE_BITS,
-                            };
-                            self.frames.push(frame);
-                        }
-                        ppn = pte.directory_ppn();
+                        pte_list = Self::get_pte_list(pte.address());
                     }
-                    result
+                    // level 3
+                    {
+                        let pte = &mut pte_list[vpn.pn_index(2)];
+                        if !pte.is_valid() {
+                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
+                        }
+                        pte_list = Self::get_pte_list(pte.address());
+                    }
+                    // level 2
+                    {
+                        let pte = &mut pte_list[vpn.pn_index(1)];
+                        if !pte.is_valid() {
+                            *pte = PageTableEntry::new_table(self.alloc_frame().into());
+                        }
+                        pte_list = Self::get_pte_list(pte.address());
+                    }
+                    // level 1, map page
+                   Some(&mut pte_list[vpn.pn_index(0)] )
                 }
                 pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-                    let idxs = vpn.indexes();
-                    let mut ppn = self.root_ppn;
-                    let mut result: Option<&mut PageTableEntry> = None;
-                    for i in 0..3 {
-                        let pte = &mut ppn.get_pte_array()[idxs[i]];
-                        if pte.is_zero() {
+                    let mut pte_list = Self::get_pte_list(self.root_ppn.into());
+                    if PAGE_LEVEL == 4 {
+                        let pte = &mut pte_list[vpn.pn_index(3)];
+                        if !pte.is_valid() {
                             return None;
                         }
-                        if i == 2 {
-                            result = Some(pte);
-                            break;
-                        }
-                        ppn = pte.directory_ppn();
+                        pte_list = Self::get_pte_list(pte.address());
                     }
-                    result
+                    // level 3
+                    {
+                        let pte = &mut pte_list[vpn.pn_index(2)];
+                        if !pte.is_valid() {
+                           
+                            return None;
+                        }
+                        pte_list = Self::get_pte_list(pte.address());
+                    }
+                    // level 2
+                    {
+                        let pte = &mut pte_list[vpn.pn_index(1)];
+                        if !pte.is_valid() {
+                           
+                            return None;
+                        }
+                        pte_list = Self::get_pte_list(pte.address());
+                    }
+                    // level 1, map page
+                   Some(&mut pte_list[vpn.pn_index(0)] )
                 }
 
-        } else if #[cfg(target_arch = "riscv64")] {
-            // riscv64 架构相关代码
-   /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
-   fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-    let idxs = vpn.indexes();
-    let mut ppn = self.root_ppn;
-    let mut result: Option<&mut PageTableEntry> = None;
-    for (i, idx) in idxs.iter().enumerate() {
-        let pte = &mut ppn.get_pte_array()[*idx];
-        if i == 2 {
-            result = Some(pte);
-            break;
-        }
-        if !pte.is_valid() {
-            let frame = frame_alloc().unwrap();
-            *pte = PageTableEntry::new(frame.ppn(), PTEFlags::V);
-            self.frames.push(frame);
-        }
-        ppn = pte.ppn();
+         
+    #[cfg(target_arch = "loongarch64")]
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        use crate::{config::PAGE_SIZE_BITS, mm::flush_tlb};
+
+        let pte = self.find_pte_create(vpn).unwrap();
+        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        *pte = PageTableEntry::new(ppn, flags);
+         flush_tlb(vpn.0<<PAGE_SIZE_BITS);
     }
-    result
-}
-/// Find PageTableEntry by VirtPageNum
-pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
-    let idxs = vpn.indexes();
-    let mut ppn = self.root_ppn;
-    let mut result: Option<&mut PageTableEntry> = None;
-    for (i, idx) in idxs.iter().enumerate() {
-        let pte = &mut ppn.get_pte_array()[*idx];
-        if !pte.is_valid() {
-            info!("pte is invalid:vpn:{:x}",vpn.0);
-            return None;
-        }
-        if i == 2 {
-            result = Some(pte);
-            break;
-        }
-       
-        ppn = pte.ppn();
-    }
-    result
-} 
-        }
-    }
-   
-    
+    #[cfg(target_arch = "riscv64")] 
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
@@ -266,23 +261,49 @@ pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
+    
     /// remove the map between virtual page number and physical page number
+    #[allow(unused)]
+
+    #[cfg(target_arch = "loongarch64")]
+    pub fn unmap(&mut self, vpn: VirtPageNum) {
+        use crate::config::PAGE_SIZE_BITS;
+
+        let pte = self.find_pte(vpn).unwrap();
+        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        *pte = PageTableEntry::empty();
+
+         crate::mm::flush_tlb(vpn.0<<PAGE_SIZE_BITS);
+    }
+
+    #[cfg(target_arch = "riscv64")]
     #[allow(unused)]
     pub fn unmap(&mut self, vpn: VirtPageNum) {
         let pte = self.find_pte(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
+
     }
 
-    
+
     ///并不安全也许有部分页面是懒分配的页面，这样会触发内核错误todo(Heliosly)
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+           #[cfg(target_arch = "loongarch64")]
+              if vpn.0>=KERNEL_PGNUM_OFFSET{
+                let va = VirtAddr::from(vpn);
+
+                return Some( PageTableEntry{bits:PhysAddr::from( KernelAddr::from(va.0)).0});
+         } 
         self.find_pte(vpn).map(|pte| *pte)
     }
     /// get the physical address from the virtual address
     /// va to pa
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
+         #[cfg(target_arch = "loongarch64")]
+              if va.0>=KERNEL_DIRECT_OFFSET{
+                return Some(PhysAddr::from( KernelAddr::from(va.0)));
+         }
         self.find_pte(va.clone().floor()).map(|pte| {
             let aligned_pa: PhysAddr = pte.ppn().into();
             let offset = va.page_offset();
@@ -335,7 +356,7 @@ pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
 
 
     } else if #[cfg(target_arch = "loongarch64")] {
-        self.root_ppn.0
+        self.root_ppn.0 
     } 
 }
     }

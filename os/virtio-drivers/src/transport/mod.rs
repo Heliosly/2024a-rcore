@@ -4,11 +4,14 @@
 pub mod fake;
 pub mod mmio;
 pub mod pci;
+mod some;
 
 use crate::{PhysAddr, Result, PAGE_SIZE};
 use bitflags::{bitflags, Flags};
-use core::{fmt::Debug, ops::BitAnd, ptr::NonNull};
+use core::{fmt::Debug, ops::BitAnd};
 use log::debug;
+pub use some::SomeTransport;
+use zerocopy::{FromBytes, IntoBytes};
 
 /// A VirtIO transport layer.
 pub trait Transport {
@@ -98,8 +101,11 @@ pub trait Transport {
         );
     }
 
-    /// Gets the pointer to the config space.
-    fn config_space<T: 'static>(&self) -> Result<NonNull<T>>;
+    /// Reads a value from the device config space.
+    fn read_config_space<T: FromBytes>(&self, offset: usize) -> Result<T>;
+
+    /// Writes a value to the device config space.
+    fn write_config_space<T: IntoBytes>(&mut self, offset: usize, value: T) -> Result<()>;
 }
 
 bitflags! {
@@ -160,6 +166,7 @@ pub enum DeviceType {
     Pstore = 22,
     IOMMU = 23,
     Memory = 24,
+    Sound = 25,
 }
 
 impl From<u32> for DeviceType {
@@ -187,6 +194,7 @@ impl From<u32> for DeviceType {
             22 => DeviceType::Pstore,
             23 => DeviceType::IOMMU,
             24 => DeviceType::Memory,
+            25 => DeviceType::Sound,
             _ => DeviceType::Invalid,
         }
     }

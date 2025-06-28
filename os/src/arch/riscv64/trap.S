@@ -192,8 +192,7 @@ user_trap:
     li      a1, 1                      # 参数2：通过 trap 进入 trampoline
     li      a2, 1                      # 参数3：由用户态进入
     ld      sp, 33*8(sp)                # 从 TrapFrame[38] 恢复内核栈顶指针
-    li      t0, 0   # 清零 sscratch，确保后续的陷入判断正确
-    csrw    sscratch,t0
+
     call    trampoline                 # 不会返回，最终在 trampoline 中走 trap_return
 
     .size   trap_vector_base, .-trap_vector_base

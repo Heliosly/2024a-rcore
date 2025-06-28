@@ -27,11 +27,11 @@ pub async  fn sys_uname(buf:  *mut Utsname) -> SyscallRet {
     }
     let uname = Utsname {
         sysname: str2u8("Linux"),
-        nodename: str2u8("Rcore"),
+        nodename: str2u8("HELIX"),
         release: str2u8("5.0.0"),
         version: str2u8("5.0.0"),
         machine: str2u8("RISC-V64"),
-        domainname: str2u8("Rcore"),
+        domainname: str2u8("HELIX"),
     };
 let proc = current_process();
 let token  = proc .get_user_token().await;

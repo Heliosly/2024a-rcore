@@ -1,6 +1,6 @@
 use super::{
     protocol::VsockAddr, vsock::ConnectionInfo, DisconnectReason, SocketError, VirtIOSocket,
-    VsockEvent, VsockEventType,
+    VsockEvent, VsockEventType, DEFAULT_RX_BUFFER_SIZE,
 };
 use crate::{transport::Transport, Hal, Result};
 use alloc::{boxed::Box, vec::Vec};
@@ -8,13 +8,16 @@ use core::cmp::min;
 use core::convert::TryInto;
 use core::hint::spin_loop;
 use log::debug;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
-const PER_CONNECTION_BUFFER_CAPACITY: usize = 1024;
+const DEFAULT_PER_CONNECTION_BUFFER_CAPACITY: u32 = 1024;
 
 /// A higher level interface for VirtIO socket (vsock) devices.
 ///
 /// This keeps track of multiple vsock connections.
+///
+/// `RX_BUFFER_SIZE` is the size in bytes of each buffer used in the RX virtqueue. This must be
+/// bigger than `size_of::<VirtioVsockHdr>()`.
 ///
 /// # Example
 ///
@@ -40,8 +43,13 @@ const PER_CONNECTION_BUFFER_CAPACITY: usize = 1024;
 /// # Ok(())
 /// # }
 /// ```
-pub struct VsockConnectionManager<H: Hal, T: Transport> {
-    driver: VirtIOSocket<H, T>,
+pub struct VsockConnectionManager<
+    H: Hal,
+    T: Transport,
+    const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE,
+> {
+    driver: VirtIOSocket<H, T, RX_BUFFER_SIZE>,
+    per_connection_buffer_capacity: u32,
     connections: Vec<Connection>,
     listening_ports: Vec<u32>,
 }
@@ -56,24 +64,36 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(peer: VsockAddr, local_port: u32) -> Self {
+    fn new(peer: VsockAddr, local_port: u32, buffer_capacity: u32) -> Self {
         let mut info = ConnectionInfo::new(peer, local_port);
-        info.buf_alloc = PER_CONNECTION_BUFFER_CAPACITY.try_into().unwrap();
+        info.buf_alloc = buffer_capacity;
         Self {
             info,
-            buffer: RingBuffer::new(PER_CONNECTION_BUFFER_CAPACITY),
+            buffer: RingBuffer::new(buffer_capacity.try_into().unwrap()),
             peer_requested_shutdown: false,
         }
     }
 }
 
-impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
+    VsockConnectionManager<H, T, RX_BUFFER_SIZE>
+{
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver.
-    pub fn new(driver: VirtIOSocket<H, T>) -> Self {
+    pub fn new(driver: VirtIOSocket<H, T, RX_BUFFER_SIZE>) -> Self {
+        Self::new_with_capacity(driver, DEFAULT_PER_CONNECTION_BUFFER_CAPACITY)
+    }
+
+    /// Construct a new connection manager wrapping the given low-level VirtIO socket driver, with
+    /// the given per-connection buffer capacity.
+    pub fn new_with_capacity(
+        driver: VirtIOSocket<H, T, RX_BUFFER_SIZE>,
+        per_connection_buffer_capacity: u32,
+    ) -> Self {
         Self {
             driver,
             connections: Vec::new(),
             listening_ports: Vec::new(),
+            per_connection_buffer_capacity,
         }
     }
 
@@ -106,7 +126,8 @@ impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
             return Err(SocketError::ConnectionExists.into());
         }
 
-        let new_connection = Connection::new(destination, src_port);
+        let new_connection =
+            Connection::new(destination, src_port, self.per_connection_buffer_capacity);
 
         self.driver.connect(&new_connection.info)?;
         debug!("Connection requested: {:?}", new_connection.info);
@@ -125,6 +146,7 @@ impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
     pub fn poll(&mut self) -> Result<Option<VsockEvent>> {
         let guest_cid = self.driver.guest_cid();
         let connections = &mut self.connections;
+        let per_connection_buffer_capacity = self.per_connection_buffer_capacity;
 
         let result = self.driver.poll(|event, body| {
             let connection = get_connection_for_event(connections, &event, guest_cid);
@@ -140,7 +162,11 @@ impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
                 }
                 // Add the new connection to our list, at least for now. It will be removed again
                 // below if we weren't listening on the port.
-                connections.push(Connection::new(event.source, event.destination.port));
+                connections.push(Connection::new(
+                    event.source,
+                    event.destination.port,
+                    per_connection_buffer_capacity,
+                ));
                 connections.last_mut().unwrap()
             } else {
                 return Ok(None);
@@ -252,7 +278,8 @@ impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
         }
     }
 
-    /// Requests to shut down the connection cleanly.
+    /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
+    /// any more data.
     ///
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
     /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
@@ -316,7 +343,7 @@ struct RingBuffer {
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            buffer: FromZeroes::new_box_slice_zeroed(capacity),
+            buffer: FromZeros::new_box_zeroed_with_elems(capacity).unwrap(),
             used: 0,
             start: 0,
         }
@@ -389,7 +416,9 @@ mod tests {
     use super::*;
     use crate::{
         device::socket::{
-            protocol::{SocketType, VirtioVsockConfig, VirtioVsockHdr, VirtioVsockOp},
+            protocol::{
+                SocketType, StreamShutdown, VirtioVsockConfig, VirtioVsockHdr, VirtioVsockOp,
+            },
             vsock::{VsockBufferStatus, QUEUE_SIZE, RX_QUEUE_IDX, TX_QUEUE_IDX},
         },
         hal::fake::FakeHal,
@@ -402,7 +431,7 @@ mod tests {
     use alloc::{sync::Arc, vec};
     use core::{mem::size_of, ptr::NonNull};
     use std::{sync::Mutex, thread};
-    use zerocopy::{AsBytes, FromBytes};
+    use zerocopy::{FromBytes, IntoBytes};
 
     #[test]
     fn send_recv() {
@@ -445,7 +474,7 @@ mod tests {
             // Wait for connection request.
             State::wait_until_queue_notified(&state, TX_QUEUE_IDX);
             assert_eq!(
-                VirtioVsockHdr::read_from(
+                VirtioVsockHdr::read_from_bytes(
                     state
                         .lock()
                         .unwrap()
@@ -496,7 +525,9 @@ mod tests {
                 size_of::<VirtioVsockHdr>() + hello_from_guest.len()
             );
             assert_eq!(
-                VirtioVsockHdr::read_from_prefix(request.as_slice()).unwrap(),
+                VirtioVsockHdr::read_from_prefix(request.as_slice())
+                    .unwrap()
+                    .0,
                 VirtioVsockHdr {
                     op: VirtioVsockOp::Rw.into(),
                     src_cid: guest_cid.into(),
@@ -531,7 +562,8 @@ mod tests {
                 buf_alloc: 50.into(),
                 fwd_cnt: (hello_from_guest.len() as u32).into(),
             }
-            .write_to_prefix(response.as_mut_slice());
+            .write_to_prefix(response.as_mut_slice())
+            .unwrap();
             response[size_of::<VirtioVsockHdr>()..].copy_from_slice(hello_from_host.as_bytes());
             state
                 .lock()
@@ -541,7 +573,7 @@ mod tests {
             // Expect a shutdown.
             State::wait_until_queue_notified(&state, TX_QUEUE_IDX);
             assert_eq!(
-                VirtioVsockHdr::read_from(
+                VirtioVsockHdr::read_from_bytes(
                     state
                         .lock()
                         .unwrap()
@@ -557,7 +589,7 @@ mod tests {
                     dst_port: host_port.into(),
                     len: 0.into(),
                     socket_type: SocketType::Stream.into(),
-                    flags: 0.into(),
+                    flags: (StreamShutdown::SEND | StreamShutdown::RECEIVE).into(),
                     buf_alloc: 1024.into(),
                     fwd_cnt: (hello_from_host.len() as u32).into(),
                 }
@@ -679,7 +711,7 @@ mod tests {
             println!("Host waiting for rejection");
             State::wait_until_queue_notified(&state, TX_QUEUE_IDX);
             assert_eq!(
-                VirtioVsockHdr::read_from(
+                VirtioVsockHdr::read_from_bytes(
                     state
                         .lock()
                         .unwrap()
@@ -724,7 +756,7 @@ mod tests {
             println!("Host waiting for response");
             State::wait_until_queue_notified(&state, TX_QUEUE_IDX);
             assert_eq!(
-                VirtioVsockHdr::read_from(
+                VirtioVsockHdr::read_from_bytes(
                     state
                         .lock()
                         .unwrap()

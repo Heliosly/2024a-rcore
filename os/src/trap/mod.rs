@@ -11,6 +11,7 @@ use crate::timer::set_next_trigger;
 use crate::utils::error::{GeneralRet, SysErrNo};
 pub use context::user_return;
 pub use context::TrapStatus;
+use loongArch64::register::estat;
 use core::future::poll_fn;
 use core::panic;
 use core::task::Poll;
@@ -55,15 +56,15 @@ pub fn trap_from_kernel() {
     let scause = CurrentTrap::read_scause();
     let stval = CurrentTrap::read_stval();
     let sepc = CurrentTrap::read_sepc();
-    
-    if CurrentTrap::is_timer_interrupt(&scause) {
-    } else {
+   
+   
         panic!(
-            "stval = {:#x}, sepc = {:#x}, a trap from kernel",
+            "stval = {:#x}, sepc = {:#x},scause:{:#?}, a trap from kernel",
             stval,
-            sepc
+            sepc,
+            estat::read().cause()
         );
-    }
+    
 }
 
 pub use context::TrapContext;
@@ -116,27 +117,36 @@ pub async fn user_task_top() -> i32 {
     loop {
         debug!("into user_task_top");
         let curr = current_task();
-
+  
         let mut syscall_ret = None;
         let tf = curr.get_trap_cx().unwrap();
         
+        // println!("tf p:{:#p}debug:{:#?}",tf,tf);
         if tf.trap_status == TrapStatus::Blocked {
             let scause = CurrentTrap::read_scause();
             let stval = CurrentTrap::read_stval();
             let sepc = CurrentTrap::read_sepc();
             let satp = CurrentTrap::read_satp();
-            
+              #[cfg(target_arch = "loongarch64")]
+                trace!(
+                    "stval = {:#x}, sepc = {:#x},scause:{:#?},into top",
+                    stval,
+                    sepc,
+                    estat::read().cause()
+                );
             trace!(
-                "Trap: addr={:#x}, sepc={:#x}, satp={:#x}",
+                "Trap: addr={:#x}, sepc={:#x}, satp={:#x},scause:{:#x}",
                 stval,
                 sepc,
-                satp
+                satp,
+                scause.code()
             );
             
             if CurrentTrap::is_syscall(&scause) {
                 enable_irqs();
                 let syscall_id = tf.regs.a7;
 
+    // println!("debug:{:#?}",tf);
                 debug!("[user_task_top]sys_call start syscall id = {} tid = {},pid={},sepc:{:#x},a0:{}",
                     syscall_id, curr.id(), curr.get_process().unwrap().get_pid(), sepc, tf.regs.a0);
 
@@ -248,9 +258,18 @@ pub async fn user_task_top() -> i32 {
                     }
                 }
             } else {
+
+                #[cfg(target_arch = "riscv64")]
                 panic!(
                     "Unsupported trap, stval = {:#x}!",
                     stval
+                );
+                #[cfg(target_arch = "loongarch64")]
+                panic!(
+                    "stval = {:#x}, sepc = {:#x},scause:{:#?}, Unsupport trap",
+                    stval,
+                    sepc,
+                    estat::read().cause()
                 );
             }
 

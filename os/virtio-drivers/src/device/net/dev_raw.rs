@@ -1,18 +1,19 @@
 use super::{Config, EthernetAddress, Features, VirtioNetHdr};
 use super::{MIN_BUFFER_LEN, NET_HDR_SIZE, QUEUE_RECEIVE, QUEUE_TRANSMIT, SUPPORTED_FEATURES};
+use crate::device::net::Status;
 use crate::hal::Hal;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
-use crate::volatile::volread;
 use crate::{Error, Result};
+use core::mem::offset_of;
 use log::{debug, info, warn};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
-/// Raw driver for a VirtIO block device.
+/// Raw driver for a VirtIO network device.
 ///
 /// This is a raw version of the VirtIONet driver. It provides non-blocking
 /// methods for transmitting and receiving raw slices, without the buffer
-/// management. For more higher-level fucntions such as receive buffer backing,
+/// management. For more higher-level functions such as receive buffer backing,
 /// see [`VirtIONet`].
 ///
 /// [`VirtIONet`]: super::VirtIONet
@@ -28,28 +29,22 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
     pub fn new(mut transport: T) -> Result<Self> {
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
         info!("negotiated_features {:?}", negotiated_features);
-        // read configuration space
-        let config = transport.config_space::<Config>()?;
-        let mac;
-        // Safe because config points to a valid MMIO region for the config space.
-        unsafe {
-            mac = volread!(config, mac);
-            debug!(
-                "Got MAC={:02x?}, status={:?}",
-                mac,
-                volread!(config, status)
-            );
-        }
+
+        // Read configuration space.
+        let mac = transport.read_config_space(offset_of!(Config, mac))?;
+        let status = transport.read_config_space::<Status>(offset_of!(Config, status))?;
+        debug!("Got MAC={:02x?}, status={:?}", mac, status);
+
         let send_queue = VirtQueue::new(
             &mut transport,
             QUEUE_TRANSMIT,
-            false,
+            negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
         let recv_queue = VirtQueue::new(
             &mut transport,
             QUEUE_RECEIVE,
-            false,
+            negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
 

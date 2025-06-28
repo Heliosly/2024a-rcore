@@ -12,7 +12,7 @@ pub use self::{dev::VirtIONet, net_buf::RxBuffer, net_buf::TxBuffer};
 
 use crate::volatile::ReadOnly;
 use bitflags::bitflags;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 const MAX_BUFFER_LEN: usize = 65535;
 const MIN_BUFFER_LEN: usize = 1526;
@@ -64,7 +64,8 @@ bitflags! {
         const CTRL_RX = 1 << 18;
         /// Control channel VLAN filtering.
         const CTRL_VLAN = 1 << 19;
-        ///
+        /// Device supports VIRTIO_NET_CTRL_RX_ALLUNI, VIRTIO_NET_CTRL_RX_NOMULTI,
+        /// VIRTIO_NET_CTRL_RX_NOUNI and VIRTIO_NET_CTRL_RX_NOBCAST.
         const CTRL_RX_EXTRA = 1 << 20;
         /// Driver can send gratuitous packets.
         const GUEST_ANNOUNCE = 1 << 21;
@@ -80,9 +81,12 @@ bitflags! {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, FromBytes, Immutable, KnownLayout, PartialEq)]
+#[repr(transparent)]
+struct Status(u16);
+
 bitflags! {
-    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-    struct Status: u16 {
+    impl Status: u16 {
         const LINK_UP = 1;
         const ANNOUNCE = 2;
     }
@@ -112,7 +116,7 @@ type EthernetAddress = [u8; 6];
 /// and buffers for incoming packets are placed in the receiveq1. . .receiveqN.
 /// In each case, the packet itself is preceded by a header.
 #[repr(C)]
-#[derive(AsBytes, Debug, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct VirtioNetHdr {
     flags: Flags,
     gso_type: GsoType,
@@ -124,7 +128,9 @@ pub struct VirtioNetHdr {
     // payload starts from here
 }
 
-#[derive(AsBytes, Copy, Clone, Debug, Default, Eq, FromBytes, FromZeroes, PartialEq)]
+#[derive(
+    IntoBytes, Copy, Clone, Debug, Default, Eq, FromBytes, Immutable, KnownLayout, PartialEq,
+)]
 #[repr(transparent)]
 struct Flags(u8);
 
@@ -137,7 +143,9 @@ bitflags! {
 }
 
 #[repr(transparent)]
-#[derive(AsBytes, Debug, Copy, Clone, Default, Eq, FromBytes, FromZeroes, PartialEq)]
+#[derive(
+    IntoBytes, Debug, Copy, Clone, Default, Eq, FromBytes, Immutable, KnownLayout, PartialEq,
+)]
 struct GsoType(u8);
 
 impl GsoType {
@@ -152,4 +160,5 @@ const QUEUE_RECEIVE: u16 = 0;
 const QUEUE_TRANSMIT: u16 = 1;
 const SUPPORTED_FEATURES: Features = Features::MAC
     .union(Features::STATUS)
-    .union(Features::RING_EVENT_IDX);
+    .union(Features::RING_EVENT_IDX)
+    .union(Features::RING_INDIRECT_DESC);

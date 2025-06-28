@@ -31,7 +31,7 @@
 /// `DevRandom`用随机字节填充用户缓冲区。`DevRtc`提供当前时间。
 /// `DevTty`提供终端界面。`DevCpuDmaLatency`允许用户获取/设置CPU的最大反应时间。
 use crate::{
-    mm::UserBuffer, utils::error::{SysErrNo, SyscallRet, TemplateRet},
+    mm::{MapPermission, MmapFlags, UserBuffer, VirtAddr}, syscall::flags::MmapProt, task::current_process, utils::error::{SysErrNo, SyscallRet, TemplateRet}
    
 };
 use alloc::{
@@ -42,6 +42,7 @@ use alloc::{
     sync::Arc,
 };
 use async_trait::async_trait;
+use linux_raw_sys::general::xattr_args;
 use core::{cmp::min, task::Waker};
 use spin::{Lazy, Mutex, RwLock};
 
@@ -96,6 +97,8 @@ pub fn open_device_file(abs_path: &str) -> Result<Arc<dyn File>, SysErrNo> {
         "/dev/random" => Ok(Arc::new(DevRandom::new())),
         "/dev/tty" => Ok(Arc::new(DevTty::new())),
         "/dev/cpu_dma_latency" => Ok(Arc::new(DevCpuDmaLatency::new())),
+
+       
         _ => Err(SysErrNo::ENOENT),
     }
 }
@@ -105,10 +108,17 @@ impl DevZero {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/zero".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevZero {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -165,9 +175,16 @@ impl DevNull {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/null".to_string()
+    }
 }
 #[async_trait]
 impl File for DevNull {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -244,6 +261,7 @@ impl RtcTime {
 }
 
 impl Debug for RtcTime {
+    
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
@@ -255,14 +273,22 @@ impl Debug for RtcTime {
 
 /// 时钟设备
 impl DevRtc {
+ 
     pub fn new() -> Self {
         Self
+    }
+
+    fn get_path(&self) -> String {
+        "/dev/rtc".to_string()
     }
 }
 
 
 #[async_trait]
 impl File for DevRtc {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -324,10 +350,17 @@ impl DevRandom {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/random".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevRandom {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -390,12 +423,19 @@ impl DevTty {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_path(&self) -> String {
+        "/dev/tty".to_string()
+    }
 }
 
 
 
 #[async_trait]
 impl File for DevTty {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         Ok(true)
     }
@@ -457,10 +497,17 @@ impl DevCpuDmaLatency {
             reaction_time: RwLock::new(10),
         }
     }
+
+    fn get_path(&self) -> String {
+        "/dev/cpu_dma_latency".to_string()
+    }
 }
 
 #[async_trait]
 impl File for DevCpuDmaLatency {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
     fn readable<'a>(&'a self) -> TemplateRet<bool> {
         // Always readable
         Ok(true)
@@ -539,4 +586,75 @@ impl File for DevCpuDmaLatency {
         // Seeking is not supported on this device
         Err(SysErrNo::ESPIPE)
     }
+    
+}
+
+
+
+pub struct DevShm;
+
+impl DevShm {
+    pub fn new() -> Self {
+        Self
+    }
+   
+}
+
+#[async_trait]
+impl File for DevShm {
+    
+    fn readable<'a>(&'a self) -> TemplateRet<bool> {
+        // /dev/shm 本身不可读
+        Ok(false)
+    }
+
+    fn writable<'a>(&'a self) -> TemplateRet<bool> {
+        // /dev/shm 本身不可写
+        Ok(false)
+    }
+
+    async fn read<'a>(
+        &self,
+        _user_buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo> {
+        // 对设备本身的读操作没有意义
+        Err(SysErrNo::EINVAL)
+    }
+
+    async fn write<'a>(
+        &self,
+        _user_buf: UserBuffer<'a>
+    ) -> Result<usize, SysErrNo> {
+        // 对设备本身的写操作没有意义
+        Err(SysErrNo::EINVAL)
+    }
+
+    fn lseek(&self, _offset: isize, _whence: u32) -> SyscallRet {
+        // 不支持 seek
+        Err(SysErrNo::ESPIPE)
+    }
+
+    fn fstat(&self) -> Kstat {
+        // 提供一个典型的字符设备元数据
+        let devno = get_devno("/dev/shm"); // 假设您有这样一个函数获取设备号
+        Kstat {
+            st_dev: devno,
+            st_mode: StMode::FCHR.bits() | 0o666, // 字符设备，权限 rw-rw-rw-
+            st_rdev: devno,
+            st_nlink: 1,
+            st_size: 0, // 设备文件大小为 0
+            ..Kstat::default()
+        }
+    }
+    
+    // poll 方法可以像您的例子一样实现，表示总是可读写（虽然实际操作会失败）
+    // 或者更准确地，返回错误。
+    fn poll(&self, _events: PollEvents, _waker: &Waker) -> PollEvents {
+        // 报告错误，因为常规的 I/O 不被支持
+        PollEvents::POLLERR
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self 
+    }
+   
 }

@@ -8,23 +8,24 @@ pub mod virtio_blk;
 pub mod virtio_impl;
 pub mod virtio_input;
 pub mod virtio_net;
-
+// pub mod loongson;
 use core::ptr::NonNull;
 
 use alloc::{sync::Arc, vec::Vec};
-use devices::{
+use crate::devices::{
     device::{Driver, UnsupportedDriver},
-    driver_define,
     fdt::Node,
     node_to_interrupts, VIRT_ADDR_START,
 };
+#[cfg(target_arch = "loongarch64")]
+use crate::driver_define;
 use virtio_drivers::transport::{
     mmio::{self, MmioTransport, VirtIOHeader},
     DeviceType, Transport,
 };
 
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
-use devices::ALL_DEVICES;
+use crate::devices::ALL_DEVICES;
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
 use virtio_drivers::transport::pci::bus::MmioCam;
 
@@ -34,16 +35,13 @@ use virtio_drivers::transport::pci::{
     virtio_device_type, PciTransport,
 };
 
-#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
-use virtio_impl::HalImpl;
 
 pub fn init_mmio(node: &Node) -> Arc<dyn Driver> {
     if let Some(reg) = node.reg().and_then(|mut reg| reg.next()) {
         let paddr = reg.address as usize;
         let vaddr = VIRT_ADDR_START + paddr;
-        let mmio_size = reg.size;
         let header = NonNull::new(vaddr as *mut VirtIOHeader).unwrap();
-        if let Ok(transport) = unsafe { MmioTransport::new(header,mmio_size.unwrap()) } {
+        if let Ok(transport) = unsafe { MmioTransport::new(header) } {
             info!(
                 "Detected virtio MMIO device with
                     vendor id {:#X}
@@ -75,7 +73,6 @@ fn virtio_device(transport: MmioTransport, node: &Node) -> Arc<dyn Driver> {
         }
     }
 }
-
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
 fn enumerate_pci(mmconfig_base: *mut u8) {
     info!("mmconfig_base = {:#x}", mmconfig_base as usize);
@@ -88,6 +85,8 @@ fn enumerate_pci(mmconfig_base: *mut u8) {
             info, device_function, status, command
         );
         if let Some(virtio_type) = virtio_device_type(&info) {
+            use crate::drivers::virtio::virtio_impl::HalImpl;
+
             info!("  VirtIO {:?}", virtio_type);
 
             // Enable the device to use its BARs.
@@ -99,6 +98,9 @@ fn enumerate_pci(mmconfig_base: *mut u8) {
 
             let mut transport =
                 PciTransport::new::<HalImpl, MmioCam>(&mut pci_root, device_function).unwrap();
+                let dev_features = transport.read_device_features();
+                let filtered = dev_features & !(0x10000000 | 0x20000000); // 硬编码屏蔽
+                 transport.write_driver_features(filtered);
             info!(
                 "Detected virtio PCI device with device type {:?}, features {:#018x}",
                 transport.device_type(),
@@ -141,10 +143,11 @@ fn dump_bar_contents(root: &mut PciRoot<MmioCam>, device_function: DeviceFunctio
     } = bar_info
     {
         if address == 0 && size > 0 {
+            use spin::Mutex;
             use virtio_drivers::transport::pci::bus::MemoryBarType;
 
             // 指定 PCI BAR 映射可用的内存范围
-            static PCI_RANGES: spin::Mutex<(usize, usize)> = spin::Mutex::new((0x4000_0000, 0x2_0000));
+            static PCI_RANGES: Mutex<(usize, usize)> = Mutex::new((0x4000_0000, 0x2_0000));
             assert!(PCI_RANGES.lock().1 > size as usize);
             let start = PCI_RANGES.lock().0;
             PCI_RANGES.lock().1 -= size as usize;

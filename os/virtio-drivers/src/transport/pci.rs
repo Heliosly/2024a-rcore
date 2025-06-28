@@ -2,7 +2,9 @@
 
 pub mod bus;
 
-use self::bus::{DeviceFunction, DeviceFunctionInfo, PciError, PciRoot, PCI_CAP_ID_VNDR};
+use self::bus::{
+    ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciError, PciRoot, PCI_CAP_ID_VNDR,
+};
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
     hal::{Hal, PhysAddr},
@@ -13,7 +15,6 @@ use crate::{
     Error,
 };
 use core::{
-    fmt::{self, Display, Formatter},
     mem::{align_of, size_of},
     ptr::{addr_of_mut, NonNull},
 };
@@ -100,11 +101,11 @@ impl PciTransport {
     /// root controller.
     ///
     /// The PCI device must already have had its BARs allocated.
-    pub fn new<H: Hal>(
-        root: &mut PciRoot,
+    pub fn new<H: Hal, C: ConfigurationAccess>(
+        root: &mut PciRoot<C>,
         device_function: DeviceFunction,
     ) -> Result<Self, VirtioPciError> {
-        let device_vendor = root.config_read_word(device_function, 0);
+        let device_vendor = root.configuration_access.read_word(device_function, 0);
         let device_id = (device_vendor >> 16) as u16;
         let vendor_id = device_vendor as u16;
         if vendor_id != VIRTIO_VENDOR_ID {
@@ -128,12 +129,16 @@ impl PciTransport {
                 continue;
             }
             let struct_info = VirtioCapabilityInfo {
-                bar: root.config_read_word(device_function, capability.offset + CAP_BAR_OFFSET)
+                bar: root
+                    .configuration_access
+                    .read_word(device_function, capability.offset + CAP_BAR_OFFSET)
                     as u8,
                 offset: root
-                    .config_read_word(device_function, capability.offset + CAP_BAR_OFFSET_OFFSET),
+                    .configuration_access
+                    .read_word(device_function, capability.offset + CAP_BAR_OFFSET_OFFSET),
                 length: root
-                    .config_read_word(device_function, capability.offset + CAP_LENGTH_OFFSET),
+                    .configuration_access
+                    .read_word(device_function, capability.offset + CAP_LENGTH_OFFSET),
             };
 
             match cfg_type {
@@ -142,7 +147,7 @@ impl PciTransport {
                 }
                 VIRTIO_PCI_CAP_NOTIFY_CFG if cap_len >= 20 && notify_cfg.is_none() => {
                     notify_cfg = Some(struct_info);
-                    notify_off_multiplier = root.config_read_word(
+                    notify_off_multiplier = root.configuration_access.read_word(
                         device_function,
                         capability.offset + CAP_NOTIFY_OFF_MULTIPLIER_OFFSET,
                     );
@@ -157,7 +162,7 @@ impl PciTransport {
             }
         }
 
-        let common_cfg = get_bar_region::<H, _>(
+        let common_cfg = get_bar_region::<H, _, _>(
             root,
             device_function,
             &common_cfg.ok_or(VirtioPciError::MissingCommonConfig)?,
@@ -169,16 +174,16 @@ impl PciTransport {
                 notify_off_multiplier,
             ));
         }
-        let notify_region = get_bar_region_slice::<H, _>(root, device_function, &notify_cfg)?;
+        let notify_region = get_bar_region_slice::<H, _, _>(root, device_function, &notify_cfg)?;
 
-        let isr_status = get_bar_region::<H, _>(
+        let isr_status = get_bar_region::<H, _, _>(
             root,
             device_function,
             &isr_cfg.ok_or(VirtioPciError::MissingIsrConfig)?,
         )?;
 
         let config_space = if let Some(device_cfg) = device_cfg {
-            Some(get_bar_region_slice::<H, _>(
+            Some(get_bar_region_slice::<H, _, _>(
                 root,
                 device_function,
                 &device_cfg,
@@ -320,26 +325,56 @@ impl Transport for PciTransport {
         isr_status & 0x3 != 0
     }
 
-    fn config_space<T>(&self) -> Result<NonNull<T>, Error> {
-        if let Some(config_space) = self.config_space {
-            if size_of::<T>() > config_space.len() * size_of::<u32>() {
-                Err(Error::ConfigSpaceTooSmall)
-            } else if align_of::<T>() > 4 {
-                // Panic as this should only happen if the driver is written incorrectly.
-                panic!(
-                    "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
-                    align_of::<T>()
-                );
-            } else {
-                // TODO: Use NonNull::as_non_null_ptr once it is stable.
-                let config_space_ptr = NonNull::new(config_space.as_ptr() as *mut u32).unwrap();
-                Ok(config_space_ptr.cast())
-            }
+    fn read_config_space<T>(&self, offset: usize) -> Result<T, Error> {
+        assert!(align_of::<T>() <= 4,
+            "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
+            align_of::<T>());
+        assert_eq!(offset % align_of::<T>(), 0);
+
+        let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
+        if config_space.len() * size_of::<u32>() < offset + size_of::<T>() {
+            Err(Error::ConfigSpaceTooSmall)
         } else {
-            Err(Error::ConfigSpaceMissing)
+            // SAFETY: If we have a config space pointer it must be valid for its length, and we just
+            // checked that the offset and size of the access was within the length.
+            unsafe {
+                // TODO: Use NonNull::as_non_null_ptr once it is stable.
+                Ok((config_space.as_ptr() as *mut T)
+                    .byte_add(offset)
+                    .read_volatile())
+            }
+        }
+    }
+
+    fn write_config_space<T>(&mut self, offset: usize, value: T) -> Result<(), Error> {
+        assert!(align_of::<T>() <= 4,
+            "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
+            align_of::<T>());
+        assert_eq!(offset % align_of::<T>(), 0);
+
+        let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
+        if config_space.len() * size_of::<u32>() < offset + size_of::<T>() {
+            Err(Error::ConfigSpaceTooSmall)
+        } else {
+            // SAFETY: If we have a config space pointer it must be valid for its length, and we just
+            // checked that the offset and size of the access was within the length.
+            unsafe {
+                // TODO: Use NonNull::as_non_null_ptr once it is stable.
+                (config_space.as_ptr() as *mut T)
+                    .byte_add(offset)
+                    .write_volatile(value);
+            }
+            Ok(())
         }
     }
 }
+
+// SAFETY: MMIO can be done from any thread or CPU core.
+unsafe impl Send for PciTransport {}
+
+// SAFETY: `&PciTransport` only allows MMIO reads or getting the config space, both of which are
+// fine to happen concurrently on different CPU cores.
+unsafe impl Sync for PciTransport {}
 
 impl Drop for PciTransport {
     fn drop(&mut self) {
@@ -381,8 +416,8 @@ struct VirtioCapabilityInfo {
     length: u32,
 }
 
-fn get_bar_region<H: Hal, T>(
-    root: &mut PciRoot,
+fn get_bar_region<H: Hal, T, C: ConfigurationAccess>(
+    root: &mut PciRoot<C>,
     device_function: DeviceFunction,
     struct_info: &VirtioCapabilityInfo,
 ) -> Result<NonNull<T>, VirtioPciError> {
@@ -411,12 +446,12 @@ fn get_bar_region<H: Hal, T>(
     Ok(vaddr.cast())
 }
 
-fn get_bar_region_slice<H: Hal, T>(
-    root: &mut PciRoot,
+fn get_bar_region_slice<H: Hal, T, C: ConfigurationAccess>(
+    root: &mut PciRoot<C>,
     device_function: DeviceFunction,
     struct_info: &VirtioCapabilityInfo,
 ) -> Result<NonNull<[T]>, VirtioPciError> {
-    let ptr = get_bar_region::<H, T>(root, device_function, struct_info)?;
+    let ptr = get_bar_region::<H, T, C>(root, device_function, struct_info)?;
     Ok(nonnull_slice_from_raw_parts(
         ptr,
         struct_info.length as usize / size_of::<T>(),
@@ -424,26 +459,37 @@ fn get_bar_region_slice<H: Hal, T>(
 }
 
 /// An error encountered initialising a VirtIO PCI transport.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum VirtioPciError {
     /// PCI device vender ID was not the VirtIO vendor ID.
+    #[error("PCI device vender ID {0:#06x} was not the VirtIO vendor ID {VIRTIO_VENDOR_ID:#06x}.")]
     InvalidVendorId(u16),
     /// No valid `VIRTIO_PCI_CAP_COMMON_CFG` capability was found.
+    #[error("No valid `VIRTIO_PCI_CAP_COMMON_CFG` capability was found.")]
     MissingCommonConfig,
     /// No valid `VIRTIO_PCI_CAP_NOTIFY_CFG` capability was found.
+    #[error("No valid `VIRTIO_PCI_CAP_NOTIFY_CFG` capability was found.")]
     MissingNotifyConfig,
     /// `VIRTIO_PCI_CAP_NOTIFY_CFG` capability has a `notify_off_multiplier` that is not a multiple
     /// of 2.
+    #[error("`VIRTIO_PCI_CAP_NOTIFY_CFG` capability has a `notify_off_multiplier` that is not a multiple of 2: {0}")]
     InvalidNotifyOffMultiplier(u32),
     /// No valid `VIRTIO_PCI_CAP_ISR_CFG` capability was found.
+    #[error("No valid `VIRTIO_PCI_CAP_ISR_CFG` capability was found.")]
     MissingIsrConfig,
     /// An IO BAR was provided rather than a memory BAR.
+    #[error("Unexpected IO BAR (expected memory BAR).")]
     UnexpectedIoBar,
     /// A BAR which we need was not allocated an address.
+    #[error("Bar {0} not allocated.")]
     BarNotAllocated(u8),
     /// The offset for some capability was greater than the length of the BAR.
+    #[error("Capability offset greater than BAR length.")]
     BarOffsetOutOfRange,
     /// The virtual address was not aligned as expected.
+    #[error(
+        "Virtual address {vaddr:#018?} was not aligned to a {alignment} byte boundary as expected."
+    )]
     Misaligned {
         /// The virtual address in question.
         vaddr: NonNull<u8>,
@@ -451,46 +497,8 @@ pub enum VirtioPciError {
         alignment: usize,
     },
     /// A generic PCI error,
+    #[error(transparent)]
     Pci(PciError),
-}
-
-impl Display for VirtioPciError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            Self::InvalidVendorId(vendor_id) => write!(
-                f,
-                "PCI device vender ID {:#06x} was not the VirtIO vendor ID {:#06x}.",
-                vendor_id, VIRTIO_VENDOR_ID
-            ),
-            Self::MissingCommonConfig => write!(
-                f,
-                "No valid `VIRTIO_PCI_CAP_COMMON_CFG` capability was found."
-            ),
-            Self::MissingNotifyConfig => write!(
-                f,
-                "No valid `VIRTIO_PCI_CAP_NOTIFY_CFG` capability was found."
-            ),
-            Self::InvalidNotifyOffMultiplier(notify_off_multiplier) => {
-                write!(
-                    f,
-                    "`VIRTIO_PCI_CAP_NOTIFY_CFG` capability has a `notify_off_multiplier` that is not a multiple of 2: {}",
-                    notify_off_multiplier
-                )
-            }
-            Self::MissingIsrConfig => {
-                write!(f, "No valid `VIRTIO_PCI_CAP_ISR_CFG` capability was found.")
-            }
-            Self::UnexpectedIoBar => write!(f, "Unexpected IO BAR (expected memory BAR)."),
-            Self::BarNotAllocated(bar_index) => write!(f, "Bar {} not allocated.", bar_index),
-            Self::BarOffsetOutOfRange => write!(f, "Capability offset greater than BAR length."),
-            Self::Misaligned { vaddr, alignment } => write!(
-                f,
-                "Virtual address {:#018?} was not aligned to a {} byte boundary as expected.",
-                vaddr, alignment
-            ),
-            Self::Pci(pci_error) => pci_error.fmt(f),
-        }
-    }
 }
 
 impl From<PciError> for VirtioPciError {
@@ -498,6 +506,12 @@ impl From<PciError> for VirtioPciError {
         Self::Pci(error)
     }
 }
+
+// SAFETY: The `vaddr` field of `VirtioPciError::Misaligned` is only used for debug output.
+unsafe impl Send for VirtioPciError {}
+
+// SAFETY: The `vaddr` field of `VirtioPciError::Misaligned` is only used for debug output.
+unsafe impl Sync for VirtioPciError {}
 
 #[cfg(test)]
 mod tests {
@@ -512,11 +526,12 @@ mod tests {
 
     #[test]
     fn offset_device_ids() {
+        assert_eq!(device_type(0x1040), DeviceType::Invalid);
         assert_eq!(device_type(0x1045), DeviceType::MemoryBalloon);
         assert_eq!(device_type(0x1049), DeviceType::_9P);
         assert_eq!(device_type(0x1058), DeviceType::Memory);
-        assert_eq!(device_type(0x1040), DeviceType::Invalid);
-        assert_eq!(device_type(0x1059), DeviceType::Invalid);
+        assert_eq!(device_type(0x1059), DeviceType::Sound);
+        assert_eq!(device_type(0x1060), DeviceType::Invalid);
     }
 
     #[test]

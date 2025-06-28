@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use devices::device::{DeviceType, Driver, InputDriver};
-use devices::{register_device_irqs};
+use crate::devices::device::{DeviceType, Driver, InputDriver};
+use crate::devices::{register_device_irqs};
 use virtio_drivers::device::input::VirtIOInput as VirtIOInputWrapper;
 use virtio_drivers::transport::mmio::MmioTransport;
 use spin::Mutex;

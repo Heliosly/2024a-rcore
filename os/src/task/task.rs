@@ -9,7 +9,7 @@ use crate::config::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::fs::inode::NONE_MODE;
 use crate::fs::{find_inode, open_file, FileClass, FileDescriptor, OpenFlags, Stdin, Stdout};
 use crate::mm::{
-    flush_tlb, get_target_ref, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
+    flush_all, get_target_ref, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet, VirtAddr, VirtPageNum
 };
 use crate::signal::{ProcessSignalSharedState, TaskSignalState};
 use crate::sync::futex::GLOBAL_FUTEX_SYSTEM;
@@ -705,9 +705,9 @@ impl ProcessControlBlock {
         *trap_cx = TrapContext::app_init_context(entry_point, user_sp);
         trap_cx.kernel_sp = current_stack_top();
         trap_cx.trap_status = TrapStatus::Done;
-        trap_cx.regs.a1 = argv.len();
-        trap_cx.regs.a2 = argv_base;
-        trap_cx.regs.a3 = envp_base;
+        // trap_cx.regs.a1 = argv.len();
+        // trap_cx.regs.a2 = argv_base;
+        // trap_cx.regs.a3 = envp_base;
         
         
         // if is_dl{
@@ -915,7 +915,7 @@ impl ProcessControlBlock {
         let heap_bottom = self.heap_bottom();
         let old_break = self.program_brk();
         let size = new_brk as isize - old_break as isize;
-        debug!("[BRK] old={:#x}, new={:#x}", old_break, new_brk);
+        debug!("[brk] old={:#x}, new={:#x}", old_break, new_brk);
         if new_brk < heap_bottom {
             return None;
         }

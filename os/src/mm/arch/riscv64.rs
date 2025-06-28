@@ -24,6 +24,8 @@ bitflags::bitflags! {
         
     }
 }
+pub const PAGE_LEVEL: usize = 3;
+pub const PTE_NUM_IN_PAGE: usize = 0x200;
 #[derive(Copy, Clone)]
 #[repr(C)]
 /// page table entry structure
@@ -33,6 +35,10 @@ pub struct PageTableEntry {
 }
 
 impl PageTableEntry {
+    pub fn new_table(paddr: PhysAddr) -> Self {
+        assert!(paddr.0%PAGE_SIZE==0);
+        Self{bits: paddr.0 }
+    }
     const PHYS_ADDR_MASK: usize = (1 << 54) - (1 << 10); // bits 10..54
     /// Create a new page table entry
     pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
@@ -43,6 +49,9 @@ impl PageTableEntry {
     /// Create an empty page table entry
     pub fn empty() -> Self {
         PageTableEntry { bits: 0 }
+    }
+    pub fn address(&self)->PhysAddr{
+        PhysAddr::from((self.bits) & 0xffff_ffff_f000)
     }
     /// Get the physical page number from the page table entry
     pub fn ppn(&self) -> PhysPageNum {

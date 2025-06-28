@@ -2,31 +2,31 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use super::error::SocketError;
-use super::protocol::{Feature, VirtioVsockConfig, VirtioVsockHdr, VirtioVsockOp, VsockAddr};
+use super::protocol::{
+    Feature, StreamShutdown, VirtioVsockConfig, VirtioVsockHdr, VirtioVsockOp, VsockAddr,
+};
+use super::DEFAULT_RX_BUFFER_SIZE;
 use crate::hal::Hal;
-use crate::queue::VirtQueue;
+use crate::queue::{owning::OwningQueue, VirtQueue};
 use crate::transport::Transport;
-use crate::volatile::volread;
-use crate::{Error, Result};
-use alloc::boxed::Box;
-use core::mem::size_of;
-use core::ptr::{null_mut, NonNull};
+use crate::Result;
+use core::mem::{offset_of, size_of};
 use log::debug;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, IntoBytes};
 
 pub(crate) const RX_QUEUE_IDX: u16 = 0;
 pub(crate) const TX_QUEUE_IDX: u16 = 1;
 const EVENT_QUEUE_IDX: u16 = 2;
 
 pub(crate) const QUEUE_SIZE: usize = 8;
-const SUPPORTED_FEATURES: Feature = Feature::RING_EVENT_IDX;
+const SUPPORTED_FEATURES: Feature = Feature::RING_EVENT_IDX.union(Feature::RING_INDIRECT_DESC);
 
-/// The size in bytes of each buffer used in the RX virtqueue. This must be bigger than size_of::<VirtioVsockHdr>().
-const RX_BUFFER_SIZE: usize = 512;
-
+/// Information about a particular vsock connection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionInfo {
+    /// The address of the peer.
     pub dst: VsockAddr,
+    /// The local port number associated with the connection.
     pub src_port: u32,
     /// The last `buf_alloc` value the peer sent to us, indicating how much receive buffer space in
     /// bytes it has allocated for packet bodies.
@@ -49,6 +49,8 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    /// Creates a new `ConnectionInfo` for the given peer address and local port, and default values
+    /// for everything else.
     pub fn new(destination: VsockAddr, src_port: u32) -> Self {
         Self {
             dst: destination,
@@ -210,78 +212,70 @@ pub enum VsockEventType {
 ///
 /// You probably want to use [`VsockConnectionManager`](super::VsockConnectionManager) rather than
 /// using this directly.
-pub struct VirtIOSocket<H: Hal, T: Transport> {
+///
+/// `RX_BUFFER_SIZE` is the size in bytes of each buffer used in the RX virtqueue. This must be
+/// bigger than `size_of::<VirtioVsockHdr>()`.
+pub struct VirtIOSocket<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE>
+{
     transport: T,
     /// Virtqueue to receive packets.
-    rx: VirtQueue<H, { QUEUE_SIZE }>,
+    rx: OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>,
     tx: VirtQueue<H, { QUEUE_SIZE }>,
     /// Virtqueue to receive events from the device.
     event: VirtQueue<H, { QUEUE_SIZE }>,
     /// The guest_cid field contains the guest’s context ID, which uniquely identifies
     /// the device for its lifetime. The upper 32 bits of the CID are reserved and zeroed.
     guest_cid: u64,
-    rx_queue_buffers: [NonNull<[u8; RX_BUFFER_SIZE]>; QUEUE_SIZE],
 }
 
-impl<H: Hal, T: Transport> Drop for VirtIOSocket<H, T> {
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> Drop
+    for VirtIOSocket<H, T, RX_BUFFER_SIZE>
+{
     fn drop(&mut self) {
         // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
         // after they have been freed.
         self.transport.queue_unset(RX_QUEUE_IDX);
         self.transport.queue_unset(TX_QUEUE_IDX);
         self.transport.queue_unset(EVENT_QUEUE_IDX);
-
-        for buffer in self.rx_queue_buffers {
-            // Safe because we obtained the RX buffer pointer from Box::into_raw, and it won't be
-            // used anywhere else after the driver is destroyed.
-            unsafe { drop(Box::from_raw(buffer.as_ptr())) };
-        }
     }
 }
 
-impl<H: Hal, T: Transport> VirtIOSocket<H, T> {
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BUFFER_SIZE> {
     /// Create a new VirtIO Vsock driver.
     pub fn new(mut transport: T) -> Result<Self> {
+        assert!(RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>());
+
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
 
-        let config = transport.config_space::<VirtioVsockConfig>()?;
-        debug!("config: {:?}", config);
         // Safe because config is a valid pointer to the device configuration space.
-        let guest_cid = unsafe {
-            volread!(config, guest_cid_low) as u64 | (volread!(config, guest_cid_high) as u64) << 32
-        };
+        let guest_cid = transport
+            .read_config_space::<u32>(offset_of!(VirtioVsockConfig, guest_cid_low))?
+            as u64
+            | (transport.read_config_space::<u32>(offset_of!(VirtioVsockConfig, guest_cid_high))?
+                as u64)
+                << 32;
         debug!("guest cid: {guest_cid:?}");
 
-        let mut rx = VirtQueue::new(
+        let rx = VirtQueue::new(
             &mut transport,
             RX_QUEUE_IDX,
-            false,
+            negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let tx = VirtQueue::new(
             &mut transport,
             TX_QUEUE_IDX,
-            false,
+            negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let event = VirtQueue::new(
             &mut transport,
             EVENT_QUEUE_IDX,
-            false,
+            negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
 
-        // Allocate and add buffers for the RX queue.
-        let mut rx_queue_buffers = [null_mut(); QUEUE_SIZE];
-        for (i, rx_queue_buffer) in rx_queue_buffers.iter_mut().enumerate() {
-            let mut buffer: Box<[u8; RX_BUFFER_SIZE]> = FromZeroes::new_box_zeroed();
-            // Safe because the buffer lives as long as the queue, as specified in the function
-            // safety requirement, and we don't access it until it is popped.
-            let token = unsafe { rx.add(&[], &mut [buffer.as_mut_slice()]) }?;
-            assert_eq!(i, token.into());
-            *rx_queue_buffer = Box::into_raw(buffer);
-        }
-        let rx_queue_buffers = rx_queue_buffers.map(|ptr| NonNull::new(ptr).unwrap());
+        let rx = OwningQueue::new(rx)?;
 
         transport.finish_init();
         if rx.should_notify() {
@@ -294,7 +288,6 @@ impl<H: Hal, T: Transport> VirtIOSocket<H, T> {
             tx,
             event,
             guest_cid,
-            rx_queue_buffers,
         })
     }
 
@@ -383,31 +376,42 @@ impl<H: Hal, T: Transport> VirtIOSocket<H, T> {
         &mut self,
         handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
     ) -> Result<Option<VsockEvent>> {
-        let Some((header, body, token)) = self.pop_packet_from_rx_queue()? else {
-            return Ok(None);
-        };
-
-        let result = VsockEvent::from_header(&header).and_then(|event| handler(event, body));
-
-        unsafe {
-            // TODO: What about if both handler and this give errors?
-            self.add_buffer_to_rx_queue(token)?;
-        }
-
-        result
+        self.rx.poll(&mut self.transport, |buffer| {
+            let (header, body) = read_header_and_body(buffer)?;
+            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
+        })
     }
 
-    /// Requests to shut down the connection cleanly.
+    /// Requests to shut down the connection cleanly, sending hints about whether we will send or
+    /// receive more data.
+    ///
+    /// This returns as soon as the request is sent; you should wait until `poll` returns a
+    /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
+    /// shutdown.
+    pub fn shutdown_with_hints(
+        &mut self,
+        connection_info: &ConnectionInfo,
+        hints: StreamShutdown,
+    ) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Shutdown.into(),
+            flags: hints.into(),
+            ..connection_info.new_header(self.guest_cid)
+        };
+        self.send_packet_to_tx_queue(&header, &[])
+    }
+
+    /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
+    /// any more data.
     ///
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
     /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
     /// shutdown.
     pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Shutdown.into(),
-            ..connection_info.new_header(self.guest_cid)
-        };
-        self.send_packet_to_tx_queue(&header, &[])
+        self.shutdown_with_hints(
+            connection_info,
+            StreamShutdown::SEND | StreamShutdown::RECEIVE,
+        )
     }
 
     /// Forcibly closes the connection without waiting for the peer.
@@ -433,78 +437,21 @@ impl<H: Hal, T: Transport> VirtIOSocket<H, T> {
         };
         Ok(())
     }
-
-    /// Adds the buffer at the given index in `rx_queue_buffers` back to the RX queue.
-    ///
-    /// # Safety
-    ///
-    /// The buffer must not currently be in the RX queue, and no other references to it must exist
-    /// between when this method is called and when it is popped from the queue.
-    unsafe fn add_buffer_to_rx_queue(&mut self, index: u16) -> Result {
-        // Safe because the buffer lives as long as the queue, and the caller guarantees that it's
-        // not currently in the queue or referred to anywhere else until it is popped.
-        unsafe {
-            let buffer = self
-                .rx_queue_buffers
-                .get_mut(usize::from(index))
-                .ok_or(Error::WrongToken)?
-                .as_mut();
-            let new_token = self.rx.add(&[], &mut [buffer])?;
-            // If the RX buffer somehow gets assigned a different token, then our safety assumptions
-            // are broken and we can't safely continue to do anything with the device.
-            assert_eq!(new_token, index);
-        }
-
-        if self.rx.should_notify() {
-            self.transport.notify(RX_QUEUE_IDX);
-        }
-
-        Ok(())
-    }
-
-    /// Pops one packet from the RX queue, if there is one pending. Returns the header, and a
-    /// reference to the buffer containing the body.
-    ///
-    /// Returns `None` if there is no pending packet.
-    fn pop_packet_from_rx_queue(&mut self) -> Result<Option<(VirtioVsockHdr, &[u8], u16)>> {
-        let Some(token) = self.rx.peek_used() else {
-            return Ok(None);
-        };
-
-        // Safe because we maintain a consistent mapping of tokens to buffers, so we pass the same
-        // buffer to `pop_used` as we previously passed to `add` for the token. Once we add the
-        // buffer back to the RX queue then we don't access it again until next time it is popped.
-        let (header, body) = unsafe {
-            let buffer = self.rx_queue_buffers[usize::from(token)].as_mut();
-            let _len = self.rx.pop_used(token, &[], &mut [buffer])?;
-
-            // Read the header and body from the buffer. Don't check the result yet, because we need
-            // to add the buffer back to the queue either way.
-            let header_result = read_header_and_body(buffer);
-            if header_result.is_err() {
-                // If there was an error, add the buffer back immediately. Ignore any errors, as we
-                // need to return the first error.
-                let _ = self.add_buffer_to_rx_queue(token);
-            }
-
-            header_result
-        }?;
-
-        debug!("Received packet {:?}. Op {:?}", header, header.op());
-        Ok(Some((header, body, token)))
-    }
 }
 
 fn read_header_and_body(buffer: &[u8]) -> Result<(VirtioVsockHdr, &[u8])> {
-    // Shouldn't panic, because we know `RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>()`.
-    let header = VirtioVsockHdr::read_from_prefix(buffer).unwrap();
+    // This could fail if the device returns a buffer used length shorter than the header size.
+    let header = VirtioVsockHdr::read_from_prefix(buffer)
+        .map_err(|_| SocketError::BufferTooShort)?
+        .0;
     let body_length = header.len() as usize;
 
     // This could fail if the device returns an unreasonably long body length.
     let data_end = size_of::<VirtioVsockHdr>()
         .checked_add(body_length)
         .ok_or(SocketError::InvalidNumber)?;
-    // This could fail if the device returns a body length longer than the buffer we gave it.
+    // This could fail if the device returns a body length longer than buffer used length it
+    // returned.
     let data = buffer
         .get(size_of::<VirtioVsockHdr>()..data_end)
         .ok_or(SocketError::BufferTooShort)?;

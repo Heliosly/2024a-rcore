@@ -9,7 +9,7 @@ use crate::utils;
 use crate::utils::error::{GeneralRet, SysErrNo, SyscallRet, TemplateRet};
 use super::area::{MapArea, MapAreaType, MapPermission, MapType, VmAreaTree};
 use super::page_table::{self, PutDataError, PutDataRet};
-use super::{flush_tlb, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
+use super::{flush_all, KernelAddr, MmapFlags, PhysAddr, StepByOne, TranslateError, VirtAddr, VirtPageNum};
 use super::{PageTable, PageTableEntry};
 use crate::config::{MEMORY_END, MMIO, PAGE_SIZE,/*  TRAMPOLINE, TRAP_CONTEXT_BASE,*/};
 use alloc::collections::btree_map::{BTreeMap};
@@ -119,7 +119,7 @@ pub fn munmap(
            { self.page_table.unmap(VirtPageNum(vpn));}
         }
     
-        flush_tlb();
+        flush_all();
     }
 
    
@@ -262,7 +262,13 @@ pub fn munmap(
         Ok(())
     }
 
+#[cfg(target_arch = "loongarch64")]
+pub fn new_kernel() ->Self{
+
+        Self::new_bare()
+}
    
+#[cfg(target_arch = "riscv64")]
     /// Without kernel stacks.
     pub fn new_kernel() -> Self {
         let mut memory_set = Self::new_bare();
@@ -364,7 +370,6 @@ let _ = memory_set.push(
       
         info!("mapping memory-mapped registers");
         
-         #[cfg(target_arch = "riscv64")]
          for pair in MMIO {
   info!("MMio:{:#x},{:#x}",(*pair).0+KERNEL_DIRECT_OFFSET,(*pair).1+(*pair).0+KERNEL_DIRECT_OFFSET   );
             let _ = memory_set.push(
@@ -949,7 +954,7 @@ pub async fn handle_page_fault(
         }
 
         // 最后刷新 TLB
-        flush_tlb();
+        flush_all();
 
         trace!(
             "page alloc success area:{:#x}-{:#x}  addr:{:#x}",
@@ -1198,7 +1203,7 @@ pub async fn mremap(&mut self, old_start: VirtAddr, old_size: usize, new_size: u
                     );
                     let new_area_vpn_range=new_area.vpn_range;
                     self.push(new_area, None)?;
-                    flush_tlb();
+                    flush_all();
 
                     let pagetable = &self.page_table;
                     for (old_vpn, new_vpn) in
@@ -1299,36 +1304,85 @@ pub fn madvise_dontneed(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum)
         // 如果 find_pte 返回 None，说明连中间的页表都还没创建，
         // 同样也什么都不用做。
     }
- flush_tlb();
+ flush_all();
 }
 }
 
-/// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {
-    
+    use crate::config::KERNEL_DIRECT_OFFSET; // 引入内核直接映射偏移量
+
     info!("[kernel]:remap testing");
-    let page_table=PageTable::from_token(*KERNEL_PAGE_TABLE_TOKEN);
+    let page_table = PageTable::from_token(*KERNEL_PAGE_TABLE_TOKEN);
     let mid_text: VirtAddr = (stext as usize + (etext as usize - stext as usize) / 2).into();
     let mid_rodata: VirtAddr =
         (srodata as usize + (erodata as usize - srodata as usize) / 2).into();
     let mid_data: VirtAddr = (sdata as usize + (edata as usize - sdata as usize) / 2).into();
-    assert!(!
-        page_table
+
+    // --- 原有测试保持不变 ---
+    assert!(!page_table
         .translate(mid_text.floor())
         .unwrap()
-        .writable(),);
+        .writable());
     debug!("text pass");
-    assert!(!
-        page_table
+    assert!(!page_table
         .translate(mid_rodata.floor())
         .unwrap()
-        .writable(),);
+        .writable());
     debug!("rodata pass");
+
+    #[cfg(target_arch = "riscv64")]
     assert!(!page_table
         .translate(mid_data.floor())
         .unwrap()
-        .executable(),);
+        .executable());
+
+    // --- 新增：验证直接映射区域 ---
+    debug!("Verifying direct-mapped physical memory area...");
+
+    // 1. 定义测试范围
+    //    我们从 _ekernel (内核静态数据末尾的虚拟地址) 开始
+    //    选取一个在该区域内的随机点进行测试，避免边界问题。
+    //    这里的 ekernel 和 MEMORY_END 都是虚拟地址，正如你之前确认的。
+    let direct_map_start_va: VirtAddr = (_ekernel as usize).into();
+    let direct_map_end_va: VirtAddr = (MEMORY_END as usize).into();
+
+    // 2. 选取一个测试点 (例如，区域的中间点)
+    let test_va: VirtAddr =
+        (direct_map_start_va.0 + (direct_map_end_va.0 - direct_map_start_va.0) / 2).into();
+    
+    // 3. 预期物理地址
+    //    根据直接映射的定义，物理地址应该是虚拟地址减去偏移。
+    let expected_pa: usize = test_va.0 - KERNEL_DIRECT_OFFSET;
+
+    info!("  Testing direct map VA: {:#x}", test_va.0);
+    info!("  Expected physical address: {:#x}", expected_pa);
+
+    // 4. 使用页表进行翻译
+    match page_table.translate_va(test_va) {
+        Some(translated_pa) => {
+            info!("  Translated physical address: {:#x}", translated_pa.0);
+            
+            // 5. 验证翻译结果
+            assert_eq!(
+                translated_pa.0,
+                expected_pa,
+                "Direct map translation FAILED! VA {:#x} translated to {:#x}, but expected {:#x}",
+                test_va.0,
+                translated_pa.0,
+                expected_pa
+            );
+            
+            debug!("Direct map translation verification PASSED.");
+        }
+        None => {
+            // 如果翻译失败，直接 panic，因为这块区域必须被映射。
+            panic!(
+                "Direct map translation FAILED! VA {:#x} is not mapped in the page table.",
+                test_va.0
+            );
+        }
+    }
+
     println!("remap_test passed!");
 }
-

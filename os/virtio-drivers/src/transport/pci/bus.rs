@@ -2,10 +2,12 @@
 
 use bitflags::bitflags;
 use core::{
+    array,
     convert::TryFrom,
     fmt::{self, Display, Formatter},
 };
 use log::warn;
+use thiserror::Error;
 
 const INVALID_READ: u32 = 0xffffffff;
 
@@ -81,25 +83,17 @@ bitflags! {
 }
 
 /// Errors accessing a PCI device.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Error, PartialEq)]
 pub enum PciError {
     /// The device reported an invalid BAR type.
+    #[error("Invalid PCI BAR type")]
     InvalidBarType,
-}
-
-impl Display for PciError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            Self::InvalidBarType => write!(f, "Invalid PCI BAR type."),
-        }
-    }
 }
 
 /// The root complex of a PCI bus.
 #[derive(Debug)]
-pub struct PciRoot {
-    mmio_base: *mut u32,
-    cam: Cam,
+pub struct PciRoot<C: ConfigurationAccess> {
+    pub(crate) configuration_access: C,
 }
 
 /// A PCI Configuration Access Mechanism.
@@ -123,9 +117,210 @@ impl Cam {
             Self::Ecam => 0x10000000,
         }
     }
+
+    /// Returns the offset in bytes within the CAM region for the given device, function and
+    /// register.
+    pub fn cam_offset(self, device_function: DeviceFunction, register_offset: u8) -> u32 {
+        assert!(device_function.valid());
+
+        let bdf = (device_function.bus as u32) << 8
+            | (device_function.device as u32) << 3
+            | device_function.function as u32;
+        let address =
+            bdf << match self {
+                Cam::MmioCam => 8,
+                Cam::Ecam => 12,
+            } | register_offset as u32;
+        // Ensure that address is within range.
+        assert!(address < self.size());
+        // Ensure that address is word-aligned.
+        assert!(address & 0x3 == 0);
+        address
+    }
 }
 
-impl PciRoot {
+impl<C: ConfigurationAccess> PciRoot<C> {
+    /// Creates a new `PciRoot` to access a PCI root complex through the given configuration access
+    /// implementation.
+    pub fn new(configuration_access: C) -> Self {
+        Self {
+            configuration_access,
+        }
+    }
+
+    /// Enumerates PCI devices on the given bus.
+    pub fn enumerate_bus(&self, bus: u8) -> BusDeviceIterator<C> {
+        // Safe because the BusDeviceIterator only reads read-only fields.
+        let configuration_access = unsafe { self.configuration_access.unsafe_clone() };
+        BusDeviceIterator {
+            configuration_access,
+            next: DeviceFunction {
+                bus,
+                device: 0,
+                function: 0,
+            },
+        }
+    }
+
+    /// Reads the status and command registers of the given device function.
+    pub fn get_status_command(&self, device_function: DeviceFunction) -> (Status, Command) {
+        let status_command = self
+            .configuration_access
+            .read_word(device_function, STATUS_COMMAND_OFFSET);
+        let status = Status::from_bits_truncate((status_command >> 16) as u16);
+        let command = Command::from_bits_truncate(status_command as u16);
+        (status, command)
+    }
+
+    /// Sets the command register of the given device function.
+    pub fn set_command(&mut self, device_function: DeviceFunction, command: Command) {
+        self.configuration_access.write_word(
+            device_function,
+            STATUS_COMMAND_OFFSET,
+            command.bits().into(),
+        );
+    }
+
+    /// Gets an iterator over the capabilities of the given device function.
+    pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator<C> {
+        CapabilityIterator {
+            configuration_access: &self.configuration_access,
+            device_function,
+            next_capability_offset: self.capabilities_offset(device_function),
+        }
+    }
+
+    /// Returns information about all the given device function's BARs.
+    pub fn bars(
+        &mut self,
+        device_function: DeviceFunction,
+    ) -> Result<[Option<BarInfo>; 6], PciError> {
+        let mut bars = array::from_fn(|_| None);
+        let mut bar_index = 0;
+        while bar_index < 6 {
+            let info = self.bar_info(device_function, bar_index)?;
+            let takes_two_entries = info.takes_two_entries();
+            bars[usize::from(bar_index)] = Some(info);
+            bar_index += if takes_two_entries { 2 } else { 1 };
+        }
+        Ok(bars)
+    }
+
+    /// Gets information about the given BAR of the given device function.
+    pub fn bar_info(
+        &mut self,
+        device_function: DeviceFunction,
+        bar_index: u8,
+    ) -> Result<BarInfo, PciError> {
+        let bar_orig = self
+            .configuration_access
+            .read_word(device_function, BAR0_OFFSET + 4 * bar_index);
+
+        // Get the size of the BAR.
+        self.configuration_access.write_word(
+            device_function,
+            BAR0_OFFSET + 4 * bar_index,
+            0xffffffff,
+        );
+        let size_mask = self
+            .configuration_access
+            .read_word(device_function, BAR0_OFFSET + 4 * bar_index);
+        // A wrapping add is necessary to correctly handle the case of unused BARs, which read back
+        // as 0, and should be treated as size 0.
+        let size = (!(size_mask & 0xfffffff0)).wrapping_add(1);
+
+        // Restore the original value.
+        self.configuration_access.write_word(
+            device_function,
+            BAR0_OFFSET + 4 * bar_index,
+            bar_orig,
+        );
+
+        if bar_orig & 0x00000001 == 0x00000001 {
+            // I/O space
+            let address = bar_orig & 0xfffffffc;
+            Ok(BarInfo::IO { address, size })
+        } else {
+            // Memory space
+            let mut address = u64::from(bar_orig & 0xfffffff0);
+            let prefetchable = bar_orig & 0x00000008 != 0;
+            let address_type = MemoryBarType::try_from(((bar_orig & 0x00000006) >> 1) as u8)?;
+            if address_type == MemoryBarType::Width64 {
+                if bar_index >= 5 {
+                    return Err(PciError::InvalidBarType);
+                }
+                let address_top = self
+                    .configuration_access
+                    .read_word(device_function, BAR0_OFFSET + 4 * (bar_index + 1));
+                address |= u64::from(address_top) << 32;
+            }
+            Ok(BarInfo::Memory {
+                address_type,
+                prefetchable,
+                address,
+                size,
+            })
+        }
+    }
+
+    /// Sets the address of the given 32-bit memory or I/O BAR of the given device function.
+    pub fn set_bar_32(&mut self, device_function: DeviceFunction, bar_index: u8, address: u32) {
+        self.configuration_access
+            .write_word(device_function, BAR0_OFFSET + 4 * bar_index, address);
+    }
+
+    /// Sets the address of the given 64-bit memory BAR of the given device function.
+    pub fn set_bar_64(&mut self, device_function: DeviceFunction, bar_index: u8, address: u64) {
+        self.configuration_access.write_word(
+            device_function,
+            BAR0_OFFSET + 4 * bar_index,
+            address as u32,
+        );
+        self.configuration_access.write_word(
+            device_function,
+            BAR0_OFFSET + 4 * (bar_index + 1),
+            (address >> 32) as u32,
+        );
+    }
+
+    /// Gets the capabilities 'pointer' for the device function, if any.
+    fn capabilities_offset(&self, device_function: DeviceFunction) -> Option<u8> {
+        let (status, _) = self.get_status_command(device_function);
+        if status.contains(Status::CAPABILITIES_LIST) {
+            Some((self.configuration_access.read_word(device_function, 0x34) & 0xFC) as u8)
+        } else {
+            None
+        }
+    }
+}
+
+/// A method to access PCI configuration space for a particular PCI bus.
+pub trait ConfigurationAccess {
+    /// Reads 4 bytes from the configuration space.
+    fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32;
+
+    /// Writes 4 bytes to the configuration space.
+    fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32);
+
+    /// Makes a clone of the `ConfigurationAccess`, accessing the same PCI bus.
+    ///
+    /// # Safety
+    ///
+    /// This function allows concurrent mutable access to the PCI CAM. To avoid this causing
+    /// problems, the returned `ConfigurationAccess` instance must only be used to read read-only
+    /// fields.
+    unsafe fn unsafe_clone(&self) -> Self;
+}
+
+/// `ConfigurationAccess` implementation for memory-mapped access to a PCI root complex, via either
+/// a 16 MiB region for the PCI Configuration Access Mechanism or a 256 MiB region for the PCIe
+/// Enhanced Configuration Access Mechanism.
+pub struct MmioCam {
+    mmio_base: *mut u32,
+    cam: Cam,
+}
+
+impl MmioCam {
     /// Wraps the PCI root complex with the given MMIO base address.
     ///
     /// Panics if the base address is not aligned to a 4-byte boundary.
@@ -143,45 +338,11 @@ impl PciRoot {
             cam,
         }
     }
+}
 
-    /// Makes a clone of the `PciRoot`, pointing at the same MMIO region.
-    ///
-    /// # Safety
-    ///
-    /// This function allows concurrent mutable access to the PCI CAM. To avoid this causing
-    /// problems, the returned `PciRoot` instance must only be used to read read-only fields.
-    unsafe fn unsafe_clone(&self) -> Self {
-        Self {
-            mmio_base: self.mmio_base,
-            cam: self.cam,
-        }
-    }
-
-    fn cam_offset(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
-        assert!(device_function.valid());
-
-        let bdf = (device_function.bus as u32) << 8
-            | (device_function.device as u32) << 3
-            | device_function.function as u32;
-        let address =
-            bdf << match self.cam {
-                Cam::MmioCam => 8,
-                Cam::Ecam => 12,
-            } | register_offset as u32;
-        // Ensure that address is within range.
-        assert!(address < self.cam.size());
-        // Ensure that address is word-aligned.
-        assert!(address & 0x3 == 0);
-        address
-    }
-
-    /// Reads 4 bytes from configuration space using the appropriate CAM.
-    pub(crate) fn config_read_word(
-        &self,
-        device_function: DeviceFunction,
-        register_offset: u8,
-    ) -> u32 {
-        let address = self.cam_offset(device_function, register_offset);
+impl ConfigurationAccess for MmioCam {
+    fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
+        let address = self.cam.cam_offset(device_function, register_offset);
         // Safe because both the `mmio_base` and the address offset are properly aligned, and the
         // resulting pointer is within the MMIO range of the CAM.
         unsafe {
@@ -190,14 +351,8 @@ impl PciRoot {
         }
     }
 
-    /// Writes 4 bytes to configuration space using the appropriate CAM.
-    pub(crate) fn config_write_word(
-        &mut self,
-        device_function: DeviceFunction,
-        register_offset: u8,
-        data: u32,
-    ) {
-        let address = self.cam_offset(device_function, register_offset);
+    fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32) {
+        let address = self.cam.cam_offset(device_function, register_offset);
         // Safe because both the `mmio_base` and the address offset are properly aligned, and the
         // resulting pointer is within the MMIO range of the CAM.
         unsafe {
@@ -206,115 +361,20 @@ impl PciRoot {
         }
     }
 
-    /// Enumerates PCI devices on the given bus.
-    pub fn enumerate_bus(&self, bus: u8) -> BusDeviceIterator {
-        // Safe because the BusDeviceIterator only reads read-only fields.
-        let root = unsafe { self.unsafe_clone() };
-        BusDeviceIterator {
-            root,
-            next: DeviceFunction {
-                bus,
-                device: 0,
-                function: 0,
-            },
-        }
-    }
-
-    /// Reads the status and command registers of the given device function.
-    pub fn get_status_command(&self, device_function: DeviceFunction) -> (Status, Command) {
-        let status_command = self.config_read_word(device_function, STATUS_COMMAND_OFFSET);
-        let status = Status::from_bits_truncate((status_command >> 16) as u16);
-        let command = Command::from_bits_truncate(status_command as u16);
-        (status, command)
-    }
-
-    /// Sets the command register of the given device function.
-    pub fn set_command(&mut self, device_function: DeviceFunction, command: Command) {
-        self.config_write_word(
-            device_function,
-            STATUS_COMMAND_OFFSET,
-            command.bits().into(),
-        );
-    }
-
-    /// Gets an iterator over the capabilities of the given device function.
-    pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator {
-        CapabilityIterator {
-            root: self,
-            device_function,
-            next_capability_offset: self.capabilities_offset(device_function),
-        }
-    }
-
-    /// Gets information about the given BAR of the given device function.
-    pub fn bar_info(
-        &mut self,
-        device_function: DeviceFunction,
-        bar_index: u8,
-    ) -> Result<BarInfo, PciError> {
-        let bar_orig = self.config_read_word(device_function, BAR0_OFFSET + 4 * bar_index);
-
-        // Get the size of the BAR.
-        self.config_write_word(device_function, BAR0_OFFSET + 4 * bar_index, 0xffffffff);
-        let size_mask = self.config_read_word(device_function, BAR0_OFFSET + 4 * bar_index);
-        // A wrapping add is necessary to correctly handle the case of unused BARs, which read back
-        // as 0, and should be treated as size 0.
-        let size = (!(size_mask & 0xfffffff0)).wrapping_add(1);
-
-        // Restore the original value.
-        self.config_write_word(device_function, BAR0_OFFSET + 4 * bar_index, bar_orig);
-
-        if bar_orig & 0x00000001 == 0x00000001 {
-            // I/O space
-            let address = bar_orig & 0xfffffffc;
-            Ok(BarInfo::IO { address, size })
-        } else {
-            // Memory space
-            let mut address = u64::from(bar_orig & 0xfffffff0);
-            let prefetchable = bar_orig & 0x00000008 != 0;
-            let address_type = MemoryBarType::try_from(((bar_orig & 0x00000006) >> 1) as u8)?;
-            if address_type == MemoryBarType::Width64 {
-                if bar_index >= 5 {
-                    return Err(PciError::InvalidBarType);
-                }
-                let address_top =
-                    self.config_read_word(device_function, BAR0_OFFSET + 4 * (bar_index + 1));
-                address |= u64::from(address_top) << 32;
-            }
-            Ok(BarInfo::Memory {
-                address_type,
-                prefetchable,
-                address,
-                size,
-            })
-        }
-    }
-
-    /// Sets the address of the given 32-bit memory or I/O BAR of the given device function.
-    pub fn set_bar_32(&mut self, device_function: DeviceFunction, bar_index: u8, address: u32) {
-        self.config_write_word(device_function, BAR0_OFFSET + 4 * bar_index, address);
-    }
-
-    /// Sets the address of the given 64-bit memory BAR of the given device function.
-    pub fn set_bar_64(&mut self, device_function: DeviceFunction, bar_index: u8, address: u64) {
-        self.config_write_word(device_function, BAR0_OFFSET + 4 * bar_index, address as u32);
-        self.config_write_word(
-            device_function,
-            BAR0_OFFSET + 4 * (bar_index + 1),
-            (address >> 32) as u32,
-        );
-    }
-
-    /// Gets the capabilities 'pointer' for the device function, if any.
-    fn capabilities_offset(&self, device_function: DeviceFunction) -> Option<u8> {
-        let (status, _) = self.get_status_command(device_function);
-        if status.contains(Status::CAPABILITIES_LIST) {
-            Some((self.config_read_word(device_function, 0x34) & 0xFC) as u8)
-        } else {
-            None
+    unsafe fn unsafe_clone(&self) -> Self {
+        Self {
+            mmio_base: self.mmio_base,
+            cam: self.cam,
         }
     }
 }
+
+// SAFETY: `mmio_base` is only used for MMIO, which can happen from any thread or CPU core.
+unsafe impl Send for MmioCam {}
+
+// SAFETY: `&MmioCam` only allows MMIO reads, which are fine to happen concurrently on different CPU
+// cores.
+unsafe impl Sync for MmioCam {}
 
 /// Information about a PCI Base Address Register.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -420,20 +480,22 @@ impl TryFrom<u8> for MemoryBarType {
 
 /// Iterator over capabilities for a device.
 #[derive(Debug)]
-pub struct CapabilityIterator<'a> {
-    root: &'a PciRoot,
+pub struct CapabilityIterator<'a, C: ConfigurationAccess> {
+    configuration_access: &'a C,
     device_function: DeviceFunction,
     next_capability_offset: Option<u8>,
 }
 
-impl<'a> Iterator for CapabilityIterator<'a> {
+impl<'a, C: ConfigurationAccess> Iterator for CapabilityIterator<'a, C> {
     type Item = CapabilityInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.next_capability_offset?;
 
         // Read the first 4 bytes of the capability.
-        let capability_header = self.root.config_read_word(self.device_function, offset);
+        let capability_header = self
+            .configuration_access
+            .read_word(self.device_function, offset);
         let id = capability_header as u8;
         let next_offset = (capability_header >> 8) as u8;
         let private_header = (capability_header >> 16) as u16;
@@ -468,21 +530,21 @@ pub struct CapabilityInfo {
 
 /// An iterator which enumerates PCI devices and functions on a given bus.
 #[derive(Debug)]
-pub struct BusDeviceIterator {
+pub struct BusDeviceIterator<C: ConfigurationAccess> {
     /// This must only be used to read read-only fields, and must not be exposed outside this
     /// module, because it uses the same CAM as the main `PciRoot` instance.
-    root: PciRoot,
+    configuration_access: C,
     next: DeviceFunction,
 }
 
-impl Iterator for BusDeviceIterator {
+impl<C: ConfigurationAccess> Iterator for BusDeviceIterator<C> {
     type Item = (DeviceFunction, DeviceFunctionInfo);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.next.device < MAX_DEVICES {
             // Read the header for the current device and function.
             let current = self.next;
-            let device_vendor = self.root.config_read_word(current, 0);
+            let device_vendor = self.configuration_access.read_word(current, 0);
 
             // Advance to the next device or function.
             self.next.function += 1;
@@ -492,14 +554,14 @@ impl Iterator for BusDeviceIterator {
             }
 
             if device_vendor != INVALID_READ {
-                let class_revision = self.root.config_read_word(current, 8);
+                let class_revision = self.configuration_access.read_word(current, 8);
                 let device_id = (device_vendor >> 16) as u16;
                 let vendor_id = device_vendor as u16;
                 let class = (class_revision >> 24) as u8;
                 let subclass = (class_revision >> 16) as u8;
                 let prog_if = (class_revision >> 8) as u8;
                 let revision = class_revision as u8;
-                let bist_type_latency_cache = self.root.config_read_word(current, 12);
+                let bist_type_latency_cache = self.configuration_access.read_word(current, 12);
                 let header_type = HeaderType::from((bist_type_latency_cache >> 16) as u8 & 0x7f);
                 return Some((
                     current,

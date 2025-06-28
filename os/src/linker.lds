@@ -8,7 +8,7 @@ SECTIONS
     . = BASE_ADDRESS;
     _skernel = .;
 
-    .text ALIGN(4K): {
+    .text ALIGN(16K): {
         *(.multiboot .multiboot.*)
         stext = .;
         *(.text.entry)
@@ -16,7 +16,7 @@ SECTIONS
         etext = .;
     }
 
-    .rodata ALIGN(4K): {
+    .rodata ALIGN(16K): {
         srodata = .;
         *(.rodata .rodata.*)
         erodata = .;
@@ -26,9 +26,9 @@ SECTIONS
         *(.got .got.*)
     }
 
-    .data ALIGN(4K): {
+    .data ALIGN(16K): {
         _sdata = .;
-        . = ALIGN(4K);
+        . = ALIGN(16K);
         *(.data.boot_page_table)
 
         *(.data .data.*)
@@ -36,7 +36,7 @@ SECTIONS
         _edata = .;
     }
 
-    .bss ALIGN(4K): {
+    .bss ALIGN(16K): {
         _load_end = .;
         *(.bss.bstack .bss.bstack.*)
         _sbss = .;

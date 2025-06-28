@@ -66,8 +66,8 @@ pub const SYSCALL_PWRITE64: usize = 68;
 pub const SYSCALL_RENAMEAT: usize = 38;
 
 pub const SYSCALL_RENAMEAT2: usize = 276;
-pub const SYSCALL_CREAT: usize = 85;
-pub const SYSCALL_RMDIR: usize = 84;
+// pub const SYSCALL_CREAT: usize = 85;
+// pub const SYSCALL_RMDIR: usize = 84;
 pub const SYSCALL_GETRANDOM: usize = 278;
 pub const SYSCALL_SIGPROCMASK :usize =135;
 pub const SYSCALL_RT_SIGACTION :usize =134;

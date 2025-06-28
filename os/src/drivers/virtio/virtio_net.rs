@@ -2,8 +2,8 @@ use core::cmp;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use devices::device::{DeviceType, Driver, NetDriver, NetError};
-use devices::{register_device_irqs};
+use crate::devices::device::{DeviceType, Driver, NetDriver, NetError};
+use crate::devices::{register_device_irqs};
 use virtio_drivers::device::net::{self, TxBuffer};
 use virtio_drivers::transport::Transport;
 

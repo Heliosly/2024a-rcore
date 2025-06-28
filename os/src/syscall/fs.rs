@@ -43,7 +43,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         Some(file) => {
             // 2. 检查是否可写
             if !file.any().writable().map_err(|_| SysErrNo::EIO)? {
-                return Err(SysErrNo::EACCES);
+                return Err(SysErrNo::EBADF);
             }
             let file = file.clone();
             // 3. 执行写操作
@@ -73,7 +73,7 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         Some(file) => {
             // 2. 检查是否可读
             if !file.any().readable().map_err(|_| SysErrNo::EIO)? {
-                return Err(SysErrNo::EACCES);
+                return Err(SysErrNo::EBADF);
             }
             let file = file.clone();
             // 3. 执行读操作
@@ -2606,4 +2606,15 @@ pub async fn sys_munlockall() -> SyscallRet {
     
     // 4. 成功
     Ok(0)
+}
+/// 仿 Linux 的 statx 系统调用
+pub fn sys_statx(
+    _dirfd: usize,           // 一般我们不会支持复杂的路径解析，直接忽略
+    pathname: *const u8,     // 文件路径（用户地址）
+    _flags: usize,           // 一般忽略
+    _mask: usize,            // 一般忽略
+    statx_buf: usize,   // 返回结果缓冲区（用户地址）
+) -> SyscallRet {
+   Err(SysErrNo::ENOSYS)
+    
 }

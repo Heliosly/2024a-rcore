@@ -7,6 +7,7 @@
 use super::current::CurrentTask;
 use super::task::TaskControlBlock;
 use super::{schedule, TaskStatus};
+use crate::config::PAGE_SIZE_BITS;
 use crate::mm::activate_by_token;
 use crate::sbi::shutdown;
 use crate::sync::futex::init_futex_system;
@@ -14,6 +15,7 @@ use crate::task::kstack::{self, current_stack_bottom, current_stack_top};
 use crate::task::sleeplist::init_sleeper_queue;
 use crate::task::{put_prev_task };
 use crate::trap::{disable_irqs, enable_irqs, user_return, TrapContext, TrapStatus};
+use crate::utils::bpoint;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
@@ -34,9 +36,9 @@ pub static UTRAP_HANDLER: LazyInit<fn() -> Pin<Box<dyn Future<Output = i32> + 's
 pub fn run_task2(mut curr: CurrentTask) {
     let waker = curr.waker();
     let cx = &mut Context::from_waker(&waker);
-    activate_by_token(unsafe { *curr.page_table_token.get() });
-
-    //delete active(conflict)
+    let satp=unsafe { *curr.page_table_token.get() };
+    activate_by_token(satp);
+ 
 
     // 拿到 future 的所有权，而不是引用！
 
@@ -50,7 +52,7 @@ pub fn run_task2(mut curr: CurrentTask) {
             curr.wake_all_waiters();
             // println!("count {}",Arc::strong_count(curr.as_task_ref()));
             if curr.is_init {
-                //TODO(HELIOSLY)这里有异常可能有内存泄漏的风险，应该小于等于2
+                bpoint();
                 assert!(
                     Arc::strong_count(curr.as_task_ref()) <= 3,
                     "count {}",
@@ -89,7 +91,7 @@ pub fn run_task2(mut curr: CurrentTask) {
                             //                                 tf
                             //                             );
                             enable_irqs();
-
+    // println!("debug:{:#?}",tf);
                     trace!("[user_return]  result:{:#x} sepc:{:#x}", tf.regs.a0,tf.sepc);
                             user_return(tf);
                         }

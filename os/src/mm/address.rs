@@ -30,12 +30,37 @@ pub struct VirtAddr(pub usize);
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 ///phiscal page number
 pub struct PhysPageNum(pub usize);
-
+impl PhysPageNum  {
+    pub fn raw(&self)->usize{
+        self.0
+     }
+}
 /// Virtual Page Number VPN
 #[repr(C)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct VirtPageNum(pub usize);
+impl VirtPageNum  {
+   pub fn raw(&self)->usize{
+       self.0
+    }
+    /// Get the index into the n-th level page table for this page number.
+    ///
+    /// For level n, take bits [9*n .. 9*n+9) of the page number.
+    #[inline]
+    pub fn pn_index(&self, n: usize) -> usize {
+        // 每级 9 位索引
+        (self.raw() >> (9 * n)) & 0x1ff
+    }
 
+    /// Get the offset within the page number up to level n.
+    ///
+    /// That is, take the low 9*n bits of the page number.
+    #[inline]
+    pub fn pn_offset(&self, n: usize) -> usize {
+        let mask = (1 << (9 * n)) - 1;
+        self.raw() & mask
+    }
+}
 /// Debugging
 
 impl Debug for VirtAddr {
@@ -217,6 +242,15 @@ impl From<VirtPageNum> for VirtAddr {
     }
 }
 impl PhysAddr {
+    #[inline]
+    pub fn slice_with_len<T>(&self, len: usize) -> &'static [T] {
+        unsafe { core::slice::from_raw_parts(self.get_ptr(), len) }
+    }
+
+    #[inline]
+    pub fn slice_mut_with_len<T: Sized>(&self, len: usize) -> &'static mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.get_mut_ptr(), len) }
+    }
     /// Get the (floor) physical page number
     pub fn floor(&self) -> PhysPageNum {
         PhysPageNum(self.0 / PAGE_SIZE)
@@ -247,6 +281,7 @@ impl From<PhysPageNum> for PhysAddr {
 }
 
 impl VirtPageNum {
+    #[cfg(target_arch = "riscv64")]
     /// Get the indexes of the page table entry
     pub fn indexes(&self) -> [usize; 3] {
         let mut vpn = self.0;
@@ -257,8 +292,20 @@ impl VirtPageNum {
         }
         idx
     }
+    #[cfg(target_arch = "loongarch64")]
+    #[cfg(target_arch = "loongarch64")]
+    pub fn indexes(&self) -> [usize; 4] {
+        let mut vpn = self.0;
+        let mut idx = [0usize; 4];
+        
+        idx[0] = (vpn >> 27) & 0x1ff; // PGD [47:39]
+        idx[1] = (vpn >> 18) & 0x1ff; // PUD [38:30]
+        idx[2] = (vpn >> 9) & 0x1ff;  // PMD [29:21]
+        idx[3] = vpn & 0x1ff;         // PTE [20:12]
+        
+        idx
+    }
 }
-
 
 impl PhysAddr {
     ///Get reference to `PhysAddr` value
@@ -299,19 +346,25 @@ impl KernelAddr {
         self.0 as *mut T
     }
 }
+
 impl PhysPageNum {
     /// Get the reference of page table(array of ptes)
     pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
+
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut PageTableEntry, 512) }
+    
     }
     /// Get the reference of page(array of bytes)
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
         
+
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut u8, 4096) }
+     
+      
     }
     /// Get the mutable reference of physical address
     pub fn get_mut<T>(&self) -> &'static mut T {

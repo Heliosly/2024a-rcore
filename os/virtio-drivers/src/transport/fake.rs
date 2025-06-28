@@ -1,11 +1,10 @@
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
     queue::{fake_read_write_queue, Descriptor},
-    PhysAddr, Result,
+    Error, PhysAddr,
 };
 use alloc::{sync::Arc, vec::Vec};
 use core::{
-    any::TypeId,
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -97,11 +96,32 @@ impl<C> Transport for FakeTransport<C> {
         pending
     }
 
-    fn config_space<T: 'static>(&self) -> Result<NonNull<T>> {
-        if TypeId::of::<T>() == TypeId::of::<C>() {
-            Ok(self.config_space.cast())
+    fn read_config_space<T>(&self, offset: usize) -> Result<T, Error> {
+        assert!(align_of::<T>() <= 4,
+            "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
+            align_of::<T>());
+        assert!(offset % align_of::<T>() == 0);
+
+        if size_of::<C>() < offset + size_of::<T>() {
+            Err(Error::ConfigSpaceTooSmall)
         } else {
-            panic!("Unexpected config space type.");
+            unsafe { Ok(self.config_space.cast::<T>().byte_add(offset).read()) }
+        }
+    }
+
+    fn write_config_space<T>(&mut self, offset: usize, value: T) -> Result<(), Error> {
+        assert!(align_of::<T>() <= 4,
+            "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
+            align_of::<T>());
+        assert!(offset % align_of::<T>() == 0);
+
+        if size_of::<C>() < offset + size_of::<T>() {
+            Err(Error::ConfigSpaceTooSmall)
+        } else {
+            unsafe {
+                self.config_space.cast::<T>().byte_add(offset).write(value);
+            }
+            Ok(())
         }
     }
 }
@@ -122,7 +142,7 @@ impl State {
     pub fn write_to_queue<const QUEUE_SIZE: usize>(&mut self, queue_index: u16, data: &[u8]) {
         let queue = &self.queues[queue_index as usize];
         assert_ne!(queue.descriptors, 0);
-        fake_read_write_queue(
+        assert!(fake_read_write_queue(
             queue.descriptors as *const [Descriptor; QUEUE_SIZE],
             queue.driver_area as *const u8,
             queue.device_area as *mut u8,
@@ -130,7 +150,7 @@ impl State {
                 assert_eq!(input, Vec::new());
                 data.to_owned()
             },
-        );
+        ));
     }
 
     /// Simulates the device reading from the given queue.
@@ -145,7 +165,7 @@ impl State {
         let mut ret = None;
 
         // Read data from the queue but don't write any response.
-        fake_read_write_queue(
+        assert!(fake_read_write_queue(
             queue.descriptors as *const [Descriptor; QUEUE_SIZE],
             queue.driver_area as *const u8,
             queue.device_area as *mut u8,
@@ -153,7 +173,7 @@ impl State {
                 ret = Some(input);
                 Vec::new()
             },
-        );
+        ));
 
         ret.unwrap()
     }
@@ -161,11 +181,14 @@ impl State {
     /// Simulates the device reading data from the given queue and then writing a response back.
     ///
     /// The fake device always uses descriptors in order.
+    ///
+    /// Returns true if a descriptor chain was available and processed, or false if no descriptors were
+    /// available.
     pub fn read_write_queue<const QUEUE_SIZE: usize>(
         &mut self,
         queue_index: u16,
         handler: impl FnOnce(Vec<u8>) -> Vec<u8>,
-    ) {
+    ) -> bool {
         let queue = &self.queues[queue_index as usize];
         assert_ne!(queue.descriptors, 0);
         fake_read_write_queue(
@@ -178,12 +201,19 @@ impl State {
 
     /// Waits until the given queue is notified.
     pub fn wait_until_queue_notified(state: &Mutex<Self>, queue_index: u16) {
-        while !state.lock().unwrap().queues[usize::from(queue_index)]
-            .notified
-            .swap(false, Ordering::SeqCst)
-        {
+        while !Self::poll_queue_notified(state, queue_index) {
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Checks if the given queue has been notified.
+    ///
+    /// If it has, returns true and resets the status so this will return false until it is notified
+    /// again.
+    pub fn poll_queue_notified(state: &Mutex<Self>, queue_index: u16) -> bool {
+        state.lock().unwrap().queues[usize::from(queue_index)]
+            .notified
+            .swap(false, Ordering::SeqCst)
     }
 }
 

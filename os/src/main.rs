@@ -35,7 +35,7 @@ extern crate alloc;
 
 #[macro_use]
 mod console;
-
+pub mod devices;
 pub mod arch;
 pub mod config;
 pub mod drivers;
@@ -55,9 +55,9 @@ pub mod trap;
 ///utils;
 
 pub mod utils;
+
 // use core::arch::{asm, global_asm};
 use alloc::boxed::Box;
-use config::KERNEL_DIRECT_OFFSET;
 use polyhal::PhysAddr;
 use trap::user_task_top;
 
@@ -95,6 +95,43 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
     }
 }
 
+// #[export_name = "_interrupt_for_arch"]
+// /// Handle kernel interrupt
+// fn kernel_interrupt(cx_ref: &mut polyhal_trap::trapframe::TrapFrame, trap_type: polyhal_trap::trap::TrapType) {
+//             warn!("trap_type: {:?}  ", trap_type);
+//     match trap_type {
+     
+//         TrapType::Timer => {
+//             polyhal::timer::set_next_timer(polyhal::timer::current_time() + Duration::from_millis(10));
+//         }
+        
+//         TrapType::SupervisorExternal => {
+//             handle_external_interrupt();
+//         }
+//         _ => {
+            
+//             debug!("kernel_interrupt");
+//         }
+//     };
+// }
+// /// Handles external interrupts on LoongArch by querying the CPU's EIOI controller.
+// pub fn handle_external_interrupt() {
+//     // if let Some(int_driver) = devices::INT_DEVICE.try_get() {
+//     //     while let Some(irq) = int_driver.claim() {
+//     //         // 查找并调用注册的驱动处理程序
+//     //         let handler = drivers::IRQ_HANDLERS.lock().get(&irq).cloned();
+            
+//     //         if let Some(driver) = handler {
+//     //             // driver.handle_irq();
+//     //         } else {
+//     //             warn!("Unhandled IRQ: {}", irq);
+//     //         }
+            
+//     //         int_driver.complete(irq);
+//     //     }
+//     // }
+// }
+
 
 // #[no_mangle]
 // ///立即数高于12位用rust处理
@@ -110,12 +147,15 @@ impl polyhal::common::PageAlloc for PageAllocImpl {
 /// the rust entry-point of os
 /// 
 pub fn main(hart_id:usize) -> ! {
+    #[cfg(target_arch="riscv64")]
+    clear_bss();
     println!("[kernel] Hello, !");
     polyhal::irq::IRQ::int_disable();
-
-    // logging::init();
+    println!("dmw1:{:#x},dmw0 :{:#x}",loongArch64::register::dmw1::read().raw(),loongArch64::register::dmw0::read().raw());
+    logging::init();
     polyhal::common::init(&PageAllocImpl);
 
+    
     trap::init();
     mm::init();
     mm::remap_test();
@@ -125,6 +165,7 @@ pub fn main(hart_id:usize) -> ! {
     timer::set_next_trigger();
     task::init(|| Box::pin(user_task_top()));
 
+
     fs::init();
     // fs::list_app();
     
@@ -133,15 +174,19 @@ pub fn main(hart_id:usize) -> ! {
     // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
 
-    task::add_initproc("/musl   ", "/musl/busybox", "sh");
 
     //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
+    // task::add_initproc("/musl", "/musl/busybox", "sh");
+
+    // task::add_initproc("/glibc", "/glibc/busybox", "");
+    // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
-    //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
+    //  task::add_initproc("/musl", "/musl/basic/brk1", "");
+     task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
     // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();

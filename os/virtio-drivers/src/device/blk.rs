@@ -3,11 +3,12 @@
 use crate::hal::Hal;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
-use crate::volatile::{volread, Volatile};
+use crate::volatile::Volatile;
 use crate::{Error, Result};
 use bitflags::bitflags;
+use core::mem::offset_of;
 use log::info;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 const QUEUE: u16 = 0;
 const QUEUE_SIZE: u16 = 16;
@@ -55,12 +56,10 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
 
         // Read configuration space.
-        let config = transport.config_space::<BlkConfig>()?;
-        info!("config: {:?}", config);
-        // Safe because config is a valid pointer to the device configuration space.
-        let capacity = unsafe {
-            volread!(config, capacity_low) as u64 | (volread!(config, capacity_high) as u64) << 32
-        };
+        let capacity = transport.read_config_space::<u32>(offset_of!(BlkConfig, capacity_low))?
+            as u64
+            | (transport.read_config_space::<u32>(offset_of!(BlkConfig, capacity_high))? as u64)
+                << 32;
         info!("found a block device of size {}KB", capacity / 2);
 
         let queue = VirtQueue::new(
@@ -96,12 +95,22 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         self.transport.ack_interrupt()
     }
 
+    /// Enables interrupts from the device.
+    pub fn enable_interrupts(&mut self) {
+        self.queue.set_dev_notify(true);
+    }
+
+    /// Disables interrupts from the device.
+    pub fn disable_interrupts(&mut self) {
+        self.queue.set_dev_notify(false);
+    }
+
     /// Sends the given request to the device and waits for a response, with no extra data.
     fn request(&mut self, request: BlkReq) -> Result {
         let mut resp = BlkResp::default();
         self.queue.add_notify_wait_pop(
             &[request.as_bytes()],
-            &mut [resp.as_bytes_mut()],
+            &mut [resp.as_mut_bytes()],
             &mut self.transport,
         )?;
         resp.status.into()
@@ -112,7 +121,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         let mut resp = BlkResp::default();
         self.queue.add_notify_wait_pop(
             &[request.as_bytes()],
-            &mut [data, resp.as_bytes_mut()],
+            &mut [data, resp.as_mut_bytes()],
             &mut self.transport,
         )?;
         resp.status.into()
@@ -123,7 +132,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         let mut resp = BlkResp::default();
         self.queue.add_notify_wait_pop(
             &[request.as_bytes(), data],
-            &mut [resp.as_bytes_mut()],
+            &mut [resp.as_mut_bytes()],
             &mut self.transport,
         )?;
         resp.status.into()
@@ -251,7 +260,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         };
         let token = self
             .queue
-            .add(&[req.as_bytes()], &mut [buf, resp.as_bytes_mut()])?;
+            .add(&[req.as_bytes()], &mut [buf, resp.as_mut_bytes()])?;
         if self.queue.should_notify() {
             self.transport.notify(QUEUE);
         }
@@ -272,7 +281,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         resp: &mut BlkResp,
     ) -> Result<()> {
         self.queue
-            .pop_used(token, &[req.as_bytes()], &mut [buf, resp.as_bytes_mut()])?;
+            .pop_used(token, &[req.as_bytes()], &mut [buf, resp.as_mut_bytes()])?;
         resp.status.into()
     }
 
@@ -333,7 +342,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         };
         let token = self
             .queue
-            .add(&[req.as_bytes(), buf], &mut [resp.as_bytes_mut()])?;
+            .add(&[req.as_bytes(), buf], &mut [resp.as_mut_bytes()])?;
         if self.queue.should_notify() {
             self.transport.notify(QUEUE);
         }
@@ -354,7 +363,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         resp: &mut BlkResp,
     ) -> Result<()> {
         self.queue
-            .pop_used(token, &[req.as_bytes(), buf], &mut [resp.as_bytes_mut()])?;
+            .pop_used(token, &[req.as_bytes(), buf], &mut [resp.as_mut_bytes()])?;
         resp.status.into()
     }
 
@@ -400,7 +409,7 @@ struct BlkConfig {
 
 /// A VirtIO block device request.
 #[repr(C)]
-#[derive(AsBytes, Debug)]
+#[derive(Debug, Immutable, IntoBytes, KnownLayout)]
 pub struct BlkReq {
     type_: ReqType,
     reserved: u32,
@@ -419,7 +428,7 @@ impl Default for BlkReq {
 
 /// Response of a VirtIOBlk request.
 #[repr(C)]
-#[derive(AsBytes, Debug, FromBytes, FromZeroes)]
+#[derive(Debug, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct BlkResp {
     status: RespStatus,
 }
@@ -432,7 +441,7 @@ impl BlkResp {
 }
 
 #[repr(u32)]
-#[derive(AsBytes, Debug)]
+#[derive(Debug, Immutable, IntoBytes, KnownLayout)]
 enum ReqType {
     In = 0,
     Out = 1,
@@ -446,7 +455,7 @@ enum ReqType {
 
 /// Status of a VirtIOBlk request.
 #[repr(transparent)]
-#[derive(AsBytes, Copy, Clone, Debug, Eq, FromBytes, FromZeroes, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, FromBytes, Immutable, IntoBytes, KnownLayout, PartialEq)]
 pub struct RespStatus(u8);
 
 impl RespStatus {
@@ -622,7 +631,7 @@ mod tests {
             State::wait_until_queue_notified(&state, QUEUE);
             println!("Transmit queue was notified.");
 
-            state
+            assert!(state
                 .lock()
                 .unwrap()
                 .read_write_queue::<{ QUEUE_SIZE as usize }>(QUEUE, |request| {
@@ -646,7 +655,7 @@ mod tests {
                     );
 
                     response
-                });
+                }));
         });
 
         // Read a block from the device.
@@ -692,7 +701,7 @@ mod tests {
             State::wait_until_queue_notified(&state, QUEUE);
             println!("Transmit queue was notified.");
 
-            state
+            assert!(state
                 .lock()
                 .unwrap()
                 .read_write_queue::<{ QUEUE_SIZE as usize }>(QUEUE, |request| {
@@ -718,7 +727,7 @@ mod tests {
                     );
 
                     response
-                });
+                }));
         });
 
         // Write a block to the device.
@@ -767,7 +776,7 @@ mod tests {
             State::wait_until_queue_notified(&state, QUEUE);
             println!("Transmit queue was notified.");
 
-            state
+            assert!(state
                 .lock()
                 .unwrap()
                 .read_write_queue::<{ QUEUE_SIZE as usize }>(QUEUE, |request| {
@@ -790,7 +799,7 @@ mod tests {
                     );
 
                     response
-                });
+                }));
         });
 
         // Request to flush.
@@ -834,7 +843,7 @@ mod tests {
             State::wait_until_queue_notified(&state, QUEUE);
             println!("Transmit queue was notified.");
 
-            state
+            assert!(state
                 .lock()
                 .unwrap()
                 .read_write_queue::<{ QUEUE_SIZE as usize }>(QUEUE, |request| {
@@ -858,7 +867,7 @@ mod tests {
                     );
 
                     response
-                });
+                }));
         });
 
         let mut id = [0; 20];
