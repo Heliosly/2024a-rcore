@@ -62,15 +62,7 @@ pub fn init() {
     activate_by_token(*KERNEL_PAGE_TABLE_TOKEN);
     
 }
-#[inline(always)]
-unsafe fn clear_dwm() {
-    core::arch::asm!(
-        "li.w    $t0, 0",
-        // "csrwr   $t0, 0x180",
-        "csrwr   $t0, 0x181",
-        options(nostack, preserves_flags)
-    );
-}
+
 
 /// Change page table by writing satp CSR Register use token.
 pub fn activate_by_token(satp: usize) {

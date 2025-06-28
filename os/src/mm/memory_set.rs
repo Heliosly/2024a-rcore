@@ -251,7 +251,16 @@ pub fn munmap(
 
 #[cfg(target_arch = "loongarch64")]
 pub fn new_kernel() ->Self{
-
+        // map trampoline
+        // memory_set.map_trampoline();
+        // map kernel sections
+        info!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
+        info!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
+        info!(".data [{:#x}, {:#x})", sdata as usize, edata as usize);
+        info!(
+            ".bss [{:#x}, {:#x})",
+            sbss_with_stack as usize, _ebss as usize
+        );
         Self::new_bare()
 }
    
@@ -1449,51 +1458,50 @@ pub fn remap_test() {
         .executable());
 
     // --- 新增：验证直接映射区域 ---
-    // debug!("Verifying direct-mapped physical memory area...");
+    debug!("Verifying direct-mapped physical memory area...");
 
-    // // 1. 定义测试范围
-    // //    我们从 _ekernel (内核静态数据末尾的虚拟地址) 开始
-    // //    选取一个在该区域内的随机点进行测试，避免边界问题。
-    // //    这里的 ekernel 和 MEMORY_END 都是虚拟地址，正如你之前确认的。
-    // let direct_map_start_va: VirtAddr = (_ekernel as usize).into();
-    // let direct_map_end_va: VirtAddr = (MEMORY_END as usize).into();
+    // 1. 定义测试范围
+    //    我们从 _ekernel (内核静态数据末尾的虚拟地址) 开始
+    //    选取一个在该区域内的随机点进行测试，避免边界问题。
+    //    这里的 ekernel 和 MEMORY_END 都是虚拟地址，正如你之前确认的。
+    let direct_map_start_va: VirtAddr = (_ekernel as usize).into();
+    let direct_map_end_va: VirtAddr = (MEMORY_END as usize).into();
 
-    // // 2. 选取一个测试点 (例如，区域的中间点)
-    // let test_va: VirtAddr =
-    //     (direct_map_start_va.0 + (direct_map_end_va.0 - direct_map_start_va.0) / 2).into();
-    
-    // // 3. 预期物理地址
-    // //    根据直接映射的定义，物理地址应该是虚拟地址减去偏移。
-    // let expected_pa: usize = test_va.0 - KERNEL_DIRECT_OFFSET;
+    // 2. 选取一个测试点 (例如，区域的中间点)
+    let test_va: VirtAddr =
+        (direct_map_start_va.0 + (direct_map_end_va.0 - direct_map_start_va.0) / 2).into();
+    // 3. 预期物理地址
+    //    根据直接映射的定义，物理地址应该是虚拟地址减去偏移。
+    let expected_pa: usize = test_va.0 - KERNEL_DIRECT_OFFSET;
 
-    // info!("  Testing direct map VA: {:#x}", test_va.0);
-    // info!("  Expected physical address: {:#x}", expected_pa);
+    info!("  Testing direct map VA: {:#x}", test_va.0);
+    info!("  Expected physical address: {:#x}", expected_pa);
 
-    // // 4. 使用页表进行翻译
-    // match page_table.translate_va(test_va) {
-    //     Some(translated_pa) => {
-    //         info!("  Translated physical address: {:#x}", translated_pa.0);
+    // 4. 使用页表进行翻译
+    match page_table.translate_va(test_va) {
+        Some(translated_pa) => {
+            info!("  Translated physical address: {:#x}", translated_pa.0);
             
-    //         // 5. 验证翻译结果
-    //         assert_eq!(
-    //             translated_pa.0,
-    //             expected_pa,
-    //             "Direct map translation FAILED! VA {:#x} translated to {:#x}, but expected {:#x}",
-    //             test_va.0,
-    //             translated_pa.0,
-    //             expected_pa
-    //         );
+            // 5. 验证翻译结果
+            assert_eq!(
+                translated_pa.0,
+                expected_pa,
+                "Direct map translation FAILED! VA {:#x} translated to {:#x}, but expected {:#x}",
+                test_va.0,
+                translated_pa.0,
+                expected_pa
+            );
             
-    //         debug!("Direct map translation verification PASSED.");
-    //     }
-    //     None => {
-    //         // 如果翻译失败，直接 panic，因为这块区域必须被映射。
-    //         panic!(
-    //             "Direct map translation FAILED! VA {:#x} is not mapped in the page table.",
-    //             test_va.0
-    //         );
-    //     }
-    // }
+            debug!("Direct map translation verification PASSED.");
+        }
+        None => {
+            // 如果翻译失败，直接 panic，因为这块区域必须被映射。
+            panic!(
+                "Direct map translation FAILED! VA {:#x} is not mapped in the page table.",
+                test_va.0
+            );
+        }
+    }
 
     println!("remap_test passed!");
 }

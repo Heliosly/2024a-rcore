@@ -21,7 +21,7 @@ pub const USER_SIGNAL_PROTECT: usize = 512;
 /// kernel stack size
 pub const KERNEL_STACK_SIZE: usize = 4096 * 16*10;
 /// kernel heap size
-pub const KERNEL_HEAP_SIZE: usize = 134217728*2;
+pub const KERNEL_HEAP_SIZE: usize = 134217728;
 ///于allocuserres中于分配页数
 pub const PRE_ALLOC_PAGES: usize = 8;
 
@@ -32,7 +32,7 @@ pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
 /// the physical memory end
-pub const MEMORY_END: usize = 0xffffffc0c0000000 ;
+pub const MEMORY_END: usize = KERNEL_DIRECT_OFFSET+0xB000_0000;
 /// The base address of control registers in Virtio_Block device
 pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x2000)];
 /// Kerneladress offset
@@ -42,7 +42,7 @@ pub const KERNEL_PGNUM_OFFSET: usize = KERNEL_DIRECT_OFFSET >> PAGE_SIZE_BITS;
 
 
 /// 定义协程堆栈的大小，  40MB
-pub const TASK_STACK_SIZE: usize = 0x400000;
+pub const TASK_STACK_SIZE: usize = 0x40000;
 /// 定义用户空间的总大小，48GB
 pub const USER_SPACE_SIZE: usize = 0x30_0000_0000;
 /// 定义最大线程数，3000

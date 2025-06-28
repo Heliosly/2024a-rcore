@@ -181,7 +181,7 @@ fn dump_bar_contents(root: &mut PciRoot<MmioCam>, device_function: DeviceFunctio
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64")))]
-crate::driver_define!("virtio,mmio", init_mmio);
+driver_define!("virtio,mmio", init_mmio);
 
 #[cfg(target_arch = "x86_64")]
 driver_define!({

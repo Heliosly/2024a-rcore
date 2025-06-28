@@ -84,7 +84,9 @@ run-inner: build
     -no-reboot \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0 \
-    -rtc base=utc 
+    -rtc base=utc \
+    -drive file=../disk-la.img,if=none,format=raw,id=x1 \
+    -device virtio-blk-pci,drive=x1 
 
 gdbserver: build
 	@qemu-system-loongarch64 \
