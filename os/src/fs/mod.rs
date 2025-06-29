@@ -441,6 +441,8 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     
          "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
 
+         "/glibc/lib/ld-musl-loongarch-lp64d.so.1",
+
     ]
     .into_iter()
     .collect()

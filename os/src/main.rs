@@ -167,7 +167,7 @@ pub fn main(hart_id:usize) -> ! {
     fs::init();
     // fs::list_app();
     
-    // task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
+    task::add_initproc("/", "/musl/busybox",  "sh /initproc.sh");
 
     // task::add_initproc("/", "/musl/busybox",  "sh /write_tmp.sh");
     //  task::add_initproc("/basic", "/basic/sigtest", "");
@@ -185,10 +185,10 @@ pub fn main(hart_id:usize) -> ! {
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
-     task::add_initproc("/musl", "/musl/basic/openat", "");
+    //  task::add_initproc("/musl", "/musl/hackbench", "");
     //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");
 
-    //  task::add_initproc("/glibc", "/glibc/busybox", "sh basic_testcode.sh");
+     task::add_initproc("/glibc", "/glibc/busybox", "sh basic_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");

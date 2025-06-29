@@ -787,10 +787,11 @@ impl ProcessControlBlock {
 
         // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
         // 则需要把线程号写入到子线程地址空间中tid对应的地址中
+        
         let (child_tid,need_clear_tid) = if flags.contains(CloneFlags::CLONE_CHILD_SETTID)
             || flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
         {
-            assert!(ctid != 0);
+            
 
             (Some(ctid),flags.contains(CloneFlags::CLONE_CHILD_CLEARTID))
         } else {
