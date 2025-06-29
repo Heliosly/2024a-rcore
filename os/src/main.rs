@@ -160,6 +160,7 @@ pub fn main(hart_id:usize) -> ! {
     mm::frame_allocator::frame_allocator_test();
     trap::enable_irqs();
     timer::set_next_trigger();
+    timer::init_timer_backend();
     task::init(|| Box::pin(user_task_top()));
 
 
@@ -174,16 +175,21 @@ pub fn main(hart_id:usize) -> ! {
 
     //  task::add_initproc("/glibc", "/musl/busybox", "sh cyclictest_testcode.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
+
+    // task::add_initproc("/musl", "/argexe", "sh run-dynamic.sh sadsadagg");
     // task::add_initproc("/glibc", "/glibc/busybox", "sh run-static.sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh");
 
-    // task::add_initproc("/glibc", "/glibc/busybox", "");
+    // task::add_initproc("/glibc", "/glibc/busybox", "sh");
     // task::add_initproc("/musl", "/musl/busybox", "sh run-dynamic.sh");
 
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
 
-    //  task::add_initproc("/musl", "/musl/basic/brk1", "");
-     task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
+     task::add_initproc("/musl", "/musl/basic/openat", "");
+    //  task::add_initproc("/glibc", "/glibc/basic/mmap", "");
+
+    //  task::add_initproc("/glibc", "/glibc/busybox", "sh basic_testcode.sh");
+    //  task::add_initproc("/musl", "/musl/busybox", "sh basic_testcode.sh");
     //  task::add_initproc("/musl", "/musl/busybox", "sh /musl/run-static.sh");
     //  task::add_initproc("/libctest", "/glibc/busybox", "sh /libctest/run-static.sh");
     // open_file("/usr/lib", OpenFlags::O_PATH,0).unwrap();

@@ -168,10 +168,13 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
         Some(s) => s,
         None => return Err(SysErrNo::EINVAL), // 无效信号
     };
-
+    let mut pid= target_pid;
+    if target_pid==0{
+        pid=current_process().get_pid();
+    }
     // 步骤2：处理信号0（检查进程是否存在）
     if signum_usize == 0 {
-        let has_thread = PID2PC.lock().contains_key(&target_pid);
+        let has_thread = PID2PC.lock().contains_key(&pid);
         return if has_thread {
             Ok(0) // 进程存在（至少有一个线程）
         } else {
@@ -182,7 +185,7 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
         return Ok(0)
     }
     // 步骤3：找到目标 PID 下的所有活跃线程（TID）
-     let target_tids: Vec<usize> = PID2PC.lock().get(&target_pid)
+     let target_tids: Vec<usize> = PID2PC.lock().get(&pid)
     .map_or(Err(SysErrNo::ESRCH), |s|Ok(s))?.tasks.lock().await
     .iter()
     .map(|tcb| tcb.id()) // 提取每个 TCB 的 TID
@@ -193,7 +196,7 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
     }
 
     // 步骤4：权限检查（TODO：根据实际需求补充，例如检查当前任务是否有权限向目标进程发信号）
-    // if !check_permission(current_task.pid, target_pid) {
+    // if !check_permission(current_task.pid, pid) {
     //     return Err(SysErrNo::EPERM);
     // }
 
@@ -204,7 +207,7 @@ pub async fn sys_kill(target_pid: usize, signum_usize: usize) -> SyscallRet {
         
         // 可选：记录失败的线程（根据需求决定是否忽略部分失败）
         if let Err(e) = result {
-            warn!("Failed to send signal to tid {} (pid {}): {:?}", tid, target_pid, e);
+            warn!("Failed to send signal to tid {} (pid {}): {:?}", tid, pid, e);
         }
     }
 

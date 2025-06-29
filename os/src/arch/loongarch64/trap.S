@@ -1,5 +1,5 @@
 .equ TRAPFRAME_SIZE, 688
-.equ KSAVE_USP,  0x32
+.equ KSAVE_USP,  0x502
 
 .macro SAVE_GP n
     st.d $r\n, $sp, \n*8

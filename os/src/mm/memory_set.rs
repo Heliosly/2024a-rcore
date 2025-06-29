@@ -474,7 +474,7 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
             }
         }
         // 设置动态链接
-        if is_dl  {
+       let base= if is_dl  {
 
             debug!("[load_dl] encounter a dl elf");
             let section = elf.find_section_by_name(".interp").unwrap();
@@ -501,15 +501,18 @@ log::info!("[map_elf_load] segment {}: file_offset=0x{:x}, mem_size=0x{:x}, star
 
             auxv.push(Aux::new(AuxType::BASE, DL_INTERP_OFFSET));
             entry_point = interp_entry_point;
+            DL_INTERP_OFFSET
         } else {
             trace!("no dl");
             auxv.push(Aux::new(AuxType::BASE, 0));
-        }
+            0
+        };
         auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
         auxv.push(Aux::new(
             AuxType::ENTRY,
             elf.header.pt2.entry_point() as usize,
         ));
+
         auxv.push(Aux::new(AuxType::UID, 0 as usize));
         auxv.push(Aux::new(AuxType::EUID, 0 as usize));
         auxv.push(Aux::new(AuxType::GID, 0 as usize));
@@ -955,7 +958,7 @@ pub async fn handle_page_fault(
     let start = self.areatree.find_area(vpn);
 
     // self.areatree.debug_print();
-    trace!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", va.0, vpn.0, start.map_or(0, |v| v.0));
+    trace!("[mmap_page_fault] handle page fault at va:{:#x},vpn:{:#x},start_vpn:{:#x}", fault_va.0, vpn.0, start.map_or(0, |v| v.0));
     // 1. 找不到映射区 → AreaNotFound
     let start_vpn = if let Some(v) = start {
         v

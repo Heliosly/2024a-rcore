@@ -253,6 +253,16 @@ pub async  fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         SYSCALL_GETITIMER=>sys_getitimer(args[0] as i32, args[1] as *mut ITimerVal).await,
         SYSCALL_SETITIMER=>sys_setitimer(args[0] as i32, args[1] as *const ITimerVal, args[2] as *mut ITimerVal).await,
         SYSCALL_UMASK=>sys_umaske(),
+        SYSCALL_STATX=> 
+            sys_statx(
+                args[0] as i32,
+                args[1] as *const u8,
+                args[2] as u32,
+                args[3] as u32,
+                args[4] as *mut crate::fs::stat::Statx,
+            )
+            .await,
+        // 291=> Err(crate::utils::error::SysErrNo::ENOSYS),
         _ =>{
              panic!("Unsupported syscall_id: {}", syscall_id);
             }

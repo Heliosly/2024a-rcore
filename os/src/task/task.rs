@@ -311,7 +311,6 @@ impl ProcessControlBlock {
         self.set_user_stack_top(ustack_top);
 
 
-        flush_all();
     }
 
     /// fork
@@ -482,7 +481,6 @@ impl ProcessControlBlock {
             None,
             false,
         )));
-
         let process_control_block = Self {
 
             timers: [Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default()),Mutex::new(KernelTimer::default())],
@@ -491,9 +489,9 @@ impl ProcessControlBlock {
             is_init: AtomicBool::new(true),
             base_size: AtomicUsize::new(user_sp),
             cwd: Mutex::new(cwd),
-            parent: AtomicUsize::new(0xDEADBEFF),
+            parent: AtomicUsize::new(1),
             children: Mutex::new(Vec::new()),
-            exit_code: AtomicI32::new(0),
+            exit_code: AtomicI32::new(1),
             heap_bottom: AtomicUsize::new(user_sp),
             program_brk: AtomicUsize::new(user_sp),
             memory_set: Arc::new(Mutex::new(memory_set)),
@@ -599,9 +597,11 @@ impl ProcessControlBlock {
         let trap_cx = new_task.get_trap_cx().unwrap();
         trap_cx.init(user_sp, entry_point);
         trap_cx.trap_status = TrapStatus::Done;
-        trap_cx.regs.a1 = argv.len();
-        trap_cx.regs.a2 = argv_base;
-        trap_cx.regs.a3 = envp_base;
+        trap_cx.regs.a0 = argv.len();
+        trap_cx.regs.a1 = argv_base;
+        trap_cx.regs.a2 = envp_base;
+        trap_cx.regs.gp= 0xdead_beef_aaad_beef;
+        trap_cx.set_tls(0xdead_beef_aaad_beef);
         if is_dl{
             trap_cx.regs.a0 = entry_point;
           }
@@ -734,8 +734,8 @@ impl ProcessControlBlock {
 
         // println!("{:#?}",trap_cx);
         trace!("exec:sp:{:#x}", trap_cx.kernel_sp);
-        self.set_heap_bottom(user_heap_base);
-        self.set_program_brk(user_heap_base);
+        self.set_heap_bottom((user_heap_base + PAGE_SIZE) & !(PAGE_SIZE-1));
+        self.set_program_brk((user_heap_base + PAGE_SIZE) & !(PAGE_SIZE-1));
         Ok(())
         // **** release current PCB
     }
@@ -987,6 +987,9 @@ impl ProcessControlBlock {
             follow_last_symlink
         );
 
+        if path_str==""{
+            return Ok(self.get_file(dirfd as usize).await?.get_path())
+        }
             // 1. 确定基准绝对路径 (base_path_string)
         let base_path_string: String;
         if path_str.starts_with('/') {

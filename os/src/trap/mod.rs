@@ -128,7 +128,7 @@ pub fn trampoline(_tc: *mut TrapContext, has_trap: bool, from_user: bool) {
                 run_task2(CurrentTask::from(curr));
             } else {
                 enable_irqs();
-                error!("no tasks available in run_tasks");
+                // error!("no tasks available in run_tasks");
 
                 wait_for_irqs();
             }
@@ -150,12 +150,15 @@ fn log_page_fault_error(scause: Scause, stval: usize, sepc: usize) {
 #[cfg(target_arch="loongarch64")]
 pub async fn user_task_top() -> i32 {
     loop {
+
         debug!("into user_task_top");
         let curr = current_task();
+        // let VA:usize=0x150001579c;
+        // unsafe { read_volatile(VA as *const u8) };
 
         let mut syscall_ret = None;
         let tf = curr.get_trap_cx().unwrap();
-        // debug!("trap_status:{:?}",tf.trap_status);
+        // debug!("trap_:{:?}",tf);
         if tf.trap_status == TrapStatus::Blocked {
             let scause = scause::read();
             let stval = stval::read();

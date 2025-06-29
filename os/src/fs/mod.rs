@@ -4,7 +4,6 @@ pub(crate) mod inode;
 mod stdio;
 mod dirent;
 pub mod vfs;
-mod stat;
 mod fd;
 pub mod pipe;
 mod poll;
@@ -38,7 +37,7 @@ use alloc::boxed::Box;
 pub use dirent::Dirent;
 pub use ext4::EXT4FS;
 pub use ext4::fs_stat;
-
+pub mod stat;
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_EXE_MODE: u32 = 0o755;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;
@@ -714,7 +713,7 @@ pub fn init(){
     if !get_blk_devices().is_empty()  {
     VfsManager::mount("/dev/vda", "/", "ext4", 0, None).unwrap();
     create_file("/usr", OpenFlags::O_CREATE |OpenFlags:: O_DIRECTORY, DEFAULT_DIR_MODE, root_inode()).unwrap();
-    VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
+    // VfsManager::mount("/dev/vdb", "/usr", "ext4", 0, None).unwrap();
     }
     else{
         panic!();

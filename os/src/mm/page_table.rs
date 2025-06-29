@@ -4,7 +4,6 @@
 
 use super::{KernelAddr, MapPermission, KERNEL_PAGE_TABLE_PPN};
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
-#[cfg(target_arch = "loongarch64")]
 use crate::config::{KERNEL_DIRECT_OFFSET, KERNEL_PGNUM_OFFSET};
 use crate::mm::arch::{PAGE_LEVEL, PTE_NUM_IN_PAGE};
 use crate::mm::{PageTableEntry, PTEFlags};

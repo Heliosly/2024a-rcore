@@ -3,33 +3,46 @@
 use crate::fs::dev::open_device_file;
 use crate::fs::mount::MNT_TABLE;
 use crate::fs::pipe::make_pipe;
+use crate::fs::stat::Statx;
 use crate::fs::vfs::VfsManager;
 use crate::signal::SigSet;
 use crate::syscall::flags::{FaccessatMode, MlockallFlags};
-use crate::timer::{TimeVal,UserTimeSpec};
+use crate::timer::{TimeVal, UserTimeSpec};
 use crate::utils::string::{get_abs_path, get_parent_path_and_filename, is_abs_path};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec:: Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use lwext4_rust::bindings::{SEEK_CUR, SEEK_SET};
-const NONE_MODE:u32=0;
-use crate::config::{FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, SENDFILE_KERNEL_BUFFER_SIZE, UIO_MAXIOV};
-use crate::fs::{ find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags, PollEvents, PollFd, PollFuture, PollRequest, Statfs };
-use crate::mm::{ put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
+const NONE_MODE: u32 = 0;
+use crate::config::{
+    FD_SETSIZE, MAX_FD_NUM, MAX_KERNEL_RW_BUFFER_SIZE, PATH_MAX, SENDFILE_KERNEL_BUFFER_SIZE,
+    UIO_MAXIOV,
+};
+use crate::fs::{
+    find_inode, open_file, remove_inode_idx, File, FileClass, FileDescriptor, Kstat, OpenFlags,
+    PollEvents, PollFd, PollFuture, PollRequest, Statfs,
+};
+use crate::mm::{put_data, translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::sleeplist::sleep_until;
 use crate::task::{current_process, current_task, current_token};
 use crate::timer::current_time;
 use crate::utils::error::{SysErrNo, SyscallRet};
 use crate::utils::normalize_and_join_path;
 
-use super::flags::{ FstatatFlags, IoVec,  AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL};
+use super::flags::{
+    FstatatFlags, IoVec, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD,
+    F_SETFL,
+};
 use super::process;
 
-
 pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_write,fd:{}", current_task().get_pid(), fd);
+    trace!(
+        "kernel:pid[{}] sys_write,fd:{}",
+        current_task().get_pid(),
+        fd
+    );
     let token = current_token().await;
     let proc = current_process();
     let fd_table = proc.fd_table.lock().await;
@@ -38,7 +51,7 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if fd >= fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
-    
+
     match &fd_table.table[fd] {
         Some(file) => {
             // 2. 检查是否可写
@@ -52,14 +65,18 @@ pub async fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
                 .write(UserBuffer::new(translated_byte_buffer(token, buf, len)))
                 .await
                 .map_err(|_| SysErrNo::EIO)?;
-            Ok(bytes )
+            Ok(bytes)
         }
         None => Err(SysErrNo::EBADF),
     }
 }
 
 pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    trace!("kernel:pid[{}] sys_read,fd:{}", current_task().get_pid(), fd);
+    trace!(
+        "kernel:pid[{}] sys_read,fd:{}",
+        current_task().get_pid(),
+        fd
+    );
     let token = current_token().await;
     let proc = current_process();
     let fd_table = proc.fd_table.lock().await;
@@ -87,17 +104,14 @@ pub async fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         None => Err(SysErrNo::EBADF),
     }
 }
-pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
+pub async fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: u32) -> SyscallRet {
     info!(
         "[sys_openat] dirfd = {}, path_ptr = {:p}, flags = {:#x}, mode = {:#o}",
-        dirfd,
-        path_ptr,
-        flags_u32,
-        mode,
+        dirfd, path_ptr, flags_u32, mode,
     );
-  
+
     // 1. 获取当前进程
-    
+
     let proc = current_process();
     let token = proc.memory_set.lock().await.token();
     proc.manual_alloc_type_for_lazy(path_ptr).await?;
@@ -123,12 +137,12 @@ pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: 
     if path.starts_with('/') {
         // 如果路径是绝对路径（以 / 开头），就忽略 dirfd
         base_abs_path = "/".to_string(); // 根目录作为起点
-    } else if dirfd == AT_FDCWD  {
+    } else if dirfd == AT_FDCWD {
         // 如果 dirfd 是 AT_FDCWD，表示相对于当前工作目录
         base_abs_path = proc.cwd.lock().await.clone();
     } else {
         // 否则路径是相对于 dirfd 指定的目录
-        
+
         let dir_file = proc.fd_table.lock().await.get_file(dirfd as usize)?; // 获取 dirfd 对应的文件对象
         if !dir_file.file.file()?.is_dir() {
             return Err(SysErrNo::ENOTDIR); // 如果不是目录，返回“不是目录”的错误
@@ -156,18 +170,17 @@ pub async  fn sys_openat(dirfd: i32, path_ptr: *const u8, flags_u32: u32, mode: 
     let new_fd = proc.fd_table.lock().await.alloc_fd()?;
     proc.fd_table.lock().await.table[new_fd] = Some(file_class_instance);
     // 返回新分配的 fd
-    Ok(new_fd )
+    Ok(new_fd)
 }
-
 
 /// 关闭一个文件描述符
 /// fd: 要关闭的文件描述符
 /// 返回: 成功时为 Ok(0), 失败时为 Err(SysErrNo)
-pub async  fn sys_close(fd: i32) -> SyscallRet {
+pub async fn sys_close(fd: i32) -> SyscallRet {
     trace!(" [sys_close] for fd {}", fd);
     let proc = current_process();
     let mut fd_table = proc.fd_table.lock().await; // 获取文件描述符表的锁
-    let fd_usize= fd as usize;
+    let fd_usize = fd as usize;
     // 1. 检查 fd 是否有效
     if fd_usize >= fd_table.len() || fd_table.table[fd_usize].is_none() {
         return Err(SysErrNo::EBADF); // 无效的文件描述符
@@ -181,13 +194,12 @@ pub async  fn sys_close(fd: i32) -> SyscallRet {
     // _removed_file (一个 Option<Arc<FileClass>>) 在这里超出作用域并被 drop。
     // 如果这是 Arc 的最后一个引用, FileClass 的 Drop trait (如果实现) 将被调用。
 
-    Ok(0) 
+    Ok(0)
 }
 
-
-pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
+pub async fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
     trace!("kernel:pid[{}] sys_fstat ", current_task().get_pid());
-    let proc= current_process();
+    let proc = current_process();
     let token = proc.memory_set.lock().await.token();
 
     // if (kst as isize) <= 0 || if_bad_address(kst as usize) {
@@ -198,48 +210,46 @@ pub async  fn sys_fstat(fd: usize, st: *mut Kstat) -> SyscallRet {
     //     "[sys_fstat] fd is {:?}, kst_addr is {:#x}",
     //     fd, kst as usize
     // );
-    let table  = proc.fd_table.lock().await;
+    let table = proc.fd_table.lock().await;
     if fd >= table.len() || table.get_file(fd).is_err() {
         return Err(SysErrNo::EBADF);
     }
     let file = table.get_file(fd)?.any();
-    put_data(token, st, file.fstat())? ;
+    put_data(token, st, file.fstat())?;
     Ok(0)
-
-    
- 
-    
 }
 
-
-pub   fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet{
+pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet {
     // 伪实现
     warn!("[sys_ioctl]");
-   Ok(0)
+    Ok(0)
 }
 
-pub async  fn sys_fstatat(
+pub async fn sys_fstatat(
     dirfd: i32,
     path_ptr: *const u8,
     kst: *mut Kstat,
     flags: usize,
 ) -> SyscallRet {
-
     let proc = current_process();
-    let mut ms=proc.memory_set.lock().await;
+    let mut ms = proc.memory_set.lock().await;
     // 从用户指针翻译出路径字符串
-    let token  =ms.token();
-    let path  =ms.safe_translated_str( path_ptr).await;
+    let token = ms.token();
+    let path = ms.safe_translated_str(path_ptr).await;
 
-    trace!("[sys_fstatat] dirfd: {}, path: {:?}, kst: {:?}, flags: {}", dirfd, path, kst, flags);
+    trace!(
+        "[sys_fstatat] dirfd: {}, path: {:?}, kst: {:?}, flags: {}",
+        dirfd,
+        path,
+        kst,
+        flags
+    );
 
     // 解析 flags，非法时返回 EINVAL
-    let flags = FstatatFlags::from_bits(flags)
-        .ok_or(SysErrNo::EINVAL)?;
+    let flags = FstatatFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
 
     // 1. 处理 AT_EMPTY_PATH：允许空路径时对 dirfd 本身 stat
     if flags.contains(FstatatFlags::EMPTY_PATH) && path.is_empty() {
-
         if dirfd == AT_FDCWD {
             return Err(SysErrNo::EINVAL);
         }
@@ -248,7 +258,7 @@ pub async  fn sys_fstatat(
         let file = proc.fd_table.lock().await.get_file(dirfd as usize)?;
         // 将元数据写回用户缓冲区
         trace!("fstat");
-        put_data(token, kst, file.any().fstat())? ;
+        put_data(token, kst, file.any().fstat())?;
         return Ok(0);
     }
 
@@ -262,7 +272,9 @@ pub async  fn sys_fstatat(
     } else {
         // 相对于 dirfd 指向的目录
         let file = proc.fd_table.lock().await.get_file(dirfd as usize)?;
-        let inode = file.file().expect("abs file should use AT_EMPTY_PATH flags");
+        let inode = file
+            .file()
+            .expect("abs file should use AT_EMPTY_PATH flags");
         inode.get_path()
     };
     let full_path = normalize_and_join_path(base_path.as_str(), path.as_str())?;
@@ -273,18 +285,14 @@ pub async  fn sys_fstatat(
     }
 
     // 4. 在 VFS 中查找 inode，并写回 Kstat
-    let inode = open_file(&full_path, open_flags,0)?;
+    let inode = open_file(&full_path, open_flags, 0)?;
     put_data(token, kst, inode.fstat())?;
 
     Ok(0)
 }
 
-
-
-
-
-pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysErrNo> {
-    trace!("[sys_fcntl],fd:{},cmd:{},arg:{}",fd,cmd,arg);
+pub async fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysErrNo> {
+    trace!("[sys_fcntl],fd:{},cmd:{},arg:{}", fd, cmd, arg);
     let proc = current_process();
 
     let mut file_table = proc.fd_table.lock().await;
@@ -296,9 +304,7 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
 
             // 2) 从 arg 开始分配新 fd
             let min_fd = arg;
-            let new_fd = file_table
-                .alloc_fd_from(min_fd)
-                .ok_or(SysErrNo::EMFILE)?;
+            let new_fd = file_table.alloc_fd_from(min_fd).ok_or(SysErrNo::EMFILE)?;
 
             // 3) 如果 new_fd 超出表长，则扩容
             if new_fd >= file_table.len() {
@@ -306,9 +312,8 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
             }
 
             // 4) 克隆并存回 table
-            
-                file_table.table[new_fd] = Some(file.clone());
-           
+
+            file_table.table[new_fd] = Some(file.clone());
 
             // 5) 根据命令设置/清除 CLOEXEC
             let mut new_file = file_table.get_file(new_fd)?;
@@ -363,52 +368,57 @@ pub async  fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> Result<usize, SysE
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-use crate::mm::{VirtAddr, TranslateError, PageTable}; 
+use crate::mm::{PageTable, TranslateError, VirtAddr};
 
 // 导入我们新定义的内存复制函数 (假设它们在 mm 模块或一个新模块 user_mem)
 use crate::mm::page_table::{
-     // 你提供的，但主要用于单页、类型化数据
-    copy_from_user_array, copy_from_user_bytes, copy_from_user_exact, copy_to_user_bytes, copy_to_user_bytes_exact // 我们基于 copy_from_user_bytes 实现的
-    // 如果 TranslateRefError 需要扩展，确保也导入或定义
+    // 你提供的，但主要用于单页、类型化数据
+    copy_from_user_array,
+    copy_from_user_bytes,
+    copy_from_user_exact,
+    copy_to_user_bytes,
+    copy_to_user_bytes_exact, // 我们基于 copy_from_user_bytes 实现的
+                              // 如果 TranslateRefError 需要扩展，确保也导入或定义
 };
-
 
 // --- 1. Syscall::Lseek (lseek) ---
 // lseek 不直接访问用户数据缓冲区，主要操作 fd 和偏移量
 pub async fn sys_lseek(fd: usize, offset: isize, whence: u32) -> SyscallRet {
-    log::trace!("sys_lseek(fd: {}, offset: {}, whence: {})", fd, offset, whence);
+    log::trace!(
+        "sys_lseek(fd: {}, offset: {}, whence: {})",
+        fd,
+        offset,
+        whence
+    );
     let pcb_arc = current_process(); // 假设 current_process 是 async
-    let fd_table_guard = pcb_arc.fd_table.lock().await; 
+    let fd_table_guard = pcb_arc.fd_table.lock().await;
 
-    if fd  >= fd_table_guard.len() {
+    if fd >= fd_table_guard.len() {
         return Err(SysErrNo::EBADF);
     }
 
-    let file_descriptor =  fd_table_guard.get_file(fd)?;
+    let file_descriptor = fd_table_guard.get_file(fd)?;
     // drop(fd_table_guard); // 可以在这里释放，如果 file_descriptor.seek 不依赖它
-
-   
 
     // FileDescriptor 的 seek 方法本身可能是同步的
     // 如果是 async fn seek(&self, ...) -> ... 则需要 .await
-    Ok(file_descriptor.any().lseek(offset, whence) ?)
+    Ok(file_descriptor.any().lseek(offset, whence)?)
 }
 
 // --- 2. Syscall::Pread64 (pread64) ---
-pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: usize) -> SyscallRet {
-    log::trace!("sys_pread64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+pub async fn sys_pread64(
+    fd: i32,
+    user_buf_ptr: *mut u8,
+    count: usize,
+    offset: usize,
+) -> SyscallRet {
+    log::trace!(
+        "sys_pread64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})",
+        fd,
+        user_buf_ptr,
+        count,
+        offset
+    );
     if count == 0 {
         return Ok(0);
     }
@@ -420,7 +430,11 @@ pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: u
     if fd < 0 || fd as usize >= fd_table_guard.len() {
         return Err(SysErrNo::EBADF);
     }
-    let file_descriptor = match fd_table_guard.table.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+    let file_descriptor = match fd_table_guard
+        .table
+        .get(fd as usize)
+        .and_then(|opt_fd| opt_fd.as_ref())
+    {
         Some(f) => f.clone(),
         None => return Err(SysErrNo::EBADF),
     };
@@ -436,31 +450,38 @@ pub async fn sys_pread64(fd: i32, user_buf_ptr: *mut u8, count: usize, offset: u
     let actual_count_to_read_this_pass = kernel_buffer.len();
 
     // FileDescriptor 的 read_at 方法本身可能是同步的
-   let bytes_read =file_descriptor.file()?.read_at(offset, &mut kernel_buffer[0..actual_count_to_read_this_pass]) ?;
+    let bytes_read = file_descriptor.file()?.read_at(
+        offset,
+        &mut kernel_buffer[0..actual_count_to_read_this_pass],
+    )?;
 
-       
-            if bytes_read == 0 { // EOF
-                return Ok(0);
-            }
-            
-           
-               Ok( unsafe { copy_to_user_bytes(
-                    token,
-                    VirtAddr::from(user_buf_ptr as usize),
-                    &kernel_buffer[0..bytes_read],
-                ) }?
-            )
-            
-            
-            
-        }
-       
-    
+    if bytes_read == 0 {
+        // EOF
+        return Ok(0);
+    }
 
+    Ok(unsafe {
+        copy_to_user_bytes(
+            token,
+            VirtAddr::from(user_buf_ptr as usize),
+            &kernel_buffer[0..bytes_read],
+        )
+    }?)
+}
 
-
-pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offset: usize) -> SyscallRet {
-    log::trace!("sys_pwrite64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})", fd, user_buf_ptr, count, offset);
+pub async fn sys_pwrite64(
+    fd: usize,
+    user_buf_ptr: *const u8,
+    count: usize,
+    offset: usize,
+) -> SyscallRet {
+    log::trace!(
+        "sys_pwrite64(fd: {}, buf_ptr: {:p}, count: {}, offset: {})",
+        fd,
+        user_buf_ptr,
+        count,
+        offset
+    );
     if count == 0 {
         return Ok(0);
     }
@@ -472,7 +493,11 @@ pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offs
     if fd < 0 || fd as usize >= fd_table_guard.len() {
         return Err(SysErrNo::EBADF);
     }
-    let file_descriptor = match fd_table_guard.table.get(fd as usize).and_then(|opt_fd| opt_fd.as_ref()) {
+    let file_descriptor = match fd_table_guard
+        .table
+        .get(fd as usize)
+        .and_then(|opt_fd| opt_fd.as_ref())
+    {
         Some(f) => f.clone(),
         None => return Err(SysErrNo::EBADF),
     };
@@ -487,7 +512,7 @@ pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offs
     let mut kernel_buffer = vec![0u8; count.min(MAX_KERNEL_RW_BUFFER_SIZE)];
     let actual_count_to_write_this_pass = kernel_buffer.len();
 
-     unsafe {
+    unsafe {
         copy_from_user_bytes(
             token,
             &mut kernel_buffer[0..actual_count_to_write_this_pass],
@@ -495,12 +520,11 @@ pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offs
             actual_count_to_write_this_pass,
         )
     }?;
-      
-           file_descriptor.file()?.write_at(offset, &kernel_buffer[0..actual_count_to_write_this_pass])
-       
+
+    file_descriptor
+        .file()?
+        .write_at(offset, &kernel_buffer[0..actual_count_to_write_this_pass])
 }
-
-
 
 // // --- 4. Syscall::Readv (readv) ---
 // /// --- 4. Syscall::Readv (readv) ---
@@ -556,12 +580,11 @@ pub async fn sys_pwrite64(fd: usize, user_buf_ptr: *const u8, count: usize, offs
 //             continue;
 //         }
 
-        
 //         let mut bytes_read_for_this_iov: usize = 0;
 //         let mut user_iov_offset: usize = 0;
 
 //         while bytes_read_for_this_iov < iov_entry.len {
-          
+
 //             let len_this_pass = (iov_entry.len - bytes_read_for_this_iov)
 //                 .min(temp_chunk_len);
 //             if len_this_pass == 0 {
@@ -644,8 +667,12 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
         return Err(SysErrNo::EBADF); // 坏的文件描述符
     }
     // 获取文件描述符对应的文件对象
-    let file_descriptor = match fd_table_guard.table.get(fd).and_then(|opt_fd| opt_fd.as_ref()) {
-        Some(f) => f.clone(), // 克隆 Arc<dyn FileLike>
+    let file_descriptor = match fd_table_guard
+        .table
+        .get(fd)
+        .and_then(|opt_fd| opt_fd.as_ref())
+    {
+        Some(f) => f.clone(),                // 克隆 Arc<dyn FileLike>
         None => return Err(SysErrNo::EBADF), // 文件描述符在该位置为空
     };
     drop(fd_table_guard); // 及时释放文件描述符表的锁
@@ -653,12 +680,11 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
     // 1. 从用户空间安全地复制 iovec 数组到内核
     //    这一步仍然是必要的，因为我们需要 iovec 结构本身在内核中。
     //    `translated_byte_buffer` 用于数据缓冲区，而不是 iovec 描述符数组。
-    let kernel_iovs: Vec<IoVec> = match unsafe {
-        copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count)
-    } {
-        Ok(iovs) => iovs,
-        Err(e) => return Err(e.into()), 
-    };
+    let kernel_iovs: Vec<IoVec> =
+        match unsafe { copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count) } {
+            Ok(iovs) => iovs,
+            Err(e) => return Err(e.into()),
+        };
 
     // 2. 校验每个 iovec 条目并计算总的潜在读取长度
     let mut total_len_to_read_request: usize = 0;
@@ -696,7 +722,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
             // `token` 用于指定在哪个进程的地址空间中翻译这些地址。
             translated_byte_buffer(token, iov_entry.base as *const u8, iov_entry.len)
         };
-        
+
         // 重要检查：`translated_byte_buffer` 返回的切片总长度必须等于 `iov_entry.len`。
         // 如果返回的长度更少，意味着它无法映射整个用户缓冲区，这是一个错误。
         // (或者 `translated_byte_buffer` 的设计就是返回它能成功映射的部分，但这需要明确约定)
@@ -713,7 +739,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
         }
         // 如果请求长度大于0，但没有映射到任何内存片，也是错误
         if user_memory_slices.is_empty() && iov_entry.len > 0 {
-             // 类似于上面的情况，对于非零请求无法映射任何内容。
+            // 类似于上面的情况，对于非零请求无法映射任何内容。
             if total_bytes_read > 0 {
                 return Ok(total_bytes_read);
             } else {
@@ -721,14 +747,13 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
             }
         }
 
-
         // 从这些切片创建一个 UserBuffer
         // UserBuffer::new 需要 Vec<&'static mut [u8]>
-        let mut user_buffer = UserBuffer::new(user_memory_slices); 
+        let mut user_buffer = UserBuffer::new(user_memory_slices);
 
         // 调用文件对象的 read 方法，传入 UserBuffer
         // 文件系统的 read 实现将通过 UserBuffer 直接写入用户内存。
-        let read_result =  file_descriptor.any().read(user_buffer).await;
+        let read_result = file_descriptor.any().read(user_buffer).await;
         match read_result {
             Ok(0) => {
                 // 文件到达末尾 (EOF)。返回到目前为止总共读取的字节数。
@@ -821,7 +846,7 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
 //             let len_this_pass = (iov_entry.len - bytes_written_for_this_iov)
 //                                 .min(chunk_len);
 //             if len_this_pass == 0 { break; }
-       
+
 //             let slice = &mut temp_kernel_chunk[0..len_this_pass];
 //             // 从用户 iovec 的当前部分复制数据到内核中转缓冲区
 //             let user_src_ptr = unsafe { (iov_entry.base as *const u8).add(user_iov_offset) };
@@ -868,7 +893,12 @@ pub async fn sys_readv(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> Sy
 // }
 // --- 5. Syscall::Writev (writev) ---
 pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> SyscallRet {
-    trace!("[sys_writev] fd: {}, iov_ptr: {:p}, iovcnt: {}", fd, iov_user_ptr, iovcnt);
+    trace!(
+        "[sys_writev] fd: {}, iov_ptr: {:p}, iovcnt: {}",
+        fd,
+        iov_user_ptr,
+        iovcnt
+    );
 
     // 1. 校验 iovcnt 是否合法
     if iovcnt <= 0 || iovcnt > UIO_MAXIOV as i32 {
@@ -882,23 +912,27 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
     let fd_table_guard = pcb_arc.fd_table.lock().await; // 获取文件描述符表锁 (注意 .await)
 
     // 校验文件描述符 fd 是否有效
-    if fd >= fd_table_guard.len() { // fd 是 usize，所以不可能是负数
+    if fd >= fd_table_guard.len() {
+        // fd 是 usize，所以不可能是负数
         return Err(SysErrNo::EBADF); // 坏的文件描述符
     }
-    let file_descriptor = match fd_table_guard.table.get(fd).and_then(|opt_fd| opt_fd.as_ref()) {
-        Some(f) => f.clone(), // 克隆 Arc<dyn FileLike>
+    let file_descriptor = match fd_table_guard
+        .table
+        .get(fd)
+        .and_then(|opt_fd| opt_fd.as_ref())
+    {
+        Some(f) => f.clone(),                // 克隆 Arc<dyn FileLike>
         None => return Err(SysErrNo::EBADF), // 文件描述符在该位置为空
     };
     drop(fd_table_guard); // 及时释放文件描述符表的锁
 
     // 3. 从用户空间安全地复制 iovec 数组到内核
     //    这一步仍然是必要的，因为我们需要 iovec 结构本身在内核中。
-    let kernel_iovs: Vec<IoVec> = match unsafe {
-        copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count)
-    } {
-        Ok(iovs) => iovs,
-        Err(e) => return Err(e.into()), // copy_from_user_array 应返回合适的 SysErrNo
-    };
+    let kernel_iovs: Vec<IoVec> =
+        match unsafe { copy_from_user_array::<IoVec>(token, iov_user_ptr, iov_count) } {
+            Ok(iovs) => iovs,
+            Err(e) => return Err(e.into()), // copy_from_user_array 应返回合适的 SysErrNo
+        };
 
     // 4. 校验每个 iovec 条目并计算总的潜在写入长度
     let mut total_len_to_write_request: usize = 0;
@@ -916,7 +950,8 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
     // 5. 循环处理每个 iovec 条目，直接从用户缓冲区读取数据并写入文件
     let mut total_bytes_written: usize = 0; // 记录总共写入的字节数
 
-    for iov_entry in &kernel_iovs { // kernel_iovs 是内核中 iovec 描述符的副本
+    for iov_entry in &kernel_iovs {
+        // kernel_iovs 是内核中 iovec 描述符的副本
         if iov_entry.len == 0 {
             continue; // 跳过长度为0的 iovec 条目
         }
@@ -956,10 +991,9 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
         let user_buffer = UserBuffer::new(user_memory_slices);
         // 注意: UserBuffer 内部的 `read` 方法是从 UserBuffer 中读取数据到 Vec<u8>。
         // 而 File::write 方法期望 UserBuffer 作为参数，它会从这个 UserBuffer "读取" 数据并写入文件。
-        
+
         // 调用文件对象的 write 方法，传入 UserBuffer
-        let write_result =  file_descriptor.any().write(user_buffer).await ;// 获取底层的 File Trait 对象
-            
+        let write_result = file_descriptor.any().write(user_buffer).await; // 获取底层的 File Trait 对象
 
         match write_result {
             Ok(0) => {
@@ -981,7 +1015,7 @@ pub async fn sys_writev(fd: usize, iov_user_ptr: *const IoVec, iovcnt: i32) -> S
                 // 继续处理下一个 iovec。
             }
             Err(fs_error) => {
-                println!("err:{:#?}",fs_error);
+                println!("err:{:#?}", fs_error);
                 // 在写入操作期间发生错误。
                 // 如果之前的一些 iovecs 已经成功写入了字节，
                 // POSIX 规定 writev 应该返回那个计数。
@@ -1009,7 +1043,8 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
             return Ok(0);
         } else if timeout_ms == 0 {
             return Ok(0);
-        } else { // timeout_ms < 0 (无限等待)
+        } else {
+            // timeout_ms < 0 (无限等待)
             // 对于 nfds = 0 且无限等待，任务应该挂起直到被信号中断。
             // 我们可以 await 一个永不超时的 SleepFuture。
             // 当它被信号或其他方式唤醒时，SleepFuture 会 Ready。
@@ -1019,7 +1054,7 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
         }
     }
 
-    if nfds > FD_SETSIZE as usize { 
+    if nfds > FD_SETSIZE as usize {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -1039,7 +1074,7 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
     let fd_table_guard = pcb_arc.fd_table.lock().await;
 
     for (idx, user_pfd) in user_pollfds_kernel_copy.iter().enumerate() {
-        let mut fd_arc_opt: Option< FileDescriptor> = None;
+        let mut fd_arc_opt: Option<FileDescriptor> = None;
         let mut effective_events = user_pfd.events;
         if user_pfd.fd >= 0 {
             if let Some(fd_instance_opt_in_table) = fd_table_guard.table.get(user_pfd.fd as usize) {
@@ -1051,7 +1086,7 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
         } else {
             effective_events = PollEvents::empty();
         }
-        parsed_requests.push(PollRequest ::new(
+        parsed_requests.push(PollRequest::new(
             idx,
             user_pfd.fd,
             fd_arc_opt,
@@ -1067,7 +1102,8 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
         Some(current_time())
     } else if timeout_ms > 0 {
         Some(current_time().add_milliseconds(timeout_ms as usize))
-    } else { // timeout_ms < 0 (无限等待)
+    } else {
+        // timeout_ms < 0 (无限等待)
         None // 传递 None 给 PollFuture，它会创建一个 deadline 为 None 的 SleepFuture
     };
 
@@ -1082,7 +1118,6 @@ pub async fn sys_poll(user_fds_ptr: *mut PollFd, nfds: usize, timeout_ms: i32) -
     poll_future.await
 }
 
-
 /// ppoll 系统调用实现
 /// fds_ptr: 用户空间 struct pollfd 数组的指针 (usize)
 /// nfds: pollfd 数组的元素数量 (usize)
@@ -1095,8 +1130,13 @@ pub async fn sys_ppoll(
     tmo_user_ptr: *const UserTimeSpec, // 指向用户空间的 timespec
     sigmask_user_ptr: *const SigSet,   // 指向用户空间的 sigset_t
 ) -> SyscallRet {
-    log::info!("[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
-                fds_user_ptr, nfds, tmo_user_ptr, sigmask_user_ptr );
+    log::info!(
+        "[sys_ppoll](fds_ptr: {:p}, nfds: {}, tmo_p: {:p}, sigmask_ptr: {:p})",
+        fds_user_ptr,
+        nfds,
+        tmo_user_ptr,
+        sigmask_user_ptr
+    );
 
     // 1. 处理 nfds = 0 的情况 (与 poll 类似，但要注意信号掩码的设置和恢复)
     if nfds == 0 {
@@ -1128,25 +1168,32 @@ pub async fn sys_ppoll(
         // let _restorer = SigmaskRestorer(old_sigmask_to_restore);
 
         let result: SyscallRet;
-        if tmo_user_ptr.is_null() { // 无限等待
+        if tmo_user_ptr.is_null() {
+            // 无限等待
             sleep_until(None).await;
             result = Err(SysErrNo::ERESTART); // 假设被信号中断
         } else {
             let pcb_arc_temp = current_process(); // 获取 pcb 以访问 token 和任务状态
             let token_temp = pcb_arc_temp.memory_set.lock().await.token();
             // 从用户空间复制 timespec
-            let timeout_spec = match unsafe { copy_from_user_exact::<UserTimeSpec>(token_temp, tmo_user_ptr) } {
-                Ok(ts) => ts,
-                Err(_) => {
-                    if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
-                    return Err(SysErrNo::EFAULT);
+            let timeout_spec =
+                match unsafe { copy_from_user_exact::<UserTimeSpec>(token_temp, tmo_user_ptr) } {
+                    Ok(ts) => ts,
+                    Err(_) => {
+                        if let Some(old_mask) = old_sigmask_to_restore {
+                            restore_sigmask_internal(old_mask).await;
+                        }
+                        return Err(SysErrNo::EFAULT);
+                    }
+                };
+            if timeout_spec.tv_nsec >= 1_000_000_000 {
+                if let Some(old_mask) = old_sigmask_to_restore {
+                    restore_sigmask_internal(old_mask).await;
                 }
-            };
-            if  timeout_spec.tv_nsec >= 1_000_000_000 {
-                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
                 return Err(SysErrNo::EINVAL); // 无效的 timespec
             }
-            if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
+            if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 {
+                // 零超时
                 result = Ok(0);
             } else {
                 let deadline = current_time().add_timespec(&timeout_spec); // 假设 TimeVal 有此方法
@@ -1160,7 +1207,6 @@ pub async fn sys_ppoll(
         }
         return result;
     }
-
 
     // 2. 检查 nfds 上限
     if nfds > FD_SETSIZE as usize {
@@ -1189,25 +1235,32 @@ pub async fn sys_ppoll(
 
     // 4. 从用户空间复制 PollFd 数组 (与 sys_poll 相同)
     let user_pollfds_kernel_copy: Vec<PollFd> = if fds_user_ptr.is_null() {
-        if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
+        if let Some(old_mask) = old_sigmask_to_restore {
+            restore_sigmask_internal(old_mask).await;
+        }
         return Err(SysErrNo::EFAULT);
     } else {
         match unsafe { copy_from_user_array::<PollFd>(token, fds_user_ptr, nfds) } {
             Ok(fds) => fds,
             Err(_) => {
-                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
+                if let Some(old_mask) = old_sigmask_to_restore {
+                    restore_sigmask_internal(old_mask).await;
+                }
                 return Err(SysErrNo::EFAULT);
             }
         }
     };
 
-    info!("[sys_ppoll] user_pollfds_kernel_copy: {:?}", user_pollfds_kernel_copy);
+    info!(
+        "[sys_ppoll] user_pollfds_kernel_copy: {:?}",
+        user_pollfds_kernel_copy
+    );
     // 5. 构建 parsed_requests (与 sys_poll 相同)
     let mut parsed_requests: Vec<PollRequest> = Vec::with_capacity(nfds);
     let fd_table_guard = pcb_arc.fd_table.lock().await;
 
     for (idx, user_pfd) in user_pollfds_kernel_copy.iter().enumerate() {
-        let mut fd_arc_opt: Option< FileDescriptor> = None;
+        let mut fd_arc_opt: Option<FileDescriptor> = None;
         let mut effective_events = user_pfd.events;
         if user_pfd.fd >= 0 {
             if let Some(fd_instance_opt_in_table) = fd_table_guard.table.get(user_pfd.fd as usize) {
@@ -1231,18 +1284,24 @@ pub async fn sys_ppoll(
     let poll_future_timeout_deadline: Option<TimeVal> = if tmo_user_ptr.is_null() {
         None // 无限等待
     } else {
-        let timeout_spec = match unsafe { copy_from_user_exact::<UserTimeSpec>(token, tmo_user_ptr) } {
-            Ok(ts) => ts,
-            Err(_) => {
-                if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
-                return Err(SysErrNo::EFAULT);
+        let timeout_spec =
+            match unsafe { copy_from_user_exact::<UserTimeSpec>(token, tmo_user_ptr) } {
+                Ok(ts) => ts,
+                Err(_) => {
+                    if let Some(old_mask) = old_sigmask_to_restore {
+                        restore_sigmask_internal(old_mask).await;
+                    }
+                    return Err(SysErrNo::EFAULT);
+                }
+            };
+        if timeout_spec.tv_nsec >= 1_000_000_000 {
+            if let Some(old_mask) = old_sigmask_to_restore {
+                restore_sigmask_internal(old_mask).await;
             }
-        };
-        if  timeout_spec.tv_nsec >= 1_000_000_000 {
-            if let Some(old_mask) = old_sigmask_to_restore { restore_sigmask_internal(old_mask).await; }
             return Err(SysErrNo::EINVAL);
         }
-        if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 { // 零超时
+        if timeout_spec.tv_sec == 0 && timeout_spec.tv_nsec == 0 {
+            // 零超时
             Some(current_time()) // 立即超时
         } else {
             Some(current_time().add_timespec(&timeout_spec)) // 转换为绝对时间
@@ -1270,27 +1329,23 @@ pub async fn sys_ppoll(
 
 pub async fn sys_chdir(path: *const u8) -> SyscallRet {
     trace!("[sys_chdir] path_ptr={:p}", path);
-   
+
     let proc = current_process();
     // 获取当前进程的访问令牌
     let token = proc.get_user_token().await;
     let path_str = translated_str(token, path);
-// 如果给定的是绝对路径，则直接使用；否则基于当前工作目录拼接
+    // 如果给定的是绝对路径，则直接使用；否则基于当前工作目录拼接
     let new_path = if is_abs_path(&path_str) {
-                path_str.clone()
-            } else {
-                get_abs_path(&proc.cwd.lock().await, &path_str)
-            };
-   open_file(&new_path.as_str(), OpenFlags::O_RDONLY, 0)?;
-       
-            
-            // 更新进程的 cwd
+        path_str.clone()
+    } else {
+        get_abs_path(&proc.cwd.lock().await, &path_str)
+    };
+    open_file(&new_path.as_str(), OpenFlags::O_RDONLY, 0)?;
+
+    // 更新进程的 cwd
     proc.set_cwd(new_path).await;
     Ok(0)
-       
 }
-
-
 
 // --- 内部辅助函数，用于原子地设置和恢复信号掩码 ---
 // 这些函数需要访问当前线程的 ThreadSignalState.sigmask
@@ -1298,21 +1353,25 @@ pub async fn sys_chdir(path: *const u8) -> SyscallRet {
 
 /// 尝试从用户空间设置临时信号掩码，并返回旧的掩码。
 /// 如果 sigmask_user_ptr 为 NULL，则不改变掩码并返回 Ok(None)。
-async fn set_temp_sigmask_from_user(token: usize, sigmask_user_ptr: *const SigSet) -> Result<Option<SigSet>, SysErrNo> {
+async fn set_temp_sigmask_from_user(
+    token: usize,
+    sigmask_user_ptr: *const SigSet,
+) -> Result<Option<SigSet>, SysErrNo> {
     if sigmask_user_ptr.is_null() {
         return Ok(None);
     }
 
-    let new_sigmask_from_user = match unsafe { copy_from_user_exact::<SigSet>(token, sigmask_user_ptr) } {
-        Ok(s) => s,
-        Err(_) => return Err(SysErrNo::EFAULT),
-    };
+    let new_sigmask_from_user =
+        match unsafe { copy_from_user_exact::<SigSet>(token, sigmask_user_ptr) } {
+            Ok(s) => s,
+            Err(_) => return Err(SysErrNo::EFAULT),
+        };
 
     let current_task_arc = current_task(); // 需要能获取当前任务的 Arc<Task>
     let mut thread_signal_state = current_task_arc.signal_state.lock().await; // 假设 Task 有 signal_thread_state
 
     let old_mask = thread_signal_state.sigmask;
-    
+
     let mut new_mask_to_set = new_sigmask_from_user;
     // SIGKILL 和 SIGSTOP 不能被阻塞
     new_mask_to_set.remove(crate::signal::Signal::SIGKILL); // 假设 Signal 枚举路径
@@ -1337,25 +1396,27 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
         fd, buf as usize, len
     );
     let fd_table = proc.fd_table.lock().await;
-    if fd >= fd_table.len()  {
+    if fd >= fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    let file =  match fd_table.table.get(fd) {
-        Some(file_option) => {
-            match file_option {
-                Some(file) => file.clone(),
-                None => return Err(SysErrNo::EBADF),
-            }
-        }
+    let file = match fd_table.table.get(fd) {
+        Some(file_option) => match file_option {
+            Some(file) => file.clone(),
+            None => return Err(SysErrNo::EBADF),
+        },
         None => return Err(SysErrNo::EBADF),
     };
-    let inode=file.file()?;
-    let mut buffer =
-        UserBuffer::new(proc.memory_set.lock().await.
-        safe_translated_byte_buffer( buf, len).await);
+    let inode = file.file()?;
+    let mut buffer = UserBuffer::new(
+        proc.memory_set
+            .lock()
+            .await
+            .safe_translated_byte_buffer(buf, len)
+            .await,
+    );
 
     let off;
-    let check_off = file.lseek(0, SEEK_CUR );
+    let check_off = file.lseek(0, SEEK_CUR);
     if let Err(_) = check_off {
         return Ok(0);
     } else {
@@ -1363,36 +1424,40 @@ pub async fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet
     }
     let (de, off) = inode.read_dentry(off, len)?;
     buffer.write(de.as_slice());
-    if off!=-1{
-        let _ = file.lseek(off , SEEK_SET )?;
-    }
-    else{
+    if off != -1 {
+        let _ = file.lseek(off, SEEK_SET)?;
+    } else {
         return Ok(0);
     }
     return Ok(de.len());
 }
-
 
 /// faccessat 系统调用实现
 /// dirfd: 目录文件描述符。可以是 AT_FDCWD 表示当前工作目录。
 /// path_user_ptr: 指向用户空间路径字符串的指针。
 /// mode: 要检查的访问模式 (R_OK, W_OK, X_OK 的组合，或 F_OK)。
 /// flags: AT_SYMLINK_NOFOLLOW 或 AT_EACCESS (此实现暂不处理 flags)。
-pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, _flags: usize) -> SyscallRet {
-    
-
+pub async fn sys_faccessat(
+    dirfd: i32,
+    path_user_ptr: *const u8,
+    mode_u32: u32,
+    _flags: usize,
+) -> SyscallRet {
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
     // 1. 校验参数
-    if path_user_ptr.is_null() { // path_user_ptr == 0 或 < 0 都是无效地址
+    if path_user_ptr.is_null() {
+        // path_user_ptr == 0 或 < 0 都是无效地址
         return Err(SysErrNo::EFAULT);
     }
     // mode_u32 是 u32，不会 < 0。检查是否包含有效位。
     // FaccessatMode::from_bits 会处理无效位，如果它返回 None 或 Err。
     let mode = match FaccessatMode::from_bits(mode_u32) {
         Some(m) => m,
-        None => { // 如果 from_bits 返回 None 表示 mode_u32 中有未定义的位
-            if mode_u32 == 0 { // mode == 0 (F_OK) 是合法的
+        None => {
+            // 如果 from_bits 返回 None 表示 mode_u32 中有未定义的位
+            if mode_u32 == 0 {
+                // mode == 0 (F_OK) 是合法的
                 FaccessatMode::empty() // 代表 F_OK
             } else {
                 return Err(SysErrNo::EINVAL); // 无效的 mode 位
@@ -1406,21 +1471,29 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
 
     // 2. 从用户空间复制路径字符串
     // copy_from_user_str_until_null 需要 token, ptr, max_len
-    let path_kernel_str =  translated_str(token, path_user_ptr);
- trace!("[sys_faccessat] dirfd: {}, path_ptr: {}, mode: {}, flags: {}",
-                dirfd, path_kernel_str, mode_u32, _flags);
-    
-  
+    let path_kernel_str = translated_str(token, path_user_ptr);
+    trace!(
+        "[sys_faccessat] dirfd: {}, path_ptr: {}, mode: {}, flags: {}",
+        dirfd,
+        path_kernel_str,
+        mode_u32,
+        _flags
+    );
+
     // 4. 解析得到最终的、已规范化的绝对路径 abs_path
-    let abs_path= pcb_arc.resolve_path_from_fd(  dirfd, &path_kernel_str, false)
-    .await?;
+    let abs_path = pcb_arc
+        .resolve_path_from_fd(dirfd, &path_kernel_str, false)
+        .await?;
 
     // 4. 检查挂载点只读 (如果请求写权限)
     if mode.contains(FaccessatMode::W_OK) {
-       
-        if let Some(mount_entry) = crate::fs::mount::MNT_TABLE.lock().get_mount_info_by_dir(&abs_path) {
+        if let Some(mount_entry) = crate::fs::mount::MNT_TABLE
+            .lock()
+            .get_mount_info_by_dir(&abs_path)
+        {
             let mountflags = mount_entry.flags;
-            if (mountflags & 1) != 0 { // 假设 bit 0 是只读标志
+            if (mountflags & 1) != 0 {
+                // 假设 bit 0 是只读标志
                 return Err(SysErrNo::EROFS);
             }
         }
@@ -1431,26 +1504,29 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
     //    对于 faccessat，如果文件不存在，应该返回 ENOENT。
     //    faccessat 的权限检查是基于 mode 参数，而不是打开时的权限。
 
-    let target_inode_arc = match find_inode(&abs_path,OpenFlags::O_PATH){ // 假设有异步 lookup_inode
+    let target_inode_arc = match find_inode(&abs_path, OpenFlags::O_PATH) {
+        // 假设有异步 lookup_inode
         Ok(inode) => inode,
         Err(SysErrNo::ENOENT) => return Err(SysErrNo::ENOENT), // 文件或路径组件不存在
-        Err(e) => return Err(e), // 其他查找错误
+        Err(e) => return Err(e),                               // 其他查找错误
     };
 
     // 如果 mode 是 F_OK (mode_u32 == 0)，并且我们成功 find_inode，说明文件存在。
-    if mode_u32 == 0 { // F_OK check
+    if mode_u32 == 0 {
+        // F_OK check
         return Ok(0); // 文件存在，权限检查被跳过
     }
 
     // 6. 检查父目录的执行权限 (search permission)
     //    这通常是必需的，除非检查的是 AT_FDCWD 下的非斜杠开头路径的顶层组件。
     //    Linux access() 会检查路径中所有目录组件的执行权限。
-    if abs_path != "/" { 
-        let( parent_path,_) = get_parent_path_and_filename(&abs_path); // 假设有这样的辅助函数
+    if abs_path != "/" {
+        let (parent_path, _) = get_parent_path_and_filename(&abs_path); // 假设有这样的辅助函数
 
-        if !parent_path.is_empty() && parent_path != "/" { // 避免对根目录的父目录（它自己）进行不必要的检查
-            let parent_inode_arc =  find_inode(&parent_path.to_string(),OpenFlags::O_DIRECTORY)?;
-          
+        if !parent_path.is_empty() && parent_path != "/" {
+            // 避免对根目录的父目录（它自己）进行不必要的检查
+            let parent_inode_arc = find_inode(&parent_path.to_string(), OpenFlags::O_DIRECTORY)?;
+
             if !parent_inode_arc.is_dir() {
                 return Err(SysErrNo::ENOTDIR); // 路径中的一个组件不是目录
             }
@@ -1464,7 +1540,6 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
         }
     }
 
-
     // 7. 根据请求的 mode 和目标 inode 的权限进行检查
     //    需要从 pcb_arc 获取 uid, gid
     // let uid=0;//TODO(Heliosly) UID
@@ -1475,27 +1550,26 @@ pub async fn sys_faccessat(dirfd: i32, path_user_ptr: *const u8, mode_u32: u32, 
 
     // 如果所有检查都通过
     Ok(0)
-
-
-   
 }
 
-pub async  fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> SyscallRet {
+pub async fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> SyscallRet {
     let proc = current_process();
-    
+
     let token = proc.get_user_token().await;
     let path = translated_str(token, path);
 
-   trace!(
+    trace!(
         "[sys_mkdirat] dirfd is {},path is {},mode is {}",
-        dirfd as isize, path, mode
+        dirfd as isize,
+        path,
+        mode
     );
 
-    if dirfd as isize != -100 && dirfd as usize  >= proc.fd_table.lock().await.len() {
+    if dirfd as isize != -100 && dirfd as usize >= proc.fd_table.lock().await.len() {
         return Err(SysErrNo::EBADF);
     }
 
-    let abs_path =proc.resolve_path_from_fd(dirfd, &path,false).await?;
+    let abs_path = proc.resolve_path_from_fd(dirfd, &path, false).await?;
     if let Ok(_) = open_file(&abs_path, OpenFlags::O_RDWR, 0) {
         return Err(SysErrNo::EEXIST);
     }
@@ -1509,17 +1583,6 @@ pub async  fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> SyscallRet 
     return Err(SysErrNo::ENOENT);
 }
 
-
-
-
-
-
-
-
-
-
-
-
 // --- sys_dup2 实现 ---
 /// dup2 系统调用：复制文件描述符
 /// oldfd: 要复制的源文件描述符
@@ -1529,7 +1592,7 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
     trace!("sys_dup(oldfd: {})", oldfd);
 
     let pcb_arc = current_process();
-    
+
     // 我们需要同时读和写 fd_table，所以一开始就获取锁
     let mut fd_table = pcb_arc.fd_table.lock().await;
 
@@ -1538,7 +1601,7 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let oldfd_usize = oldfd as usize;
-    if oldfd_usize >= fd_table.get_soft_limit(){
+    if oldfd_usize >= fd_table.get_soft_limit() {
         // POSIX 对 oldfd >= RLIMIT_NOFILE 的行为没有明确规定，
         // 但返回 EBADF 是一个合理的选择。
         return Err(SysErrNo::EBADF);
@@ -1552,14 +1615,12 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
 
     // 3. 分配新的文件描述符
     // 把分配逻辑封装在 FdManage 的方法中更清晰
-    let newfd=fd_table.alloc_fd()? ;
-     
-      fd_table.table[newfd]=Some(file_to_dup);
-      fd_table.table[newfd].as_mut().unwrap().unset_cloexec();
+    let newfd = fd_table.alloc_fd()?;
 
-      Ok(newfd)
-        
-    
+    fd_table.table[newfd] = Some(file_to_dup);
+    fd_table.table[newfd].as_mut().unwrap().unset_cloexec();
+
+    Ok(newfd)
 }
 
 // --- sys_dup3 实现 ---
@@ -1569,23 +1630,35 @@ pub async fn sys_dup(oldfd: i32) -> SyscallRet {
 /// flags: 标志 (目前只支持 O_CLOEXEC)
 /// 返回：成功时为 newfd，失败时为 -错误码
 pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
-    log::trace!("[sys_dup3](oldfd: {}, newfd: {}, flags: 0x{:x})", oldfd, newfd, flags_u32);
+    log::trace!(
+        "[sys_dup3](oldfd: {}, newfd: {}, flags: 0x{:x})",
+        oldfd,
+        newfd,
+        flags_u32
+    );
 
     // 1. 校验 flags (目前只关心 O_CLOEXEC)
     //    如果包含 O_CLOEXEC 之外的其他位，POSIX 要求返回 EINVAL。
     let creation_flags = OpenFlags::from_bits_truncate(flags_u32); // 获取传入的标志
     if !creation_flags.is_empty() && !creation_flags.contains(OpenFlags::FD_CLOEXEC) {
-        log::warn!("sys_dup3: Invalid flags 0x{:x} provided. Only O_CLOEXEC is supported.", flags_u32);
+        log::warn!(
+            "sys_dup3: Invalid flags 0x{:x} provided. Only O_CLOEXEC is supported.",
+            flags_u32
+        );
         return Err(SysErrNo::EINVAL); // 只允许 O_CLOEXEC 或没有标志
     }
 
     let pcb_arc = current_process();
     let mut fd_table_guard = pcb_arc.fd_table.lock().await;
-   
+
     // 2. 校验 oldfd 和 newfd 的范围
-    if oldfd < 0 || oldfd as usize >= MAX_FD_NUM ||
-       newfd < 0 || newfd as usize >= MAX_FD_NUM {
-        log::warn!("sys_dup3: oldfd({}) or newfd({}) out of range [0, {}).", oldfd, newfd, MAX_FD_NUM);
+    if oldfd < 0 || oldfd as usize >= MAX_FD_NUM || newfd < 0 || newfd as usize >= MAX_FD_NUM {
+        log::warn!(
+            "sys_dup3: oldfd({}) or newfd({}) out of range [0, {}).",
+            oldfd,
+            newfd,
+            MAX_FD_NUM
+        );
         return Err(SysErrNo::EBADF);
     }
 
@@ -1594,17 +1667,28 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
 
     // 3. 如果 oldfd 等于 newfd，dup3 要求返回 EINVAL
     if oldfd == newfd {
-        log::warn!("sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.", oldfd, newfd);
+        log::warn!(
+            "sys_dup3: oldfd({}) is equal to newfd({}). Returning EINVAL.",
+            oldfd,
+            newfd
+        );
         return Err(SysErrNo::EINVAL);
     }
-    if oldfd_usize >= fd_table_guard.get_soft_limit(){
+    if oldfd_usize >= fd_table_guard.get_soft_limit() {
         return Err(SysErrNo::EBADF);
     }
     // 4. 检查 oldfd 是否是一个有效的、打开的文件描述符
-    let file_to_dup = match fd_table_guard.table.get(oldfd_usize).and_then(|opt| opt.as_ref()) {
+    let file_to_dup = match fd_table_guard
+        .table
+        .get(oldfd_usize)
+        .and_then(|opt| opt.as_ref())
+    {
         Some(fd_instance) => fd_instance.clone(), // 克隆 FileDescriptor
         None => {
-            log::warn!("sys_dup3: oldfd({}) is not a valid open file descriptor.", oldfd);
+            log::warn!(
+                "sys_dup3: oldfd({}) is not a valid open file descriptor.",
+                oldfd
+            );
             return Err(SysErrNo::EBADF);
         }
     };
@@ -1635,68 +1719,75 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
 
     fd_table_guard.table[newfd_usize] = Some(new_fd_instance);
 
-    log::debug!("sys_dup3: Duplicated fd {} to {} successfully with flags 0x{:x}.",
-                oldfd, newfd, flags_u32);
-    Ok(newfd_usize )
+    log::debug!(
+        "sys_dup3: Duplicated fd {} to {} successfully with flags 0x{:x}.",
+        oldfd,
+        newfd,
+        flags_u32
+    );
+    Ok(newfd_usize)
 }
-
 
 /// mount 系统调用实现
 ///
 /// # 参数
-    /// special: 指向包含设备名称的以 null 结尾的字符串的指针。
-    /// dir: 指向包含挂载点路径的以 null 结尾的字符串的指针。
-    /// fstype: 指向包含文件系统类型的以 null 结尾的字符串的指针。
-    /// flags: 挂载标志。
-    /// data_opt: 指向包含特定于文件系统挂载数据的以 null 结尾的字符串的指针。可以为 NULL。
-    ///
-    /// 返回: 成功时返回 0，失败时返回一个负的错误码。
-    ///
-    /// 描述:
-    /// sys_mount 系统调用将文件系统挂载到指定的挂载点。
-    ///
-    /// # Errors
-    ///
-    /// * `EBUSY`: 尝试挂载已经被挂载的设备或目录。
-    /// * `EINVAL`: 无效的参数，例如无效的标志或文件系统类型。
-    /// * `ENAMETOOLONG`: special 或 dir 超过最大路径长度。
-    /// * `ENOENT`: 挂载点目录不存在。
-    /// * `EPERM`: 调用者没有足够的权限执行挂载操作。
-    /// * `EROFS`: 尝试以只读方式挂载只读文件系统。
-    /// * `EXDEV`: 尝试在不支持跨设备挂载的文件系统上挂载。
-    ///
-    pub async fn sys_mount(
-        special_user_ptr: *const u8,
-        dir_user_ptr: *const u8,
-        fstype_user_ptr: *const u8,
-        flags: u32,
-        data_user_ptr: *const u8,
-    ) -> SyscallRet {
-        trace!(
-            "[sys_mount] special: {:p}, dir: {:p}, fstype: {:p}, flags: {}, data: {:p}",
-            special_user_ptr, dir_user_ptr, fstype_user_ptr, flags, data_user_ptr
-        );
-    
-        // --- 用户空间交互部分 (保持不变) ---
-        let pcb_arc = current_process();
-        let token = pcb_arc.memory_set.lock().await.token();
-        let special = translated_str(token, special_user_ptr);
-        let dir = translated_str(token, dir_user_ptr);
-        let fstype = translated_str(token, fstype_user_ptr);
-        let data_opt: Option<String> = if data_user_ptr.is_null() {
-            None
-        } else {
-            Some(translated_str(token, data_user_ptr))
-        };
-    
-        // --- 核心逻辑部分 (修改) ---
-        // 将所有参数委托给 VfsManager::mount 处理。
-        // VfsManager 会负责创建驱动实例、检查父目录、更新挂载表等所有工作。
-        let result = VfsManager::mount(&special, &dir, &fstype, flags, data_opt);
-    
-        // 将 VfsManager 的返回结果 (GeneralRet, 即 Result<(), SysErrNo>) 转换为系统调用返回值
-        Ok(0) // 成功时，将 Ok(()) 映射为 0
-    }
+/// special: 指向包含设备名称的以 null 结尾的字符串的指针。
+/// dir: 指向包含挂载点路径的以 null 结尾的字符串的指针。
+/// fstype: 指向包含文件系统类型的以 null 结尾的字符串的指针。
+/// flags: 挂载标志。
+/// data_opt: 指向包含特定于文件系统挂载数据的以 null 结尾的字符串的指针。可以为 NULL。
+///
+/// 返回: 成功时返回 0，失败时返回一个负的错误码。
+///
+/// 描述:
+/// sys_mount 系统调用将文件系统挂载到指定的挂载点。
+///
+/// # Errors
+///
+/// * `EBUSY`: 尝试挂载已经被挂载的设备或目录。
+/// * `EINVAL`: 无效的参数，例如无效的标志或文件系统类型。
+/// * `ENAMETOOLONG`: special 或 dir 超过最大路径长度。
+/// * `ENOENT`: 挂载点目录不存在。
+/// * `EPERM`: 调用者没有足够的权限执行挂载操作。
+/// * `EROFS`: 尝试以只读方式挂载只读文件系统。
+/// * `EXDEV`: 尝试在不支持跨设备挂载的文件系统上挂载。
+///
+pub async fn sys_mount(
+    special_user_ptr: *const u8,
+    dir_user_ptr: *const u8,
+    fstype_user_ptr: *const u8,
+    flags: u32,
+    data_user_ptr: *const u8,
+) -> SyscallRet {
+    trace!(
+        "[sys_mount] special: {:p}, dir: {:p}, fstype: {:p}, flags: {}, data: {:p}",
+        special_user_ptr,
+        dir_user_ptr,
+        fstype_user_ptr,
+        flags,
+        data_user_ptr
+    );
+
+    // --- 用户空间交互部分 (保持不变) ---
+    let pcb_arc = current_process();
+    let token = pcb_arc.memory_set.lock().await.token();
+    let special = translated_str(token, special_user_ptr);
+    let dir = translated_str(token, dir_user_ptr);
+    let fstype = translated_str(token, fstype_user_ptr);
+    let data_opt: Option<String> = if data_user_ptr.is_null() {
+        None
+    } else {
+        Some(translated_str(token, data_user_ptr))
+    };
+
+    // --- 核心逻辑部分 (修改) ---
+    // 将所有参数委托给 VfsManager::mount 处理。
+    // VfsManager 会负责创建驱动实例、检查父目录、更新挂载表等所有工作。
+    let result = VfsManager::mount(&special, &dir, &fstype, flags, data_opt);
+
+    // 将 VfsManager 的返回结果 (GeneralRet, 即 Result<(), SysErrNo>) 转换为系统调用返回值
+    Ok(0) // 成功时，将 Ok(()) 映射为 0
+}
 
 /// umount 系统调用实现
 ///
@@ -1716,39 +1807,43 @@ pub async fn sys_dup3(oldfd: i32, newfd: i32, flags_u32: u32) -> SyscallRet {
 /// # 描述
 /// `sys_umount` 函数用于卸载指定路径上的文件系统。`flags` 参数可以用于指定卸载操作的附加选项。
 pub async fn sys_umount2(target_user_ptr: *const u8, flags: u32) -> SyscallRet {
-    trace!("[sys_umount2] target: {:p}, flags: {}", target_user_ptr, flags);
-    
+    trace!(
+        "[sys_umount2] target: {:p}, flags: {}",
+        target_user_ptr,
+        flags
+    );
+
     // --- 用户空间交互部分 (保持不变) ---
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
     let target = translated_str(token, target_user_ptr);
 
-    
     let result = VfsManager::umount(&target);
 
     result.map(|_| 0)
 }
 
-
-pub async  fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallRet {
+pub async fn sys_unlinkat(dirfd: i32, path: *const u8, _flags: u32) -> SyscallRet {
     // assert!(flags != AT_REMOVEDIR, "not support yet");
     trace!(
         "[sys_unlinkat] dirfd: {}, path: {:p}, flags: {}",
-        dirfd, path, _flags
+        dirfd,
+        path,
+        _flags
     );
     let proc = current_process();
     let token = proc.get_user_token().await;
 
     let path = translated_str(token, path);
-    let abs_path = proc.resolve_path_from_fd(dirfd, &path,true).await?;
+    let abs_path = proc.resolve_path_from_fd(dirfd, &path, true).await?;
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
     // 如果是socket, FIFO, or device,移除但现有的fd可继续使用
-    let osfile = open_file(&abs_path, OpenFlags::O_ASK_SYMLINK,0 )?.file()?;
-   
+    let osfile = open_file(&abs_path, OpenFlags::O_ASK_SYMLINK, 0)?.file()?;
 
-    
-    if  osfile.inner.lock().inode.link_cnt()? == 1 && proc.fd_table.lock().await.find_fd(&path).is_some() {
+    if osfile.inner.lock().inode.link_cnt()? == 1
+        && proc.fd_table.lock().await.find_fd(&path).is_some()
+    {
         osfile.inner.lock().inode.delay();
         remove_inode_idx(&abs_path);
     } else {
@@ -1767,7 +1862,10 @@ pub async fn sys_renameat(
 ) -> SyscallRet {
     trace!(
         "[sys_renameat] olddirfd: {}, oldpath: {:p}, newdirfd: {}, newpath: {:p}",
-        olddirfd, oldpath, newdirfd, newpath
+        olddirfd,
+        oldpath,
+        newdirfd,
+        newpath
     );
 
     let proc = current_process();
@@ -1779,8 +1877,12 @@ pub async fn sys_renameat(
     if old_path.is_empty() || new_path.is_empty() {
         return Err(SysErrNo::ENOENT);
     }
-    let old_abs_path = proc.resolve_path_from_fd(olddirfd, &old_path, false).await?;
-    let new_abs_path = proc.resolve_path_from_fd(newdirfd, &new_path, false).await?;
+    let old_abs_path = proc
+        .resolve_path_from_fd(olddirfd, &old_path, false)
+        .await?;
+    let new_abs_path = proc
+        .resolve_path_from_fd(newdirfd, &new_path, false)
+        .await?;
 
     if old_abs_path.len() > PATH_MAX || new_abs_path.len() > PATH_MAX {
         return Err(SysErrNo::ENAMETOOLONG);
@@ -1789,7 +1891,7 @@ pub async fn sys_renameat(
     let old_inode = find_inode(&old_abs_path, OpenFlags::O_RDWR)?;
     //let new_inode = find_inode(&new_abs_path, OpenFlags::O_RDWR)?;
 
-    old_inode.rename(&old_abs_path,&new_abs_path)?;
+    old_inode.rename(&old_abs_path, &new_abs_path)?;
 
     Ok(0)
 }
@@ -1799,14 +1901,18 @@ pub async fn sys_renameat2(
     newdirfd: i32,
     newpath: *const u8,
     flags: u32,
-) -> SyscallRet{
+) -> SyscallRet {
     const RENAME_NOREPLACE: u32 = 1 << 0;
-    const RENAME_EXCHANGE:  u32 = 1 << 1;
-    const RENAME_WHITEOUT:  u32 = 1 << 2;
+    const RENAME_EXCHANGE: u32 = 1 << 1;
+    const RENAME_WHITEOUT: u32 = 1 << 2;
 
     trace!(
         "[sys_renameat2] olddirfd: {}, oldpath: {:p}, newdirfd: {}, newpath: {:p}, flags: {:#x}",
-        olddirfd, oldpath, newdirfd, newpath, flags
+        olddirfd,
+        oldpath,
+        newdirfd,
+        newpath,
+        flags
     );
 
     let proc = current_process();
@@ -1819,8 +1925,12 @@ pub async fn sys_renameat2(
         return Err(SysErrNo::ENOENT);
     }
 
-    let old_abs_path = proc.resolve_path_from_fd(olddirfd, &old_path, false).await?;
-    let new_abs_path = proc.resolve_path_from_fd(newdirfd, &new_path, false).await?;
+    let old_abs_path = proc
+        .resolve_path_from_fd(olddirfd, &old_path, false)
+        .await?;
+    let new_abs_path = proc
+        .resolve_path_from_fd(newdirfd, &new_path, false)
+        .await?;
 
     if old_abs_path.len() > PATH_MAX || new_abs_path.len() > PATH_MAX {
         return Err(SysErrNo::ENAMETOOLONG);
@@ -1840,7 +1950,7 @@ pub async fn sys_renameat2(
 
     // 处理 EXCHANGE
     if (flags & RENAME_EXCHANGE) != 0 {
-        old_inode.exchange(&old_abs_path,  &new_abs_path)?;
+        old_inode.exchange(&old_abs_path, &new_abs_path)?;
         return Ok(0);
     }
 
@@ -1854,7 +1964,6 @@ pub async fn sys_renameat2(
     old_inode.rename(&old_abs_path, &new_abs_path)?;
 
     Ok(0)
-
 }
 
 pub async fn sys_creat(path_ptr: *const u8, mode: u32) -> SyscallRet {
@@ -1914,17 +2023,6 @@ pub async fn sys_rmdir(path_ptr: *const u8) -> SyscallRet {
     Ok(0)
 }
 
-
-
-
-
-
-
-
-
-
-
-
 /// readlinkat 系统调用实现
 /// dirfd: 目录文件描述符，或 AT_FDCWD。
 /// path_user_ptr: 指向用户空间中符号链接路径的指针。
@@ -1937,8 +2035,13 @@ pub async fn sys_readlinkat(
     buf_user_ptr: *mut u8, // buf 是 *mut u8 因为我们要写入它
     bufsize: usize,
 ) -> SyscallRet {
-    log::trace!("[sys_readlinkat] dirfd: {}, path_ptr: {:p}, buf_ptr: {:p}, bufsiz: {}",
-                dirfd, path_user_ptr, buf_user_ptr, bufsize);
+    log::trace!(
+        "[sys_readlinkat] dirfd: {}, path_ptr: {:p}, buf_ptr: {:p}, bufsiz: {}",
+        dirfd,
+        path_user_ptr,
+        buf_user_ptr,
+        bufsize
+    );
 
     let pcb_arc = current_process();
     let token = pcb_arc.get_user_token().await;
@@ -1947,15 +2050,15 @@ pub async fn sys_readlinkat(
     if path_user_ptr.is_null() || (buf_user_ptr.is_null() && bufsize > 0) {
         return Err(SysErrNo::EFAULT);
     }
-    if bufsize == 0 && !buf_user_ptr.is_null() { // 如果 buf 非空但大小为0，POSIX行为未定，这里返回成功0字节
+    if bufsize == 0 && !buf_user_ptr.is_null() {
+        // 如果 buf 非空但大小为0，POSIX行为未定，这里返回成功0字节
         return Ok(0);
     }
 
-
     // 2. 从用户空间读取路径字符串
     let path_kernel_str = translated_str(token, path_user_ptr);
- 
-    // 3. 特殊处理 /proc/self/exe 
+
+    // 3. 特殊处理 /proc/self/exe
     if path_kernel_str == "/proc/self/exe" {
         log::debug!("[sys_readlinkat] Handling /proc/self/exe special case.");
         // 假设 ProcessControlBlock 或其 fs_info 有 exe_path() 方法
@@ -1964,7 +2067,8 @@ pub async fn sys_readlinkat(
         let exe_path_bytes = exe_path_kernel_str.as_bytes();
         let len_to_copy = core::cmp::min(exe_path_bytes.len(), bufsize);
 
-        if len_to_copy > 0 { // 只有当有东西可复制且用户缓冲区非空时才复制
+        if len_to_copy > 0 {
+            // 只有当有东西可复制且用户缓冲区非空时才复制
             match unsafe {
                 copy_to_user_bytes(
                     token,
@@ -1973,26 +2077,34 @@ pub async fn sys_readlinkat(
                 )
             } {
                 Ok(copied) => {
-                    if copied != len_to_copy { // copy_to_user_bytes 返回实际复制的
+                    if copied != len_to_copy {
+                        // copy_to_user_bytes 返回实际复制的
                         // 这可能表示用户缓冲区比 len_to_copy 小，但我们已经用了 min
                         // 或者 copy_to_user_bytes 内部有其他限制/错误
-                        log::warn!("/proc/self/exe: copy_to_user copied {} instead of {}", copied, len_to_copy);
+                        log::warn!(
+                            "/proc/self/exe: copy_to_user copied {} instead of {}",
+                            copied,
+                            len_to_copy
+                        );
                         return Err(SysErrNo::EFAULT); // 或者返回部分成功？
                     }
                 }
                 Err(_) => return Err(SysErrNo::EFAULT),
             }
         }
-        return Ok(len_to_copy );
+        return Ok(len_to_copy);
     }
 
     // 4. 解析路径以获取符号链接本身的 inode (不 follow 最后一个组件)
     //    我们需要 resolve_path_from_fd 的 follow_last_symlink 参数为 false。
-    let symlink_abs_path = match pcb_arc.resolve_path_from_fd(
-        dirfd,
-        &path_kernel_str,
-        false, // <--- 重要：不解析路径的最后一个符号链接组件
-    ).await {
+    let symlink_abs_path = match pcb_arc
+        .resolve_path_from_fd(
+            dirfd,
+            &path_kernel_str,
+            false, // <--- 重要：不解析路径的最后一个符号链接组件
+        )
+        .await
+    {
         Ok(p) => p,
         Err(e) => return Err(e),
     };
@@ -2003,18 +2115,17 @@ pub async fn sys_readlinkat(
     //    然后我们需要 lookup 这个路径来得到 inode。
     //    或者，resolve_path_from_fd 可以直接返回最终的 Arc<OSInode> 和真实路径。
     //    假设我们现在有符号链接的真实路径 symlink_abs_path。
-    let symlink_inode_arc = open_file (&symlink_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    let symlink_inode_arc = open_file(&symlink_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     let mut linkbuf = vec![0u8; bufsize];
-    let readcnt = symlink_inode_arc.inner.lock().inode.read_link(&mut linkbuf, bufsize)?;
+    let readcnt = symlink_inode_arc
+        .inner
+        .lock()
+        .inode
+        .read_link(&mut linkbuf, bufsize)?;
     let mut buffer = UserBuffer::new(translated_byte_buffer(token, buf_user_ptr, readcnt));
     buffer.write(&linkbuf);
     Ok(readcnt)
-    
-
 }
-
-
-
 
 /// symlinkat 系统调用实现
 /// target_user_ptr: 指向用户空间中符号链接目标的字符串指针。
@@ -2026,8 +2137,12 @@ pub async fn sys_symlinkat(
     newdirfd: i32, // POSIX 是 int, Rust 通常用 i32
     linkpath_user_ptr: *const u8,
 ) -> SyscallRet {
-    log::trace!("[sys_symlinkat] target_ptr: {:p}, newdirfd: {}, linkpath_ptr: {:p}",
-                target_user_ptr, newdirfd, linkpath_user_ptr);
+    log::trace!(
+        "[sys_symlinkat] target_ptr: {:p}, newdirfd: {}, linkpath_ptr: {:p}",
+        target_user_ptr,
+        newdirfd,
+        linkpath_user_ptr
+    );
 
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
@@ -2038,35 +2153,34 @@ pub async fn sys_symlinkat(
     }
 
     // 2. 从用户空间读取 target 和 linkpath 字符串
-    let target_kernel_str =   translated_str(token, target_user_ptr );
+    let target_kernel_str = translated_str(token, target_user_ptr);
 
-    let linkpath_kernel_str =  translated_str(token, linkpath_user_ptr );
-     
-
-   
+    let linkpath_kernel_str = translated_str(token, linkpath_user_ptr);
 
     // 3. 解析 linkpath 以确定其父目录和新符号链接的名称
-   
 
-    let resolved_linkpath_abs_str = pcb_arc. resolve_path_from_fd(
-        
-        newdirfd,
-        &linkpath_kernel_str,
-        false).await?;
-        
-    
-
+    let resolved_linkpath_abs_str = pcb_arc
+        .resolve_path_from_fd(newdirfd, &linkpath_kernel_str, false)
+        .await?;
 
     // 4. 分离出父目录路径和要创建的符号链接的名称
     let (parent_dir_abs_path, symlink_name) =
         get_parent_path_and_filename(&resolved_linkpath_abs_str);
 
-    if symlink_name.is_empty() || symlink_name == "/" || symlink_name == "." || symlink_name == ".." {
-        log::warn!("[sys_symlinkat] Invalid symlink name derived: '{}'", symlink_name);
+    if symlink_name.is_empty() || symlink_name == "/" || symlink_name == "." || symlink_name == ".."
+    {
+        log::warn!(
+            "[sys_symlinkat] Invalid symlink name derived: '{}'",
+            symlink_name
+        );
         return Err(SysErrNo::EISDIR); // 或者 EEXIST，或 EINVAL
     }
 
-    log::debug!("[sys_symlinkat] Parent dir: '{}', symlink name: '{}'", parent_dir_abs_path, symlink_name);
+    log::debug!(
+        "[sys_symlinkat] Parent dir: '{}', symlink name: '{}'",
+        parent_dir_abs_path,
+        symlink_name
+    );
 
     // 5. 检查目标符号链接路径 `resolved_linkpath_abs_str` 是否已存在
     //    使用 lookup_inode，不 follow 符号链接，因为我们想看这个路径本身是否存在。
@@ -2074,17 +2188,24 @@ pub async fn sys_symlinkat(
         return Err(SysErrNo::EEXIST);
     }
     // 6. 获取父目录的 inode
-    let parent_dir_inode_arc = match find_inode(&parent_dir_abs_path,OpenFlags::O_PATH|OpenFlags::O_DIRECTORY){
+    let parent_dir_inode_arc = match find_inode(
+        &parent_dir_abs_path,
+        OpenFlags::O_PATH | OpenFlags::O_DIRECTORY,
+    ) {
         Ok(inode) => inode,
         Err(e) => {
-            log::warn!("[sys_symlinkat] Failed to lookup parent directory '{}': {:?}", parent_dir_abs_path, e);
+            log::warn!(
+                "[sys_symlinkat] Failed to lookup parent directory '{}': {:?}",
+                parent_dir_abs_path,
+                e
+            );
             return Err(e); // 父目录不存在或不可访问
         }
     };
 
     // // 7. 检查在父目录中创建文件的权限 (通常是父目录的写权限和执行权限)
     // //    你需要一个权限检查函数，例如 parent_dir_inode_arc.check_permission(Permissions::WRITE_EXEC)
-    
+
     // let (uid, gid) = (pcb_arc.get_uid(), pcb_arc.get_gid()); // 假设 PCB 有这些方法
     // // 需要父目录有写和执行权限才能在其中创建文件/链接
     // let mut write_exec_mode = FaccessatMode::empty();
@@ -2095,16 +2216,11 @@ pub async fn sys_symlinkat(
     //     return Err(SysErrNo::EACCES);
     // }
 
-
     // 8. 调用父目录 inode 的方法来创建符号链接
-    
-    parent_dir_inode_arc.sym_link( &target_kernel_str,&resolved_linkpath_abs_str)?;
+
+    parent_dir_inode_arc.sym_link(&target_kernel_str, &resolved_linkpath_abs_str)?;
     Ok(0)
-   
 }
-
-
-
 
 // pub async fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
 //     trace!("[sys_getrandom] buf_ptr: {:p}, buflen: {}, flags: {}", buf_ptr, buflen, flags);
@@ -2115,8 +2231,6 @@ pub async fn sys_symlinkat(
 //         return Err(SysErrNo::EINVAL);
 //     }
 
-    
-
 //     if buf_ptr.is_null() {
 //         return Err(SysErrNo::EINVAL);
 //     }
@@ -2126,16 +2240,16 @@ pub async fn sys_symlinkat(
 //     )).await
 // }
 
-
-
-
-
 /// pipe2 系统调用
 /// pipefd_user_ptr: 指向用户空间 int[2] 数组的指针，用于接收两个新的文件描述符。
 /// flags: 创建管道的标志 (例如 O_CLOEXEC, O_NONBLOCK)。
 /// 返回：成功时为 0，失败时为 -错误码。
 pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet {
-    log::trace!("[sys_pipe2]:(pipefd_ptr: {:p}, flags: 0x{:x})", pipefd_user_ptr, flags_u32);
+    log::trace!(
+        "[sys_pipe2]:(pipefd_ptr: {:p}, flags: 0x{:x})",
+        pipefd_user_ptr,
+        flags_u32
+    );
 
     let pcb_arc = current_process();
     let token = pcb_arc.memory_set.lock().await.token();
@@ -2147,18 +2261,27 @@ pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet 
 
     // 2. 解析 flags
     let open_flags = OpenFlags::from_bits_truncate(flags_u32); // 忽略未知标志位
-    // TODO: 检查是否有不支持的 flags (pipe2 只支持 O_CLOEXEC, O_DIRECT, O_NONBLOCK)
-    //       O_DIRECT 对管道通常无意义。我们主要关心 O_CLOEXEC 和 O_NONBLOCK。
+                                                               // TODO: 检查是否有不支持的 flags (pipe2 只支持 O_CLOEXEC, O_DIRECT, O_NONBLOCK)
+                                                               //       O_DIRECT 对管道通常无意义。我们主要关心 O_CLOEXEC 和 O_NONBLOCK。
 
     // 3. 创建管道
     let (read_pipe_arc, write_pipe_arc) = make_pipe(open_flags);
 
     // 4. 为读端和写端分配文件描述符
     //    add_fd_to_current_process 需要是 async 或在异步上下文中安全调用
-   let fd_read= pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(read_pipe_arc))).await?;
-    
-   let fd_write=  pcb_arc.alloc_and_add_fd(FileDescriptor::new(open_flags, FileClass::Abs(write_pipe_arc))).await?;
+    let fd_read = pcb_arc
+        .alloc_and_add_fd(FileDescriptor::new(
+            open_flags,
+            FileClass::Abs(read_pipe_arc),
+        ))
+        .await?;
 
+    let fd_write = pcb_arc
+        .alloc_and_add_fd(FileDescriptor::new(
+            open_flags,
+            FileClass::Abs(write_pipe_arc),
+        ))
+        .await?;
 
     // 5. 将两个文件描述符写回用户空间
     let fds_to_write: [i32; 2] = [fd_read as i32, fd_write as i32];
@@ -2173,25 +2296,26 @@ pub async fn sys_pipe2(pipefd_user_ptr: *mut i32, flags_u32: u32) -> SyscallRet 
         )
     } {
         Ok(_) => {
-            log::info!("[sys_pipe2] Successfully created pipe with fds: read={}, write={}", fd_read, fd_write);
+            log::info!(
+                "[sys_pipe2] Successfully created pipe with fds: read={}, write={}",
+                fd_read,
+                fd_write
+            );
             Ok(0)
         }
         Err(_translate_err) => {
             // 写回失败，这是一个严重的问题。
             // 理论上应该尝试关闭已分配的 fd_read 和 fd_write。
-            log::error!("sys_pipe2: Failed to copy fds to user space: {:?}", _translate_err);
+            log::error!(
+                "sys_pipe2: Failed to copy fds to user space: {:?}",
+                _translate_err
+            );
             // pcb_arc.close_fd(fd_read as usize).await.ok();
             // pcb_arc.close_fd(fd_write as usize).await.ok();
             Err(SysErrNo::EFAULT)
         }
     }
 }
-
-
-
-
-
-
 
 /// sendfile 系统调用实现
 /// out_fd: 输出文件描述符 (通常是套接字)
@@ -2205,8 +2329,13 @@ pub async fn sys_sendfile(
     offset_user_ptr: *mut isize,
     count: usize,
 ) -> SyscallRet {
-    log::trace!("[sys_sendfile] out_fd: {}, in_fd: {}, offset_ptr: {:p}, count: {}",
-                out_fd, in_fd, offset_user_ptr, count);
+    log::trace!(
+        "[sys_sendfile] out_fd: {}, in_fd: {}, offset_ptr: {:p}, count: {}",
+        out_fd,
+        in_fd,
+        offset_user_ptr,
+        count
+    );
 
     if count == 0 {
         return Ok(0);
@@ -2217,11 +2346,10 @@ pub async fn sys_sendfile(
     // fd_table 的锁现在在 ProcessControlBlock 的 get_file 方法内部处理 (根据你的原始代码风格)
     // let fd_table_guard = proc_arc.fd_table.lock().await;
 
-    // 1. 获取并校验文件描述符 
+    // 1. 获取并校验文件描述符
 
     // 校验 fd 范围 (MAX_FD_NUM 需要定义)
-    if out_fd < 0 || out_fd as usize >= MAX_FD_NUM ||
-       in_fd < 0 || in_fd as usize >= MAX_FD_NUM {
+    if out_fd < 0 || out_fd as usize >= MAX_FD_NUM || in_fd < 0 || in_fd as usize >= MAX_FD_NUM {
         return Err(SysErrNo::EBADF);
     }
 
@@ -2229,15 +2357,15 @@ pub async fn sys_sendfile(
     let in_file_desc_wrapper = proc_arc.get_file(in_fd as usize).await?;
 
     // 2. 检查文件权限和类型
-    if !offset_user_ptr.is_null()
-  {  proc_arc.manual_alloc_type_for_lazy(offset_user_ptr).await?;
-  }
+    if !offset_user_ptr.is_null() {
+        proc_arc.manual_alloc_type_for_lazy(offset_user_ptr).await?;
+    }
 
-    if !out_file_desc_wrapper.writable()? { 
+    if !out_file_desc_wrapper.writable()? {
         log::warn!("[sys_sendfile] out_fd {} is not writable", out_fd);
         return Err(SysErrNo::EBADF);
     }
-    if !in_file_desc_wrapper.readable()? { 
+    if !in_file_desc_wrapper.readable()? {
         log::warn!("[sys_sendfile] in_fd {} is not readable", in_fd);
         return Err(SysErrNo::EBADF);
     }
@@ -2246,17 +2374,14 @@ pub async fn sys_sendfile(
     //     return Err(SysErrNo::EINVAL); // 通常 sendfile 不用于抽象/特殊文件
     // }
 
-
-    let infile = in_file_desc_wrapper;  // 直接使用
+    let infile = in_file_desc_wrapper; // 直接使用
     let outfile = out_file_desc_wrapper; // 直接使用
-
 
     // 3. 处理 offset_ptr (与之前版本类似，但使用异步 lseek)
     let mut current_read_offset_from_in_file: Option<usize> = None; // Some(offset) 表示从指定偏移读取
     let mut original_in_fd_offset_to_restore: Option<usize> = None; // 如果 offset_user_ptr 为 NULL
 
     if offset_user_ptr.is_null() {
-        
     } else {
         // offset 非 NULL: 从用户提供的 *offset 开始读取，并更新 *offset，in_fd 偏移不变
         let initial_offset_val = match unsafe {
@@ -2286,7 +2411,8 @@ pub async fn sys_sendfile(
             break;
         }
 
-        let current_kernel_slice_for_read = &mut kernel_transfer_buffer[0..bytes_to_process_this_loop];
+        let current_kernel_slice_for_read =
+            &mut kernel_transfer_buffer[0..bytes_to_process_this_loop];
 
         // a. 从 in_fd 读取数据
         let bytes_read_from_in_fd: usize;
@@ -2304,8 +2430,12 @@ pub async fn sys_sendfile(
             infile.lseek(offset_val as isize, SEEK_SET)?;
             bytes_read_from_in_fd = match infile.read(in_user_buffer).await {
                 Ok(n) => n,
-                Err(e) => { // 读取出错
-                    if total_bytes_transferred > 0 { break; } // 如果已传输一些，则返回成功的部分
+                Err(e) => {
+                    // 读取出错
+                    if total_bytes_transferred > 0 {
+                        break;
+                    }
+                    // 如果已传输一些，则返回成功的部分
                     else {
                         // 恢复原始偏移（如果适用）
                         if let Some(orig_off) = original_in_fd_offset_to_restore {
@@ -2321,12 +2451,17 @@ pub async fn sys_sendfile(
             bytes_read_from_in_fd = match infile.read(in_user_buffer).await {
                 Ok(n) => n,
                 Err(e) => {
-                    if total_bytes_transferred > 0 { break; } else { return Err(e); }
+                    if total_bytes_transferred > 0 {
+                        break;
+                    } else {
+                        return Err(e);
+                    }
                 }
             };
         }
 
-        if bytes_read_from_in_fd == 0 { // EOF on in_fd
+        if bytes_read_from_in_fd == 0 {
+            // EOF on in_fd
             break;
         }
 
@@ -2341,7 +2476,7 @@ pub async fn sys_sendfile(
             // 这是非常不安全的，依赖于 outfile.write 的内部实现。
             let mutable_alias_for_write = core::slice::from_raw_parts_mut(
                 kernel_slice_for_write.as_ptr() as *mut u8, // <--- unsafe cast
-                kernel_slice_for_write.len()
+                kernel_slice_for_write.len(),
             );
             write_user_buf_vec.push(mutable_alias_for_write);
         }
@@ -2359,7 +2494,8 @@ pub async fn sys_sendfile(
                         // 如果是更新 infile 的持久偏移，但只写了一部分
                         // infile 的偏移已经前进了 bytes_read_from_in_fd
                         // 我们需要把它回退 (bytes_read_from_in_fd - bytes_written_to_out_fd)
-                        let rewind_amount = (bytes_read_from_in_fd - bytes_written_to_out_fd) as isize;
+                        let rewind_amount =
+                            (bytes_read_from_in_fd - bytes_written_to_out_fd) as isize;
                         if rewind_amount > 0 {
                             infile.lseek(-rewind_amount, SEEK_CUR).ok();
                         }
@@ -2368,13 +2504,19 @@ pub async fn sys_sendfile(
                 }
                 total_bytes_transferred += bytes_written_to_out_fd;
             }
-            Err(e) => { // 写入 out_fd 失败
-                if total_bytes_transferred > 0 { break; }
-                else {
-                    if let Some(orig_off) = original_in_fd_offset_to_restore { // 恢复offset_ptr!=NULL时的原始偏移
+            Err(e) => {
+                // 写入 out_fd 失败
+                if total_bytes_transferred > 0 {
+                    break;
+                } else {
+                    if let Some(orig_off) = original_in_fd_offset_to_restore {
+                        // 恢复offset_ptr!=NULL时的原始偏移
                         infile.lseek(orig_off as isize, SEEK_SET).ok();
-                    } else if offset_user_ptr.is_null() && bytes_read_from_in_fd > 0 { // 恢复offset_ptr==NULL时多读的部分
-                        infile.lseek(-(bytes_read_from_in_fd as isize), SEEK_CUR).ok();
+                    } else if offset_user_ptr.is_null() && bytes_read_from_in_fd > 0 {
+                        // 恢复offset_ptr==NULL时多读的部分
+                        infile
+                            .lseek(-(bytes_read_from_in_fd as isize), SEEK_CUR)
+                            .ok();
                     }
                     return Err(e);
                 }
@@ -2395,27 +2537,23 @@ pub async fn sys_sendfile(
     // 6. 如果 offset_user_ptr 非空，将最终的 offset 写回用户空间
     if let Some(final_offset_val) = current_read_offset_from_in_file {
         if !offset_user_ptr.is_null() {
-
-
-
-            *translated_refmut(token, offset_user_ptr as *mut u64)?=final_offset_val as u64;
-            
+            *translated_refmut(token, offset_user_ptr as *mut u64)? = final_offset_val as u64;
         }
     }
 
-    Ok(total_bytes_transferred )
+    Ok(total_bytes_transferred)
 }
 
-
-
-pub async  fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
-    trace!("[sys_statfs] path:{:#?} statfs:{:#?}",_path,statfs);
-    current_process().memory_set.lock().await.safe_put_data( statfs, crate::fs::fs_stat()?).await?;
+pub async fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
+    trace!("[sys_statfs] path:{:#?} statfs:{:#?}", _path, statfs);
+    current_process()
+        .memory_set
+        .lock()
+        .await
+        .safe_put_data(statfs, crate::fs::fs_stat()?)
+        .await?;
     Ok(0)
 }
-
-
-
 
 /// man 2: int truncate(const char *path, off_t length);
 pub async fn sys_truncate(path_ptr: *const u8, length: u64) -> SyscallRet {
@@ -2427,7 +2565,6 @@ pub async fn sys_truncate(path_ptr: *const u8, length: u64) -> SyscallRet {
     trace!("[sys_truncate] path: {:?}, length: {}", path, length);
 
     // 1. 验证 length 参数
-  
 
     // 2. 解析为完整路径
     let cwd = proc.cwd.lock().await.clone();
@@ -2444,15 +2581,16 @@ pub async fn sys_truncate(path_ptr: *const u8, length: u64) -> SyscallRet {
     };
 
     // 4. 调用 Inode 的 truncate 方法
-    if let Err(e) = inode.file()?.truncate(length){
-        warn!("[sys_truncate] Failed to truncate file '{}': {:?}", full_path, e);
+    if let Err(e) = inode.file()?.truncate(length) {
+        warn!(
+            "[sys_truncate] Failed to truncate file '{}': {:?}",
+            full_path, e
+        );
         return Err(e);
     }
 
-  
     Ok(0)
 }
-
 
 /// man 2: int ftruncate(int fd, off_t length);
 pub async fn sys_ftruncate(fd: i32, length: u64) -> SyscallRet {
@@ -2475,14 +2613,13 @@ pub async fn sys_ftruncate(fd: i32, length: u64) -> SyscallRet {
         // EINVAL 更贴切，因为它指的是“不适合此操作”。
         return Err(SysErrNo::EINVAL);
     }
-    
+
     if let Err(e) = file.truncate(length) {
         return Err(e);
     }
-    
+
     Ok(0)
 }
-
 
 /// man 2: int mlock(const void *addr, size_t len);
 pub async fn sys_mlock(addr: usize, len: usize) -> SyscallRet {
@@ -2501,19 +2638,19 @@ pub async fn sys_mlock(addr: usize, len: usize) -> SyscallRet {
     // 3. 计算需要操作的虚拟页范围
     let start_va = VirtAddr::from(addr);
     let end_va = VirtAddr::from(addr + len - 1);
-    
+
     // 4. 验证内存区域是否已映射
     //    我们需要遍历指定范围内的所有页，确保它们都存在于某个 MapArea 中。
     //    这是 mlock 的核心验证步骤。
     if !memory_set.is_region_alloc(start_va, end_va) {
-    
         return Err(SysErrNo::ENOMEM);
     }
 
-
-  
-    
-    trace!("[sys_mlock] Region {:#x} - {:#x} locked (no-op).", addr, addr + len);
+    trace!(
+        "[sys_mlock] Region {:#x} - {:#x} locked (no-op).",
+        addr,
+        addr + len
+    );
 
     // 6. 成功
     Ok(0)
@@ -2535,7 +2672,7 @@ pub async fn sys_munlock(addr: usize, len: usize) -> SyscallRet {
     // 3. 计算需要操作的虚拟页范围
     let start_va = VirtAddr::from(addr);
     let end_va = VirtAddr::from(addr + len - 1);
-    
+
     // 4. 验证内存区域是否已映射 (与 mlock 相同)
     if !memory_set.is_region_alloc(start_va, end_va) {
         return Err(SysErrNo::ENOMEM);
@@ -2544,14 +2681,16 @@ pub async fn sys_munlock(addr: usize, len: usize) -> SyscallRet {
     // 5. (空操作) 解除锁定
     //    在支持换页的系统中，这里会清除 PTE 的 LOCKED 标志。
     //    在我们的实现中，我们什么都不做。
-   
-    
-    trace!("[sys_munlock] Region {:#x} - {:#x} unlocked (no-op).", addr, addr + len);
-    
+
+    trace!(
+        "[sys_munlock] Region {:#x} - {:#x} unlocked (no-op).",
+        addr,
+        addr + len
+    );
+
     // 6. 成功
     Ok(0)
 }
-
 
 /// man 2: int mlockall(int flags);
 pub async fn sys_mlockall(flags: u32) -> SyscallRet {
@@ -2592,39 +2731,186 @@ pub async fn sys_mlockall(flags: u32) -> SyscallRet {
     Ok(0)
 }
 
-
 /// man 2: int munlockall(void);
 pub async fn sys_munlockall() -> SyscallRet {
     trace!("[sys_munlockall] Unlocking all pages.");
-    
+
     // 1. 获取进程的 MemorySet
     // let proc = current_process();
     // let mut memory_set = proc.memory_set.lock().await;
-    
+
     // 2. 清除 MCL_FUTURE 状态标志
     // memory_set.mlockall_status.remove(MlockallFlags::MCL_FUTURE);
-    
-    
+
     trace!("[sys_munlockall] All pages unlocked (no-op).");
-    
+
     // 4. 成功
     Ok(0)
 }
 pub fn sys_sync() -> SyscallRet {
     trace!("[sys_sync] Syncing all filesystems (no-op).");
-    
+
     VfsManager::sync();
     Ok(0)
-}   
-pub async  fn sys_fsync(fd: usize) -> SyscallRet {
+}
+pub async fn sys_fsync(fd: usize) -> SyscallRet {
     trace!("[sys_fsync] fd: {}", fd);
     let task = current_process();
-    let  file = task.get_file(fd).await;
-    if  file.is_err() {
+    let file = task.get_file(fd).await;
+    if file.is_err() {
         return Err(SysErrNo::EINVAL);
     }
 
     let file = file.unwrap().file()?;
     file.inner.lock().inode.sync();
     Ok(0)
+}
+
+// 核心结构体，必须
+pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+pub const AT_EMPTY_PATH: u32 = 0x1000;
+
+// 定义 mask 常量 (来自 <sys/stat.h>)
+pub const STATX_TYPE: u32 = 0x0001;
+pub const STATX_MODE: u32 = 0x0002;
+pub const STATX_NLINK: u32 = 0x0004;
+pub const STATX_UID: u32 = 0x0008;
+pub const STATX_GID: u32 = 0x0010;
+pub const STATX_ATIME: u32 = 0x0020;
+pub const STATX_MTIME: u32 = 0x0040;
+pub const STATX_CTIME: u32 = 0x0080;
+pub const STATX_INO: u32 = 0x0100;
+pub const STATX_SIZE: u32 = 0x0200;
+pub const STATX_BLOCKS: u32 = 0x0400;
+pub const STATX_BASIC_STATS: u32 = 0x07ff;
+pub const STATX_BTIME: u32 = 0x0800;
+pub const STATX_ALL: u32 = 0x0fff;
+pub async fn sys_statx(
+    dirfd: i32,
+    path_ptr: *const u8,
+    flags: u32,
+    mask: u32,
+    statxbuf_ptr: *mut crate::fs::stat::Statx,
+) -> SyscallRet {
+    let proc = current_process();
+    let token = proc.get_user_token().await;
+    proc.manual_alloc_type_for_lazy(path_ptr).await?;
+    // 1. 从用户空间获取路径字符串
+    let path = translated_str(token, path_ptr);
+
+    info!(
+        "[sys_statx] dirfd={}, path='{}', flags={:#x}, mask={:#x}",
+        dirfd, path, flags, mask
+    );
+
+    // 2. 查找 Inode
+    // 这部分逻辑需要你的 VFS 提供一个强大的 lookup 函数
+    // AT_SYMLINK_NOFOLLOW 决定了是否跟随符号链接
+    let follow_symlinks = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+   let inode= if path == "" {
+        if let Ok(fd) = proc.get_file(dirfd as usize).await {
+            fd
+        } else {
+            unimplemented!();
+        }
+    } else {
+        let path = proc
+            .resolve_path_from_fd(dirfd, &path, follow_symlinks)
+            .await?;
+
+        match open_file(&path, OpenFlags::O_RDONLY, 0) {
+            Ok(node) => node,
+            Err(e) => return Err(e), // lookup 会返回 EACCES, ENOENT 等错误
+        }
+    };
+
+    // 3. 从 Inode 获取元数据 (statx_kernel)
+    // 你的 Inode trait/struct 需要有一个方法来获取所有 stat 信息
+
+    let kstat = inode.fstat();
+
+    // 4. 【核心变化】一行代码完成所有转换！
+    let mut statx_kernel = Statx::from(&kstat);
+    // 4. 创建一个内核态的 statx 结构体并填充它
+    //    只填充用户通过 mask 请求的字段
+    let mut filled_mask = 0;
+
+    let mut filled_mask: u32 = 0;
+    if (mask & STATX_TYPE) == 0 {
+        statx_kernel.stx_mode &= !0o170000;
+    } else {
+        filled_mask |= STATX_TYPE;
+    }
+    if (mask & STATX_MODE) == 0 {
+        statx_kernel.stx_mode &= !0o7777;
+    } else {
+        filled_mask |= STATX_MODE;
+    }
+    if (mask & STATX_NLINK) == 0 {
+        statx_kernel.stx_nlink = 0;
+    } else {
+        filled_mask |= STATX_NLINK;
+    }
+    if (mask & STATX_UID) == 0 {
+        statx_kernel.stx_uid = 0;
+    } else {
+        filled_mask |= STATX_UID;
+    }
+    if (mask & STATX_GID) == 0 {
+        statx_kernel.stx_gid = 0;
+    } else {
+        filled_mask |= STATX_GID;
+    }
+    if (mask & STATX_INO) == 0 {
+        statx_kernel.stx_ino = 0;
+    } else {
+        filled_mask |= STATX_INO;
+    }
+    if (mask & STATX_SIZE) == 0 {
+        statx_kernel.stx_size = 0;
+    } else {
+        filled_mask |= STATX_SIZE;
+    }
+    if (mask & STATX_BLOCKS) == 0 {
+        statx_kernel.stx_blocks = 0;
+    } else {
+        filled_mask |= STATX_BLOCKS;
+    }
+    if (mask & STATX_ATIME) == 0 {
+        statx_kernel.stx_atime = Default::default();
+    } else {
+        filled_mask |= STATX_ATIME;
+    }
+    if (mask & STATX_MTIME) == 0 {
+        statx_kernel.stx_mtime = Default::default();
+    } else {
+        filled_mask |= STATX_MTIME;
+    }
+    if (mask & STATX_CTIME) == 0 {
+        statx_kernel.stx_ctime = Default::default();
+    } else {
+        filled_mask |= STATX_CTIME;
+    }
+
+    // if (mask & STATX_BTIME) == 0 {
+
+    //          statx_kernel.stx_btime = Default::default();
+    //          filled_mask |= STATX_BTIME;
+
+    // }
+
+    // // 其他字段，如 blksize, dev_major/minor 等
+    // statx_kernel.stx_blksize = statx_kernel.blk_size;
+    // statx_kernel.stx_dev_major = statx_kernel.dev_major;
+    // statx_kernel.stx_dev_minor = statx_kernel.dev_minor;
+
+    // 5. 设置 stx_mask，告诉用户哪些字段被成功填充了
+    statx_kernel.stx_mask = filled_mask;
+
+    // 6. 将填充好的结构体写回用户空间
+    if put_data(token, statxbuf_ptr, statx_kernel).is_ok() {
+        Ok(0) // 成功返回 0
+    } else {
+        Err(SysErrNo::EFAULT) // 用户指针无效
+    }
 }

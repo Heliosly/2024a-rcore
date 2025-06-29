@@ -18,13 +18,13 @@ unsafe impl Hal for HalImpl {
         let trackers = frame_alloc_continue(pages).expect("can't alloc page in virtio");
         let paddr = PhysAddr::from(trackers[0].ppn);
         let vaddr = NonNull::new(paddr.get_mut_ptr() ).unwrap();
-        trace!("alloc DMA: paddr={:#x}, pages={:?}", paddr.0, trackers);
+        debug!("alloc DMA: paddr={:#x}, pages={:?}", paddr.0, trackers);
         VIRTIO_CONTAINER.lock().extend(trackers);
         (paddr.0, vaddr)
     }
 
     unsafe fn dma_dealloc(paddr: usize, _vaddr: NonNull<u8>, pages: usize) -> i32 {
-        trace!("dealloc DMA: paddr={:#x}, pages={}", paddr, pages);
+        debug!("dealloc DMA: paddr={:#x}, pages={}", paddr, pages);
         // VIRTIO_CONTAINER.lock().drain_filter(|x| {
         //     let phy_page = paddr as usize >> 12;
         //     let calc_page = usize::from(x.0);
