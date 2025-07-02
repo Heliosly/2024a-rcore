@@ -1,4 +1,7 @@
-# rCore-Camp-Code-2024A
+# LingOS
+
+由于队内协作原因，目前loongarch64不支持运行测例且正在开发中。
+
 
 ### Code
 - [Soure Code of labs for 2024A](https://github.com/LearningOS/rCore-Camp-Code-2024A)

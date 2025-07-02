@@ -2833,7 +2833,6 @@ pub async fn sys_statx(
     let mut statx_kernel = Statx::from(&kstat);
     // 4. 创建一个内核态的 statx 结构体并填充它
     //    只填充用户通过 mask 请求的字段
-    let mut filled_mask = 0;
 
     let mut filled_mask: u32 = 0;
     if (mask & STATX_TYPE) == 0 {
@@ -2847,32 +2846,32 @@ pub async fn sys_statx(
         filled_mask |= STATX_MODE;
     }
     if (mask & STATX_NLINK) == 0 {
-        statx_kernel.stx_nlink = 0;
+        // statx_kernel.stx_nlink = 0;
     } else {
         filled_mask |= STATX_NLINK;
     }
     if (mask & STATX_UID) == 0 {
-        statx_kernel.stx_uid = 0;
+        // statx_kernel.stx_uid = 0;
     } else {
         filled_mask |= STATX_UID;
     }
     if (mask & STATX_GID) == 0 {
-        statx_kernel.stx_gid = 0;
+        // statx_kernel.stx_gid = 0;
     } else {
         filled_mask |= STATX_GID;
     }
     if (mask & STATX_INO) == 0 {
-        statx_kernel.stx_ino = 0;
+        // statx_kernel.stx_ino = 0;
     } else {
         filled_mask |= STATX_INO;
     }
     if (mask & STATX_SIZE) == 0 {
-        statx_kernel.stx_size = 0;
+        // statx_kernel.stx_size = 0;
     } else {
         filled_mask |= STATX_SIZE;
     }
     if (mask & STATX_BLOCKS) == 0 {
-        statx_kernel.stx_blocks = 0;
+        // statx_kernel.stx_blocks = 0;
     } else {
         filled_mask |= STATX_BLOCKS;
     }
